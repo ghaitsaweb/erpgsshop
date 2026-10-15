@@ -1,0 +1,8 @@
+from django.apps import AppConfig
+
+
+class ExampleModuleConfig(AppConfig):
+    default_auto_field = "django.db.models.BigAutoField"
+    name = "addons.example_module"
+    label = "gsshop_example_module"
+    verbose_name = "GSSHOP Example Module"

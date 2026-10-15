@@ -1,0 +1,51 @@
+#!/bin/sh
+set -eu
+
+command_name="${1:-help}"
+shift || true
+
+case "$command_name" in
+  runserver)
+    docker compose up --build -d "$@"
+    ;;
+  stop)
+    docker compose stop "$@"
+    ;;
+  restart)
+    docker compose restart "$@"
+    ;;
+  reload-apps)
+    docker compose up -d --force-recreate web worker "$@"
+    ;;
+  sync-apps)
+    docker compose exec web python manage.py sync_apps "$@"
+    ;;
+  logs)
+    docker compose logs -f web "$@"
+    ;;
+  migrate)
+    docker compose run --rm web python manage.py migrate "$@"
+    ;;
+  shell)
+    docker compose exec web python manage.py shell "$@"
+    ;;
+  test)
+    docker compose run --rm -e SEED_DEMO=False web python manage.py test "$@"
+    ;;
+  status)
+    docker compose ps "$@"
+    ;;
+  *)
+    echo "ERP GSSHOP commands:"
+    echo "  ./gsshop runserver   Build and start the ERP"
+    echo "  ./gsshop stop        Stop containers without deleting data"
+    echo "  ./gsshop restart     Restart services"
+    echo "  ./gsshop reload-apps Reload environment and discover new add-ons"
+    echo "  ./gsshop sync-apps   Refresh application metadata"
+    echo "  ./gsshop logs        Follow application logs"
+    echo "  ./gsshop migrate     Apply database migrations"
+    echo "  ./gsshop shell       Open the Django shell"
+    echo "  ./gsshop test        Run the test suite"
+    echo "  ./gsshop status      Show service status"
+    ;;
+esac

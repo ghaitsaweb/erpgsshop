@@ -1,0 +1,259 @@
+{% load static gsshop_ui %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="ERP GSSHOP business operations platform">
+  <title>{% block title %}ERP GSSHOP{% endblock %}</title>
+  <link rel="icon" href="{% static 'img/logo.svg' %}" type="image/svg+xml">
+  <link rel="stylesheet" href="{% static 'css/app.css' %}">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="{% url 'dashboard' %}">
+        <img src="{% static 'img/logo.svg' %}" alt="ERP GSSHOP logo">
+        <span><strong>ERP</strong> GSSHOP</span>
+      </a>
+
+      {% if current_nav_app %}
+        <div class="active-app-card">
+          <a class="active-app-main" href="{% url 'app_workspace' current_nav_app.slug %}">
+            <span class="active-app-icon app-tone-{{ current_nav_app|app_category_key }}">
+              <svg aria-hidden="true"><use href="{% static 'img/app-icons.svg' %}#icon-{{ current_nav_app|app_icon_key }}"></use></svg>
+            </span>
+            <span><small>{{ current_nav_app.category }}</small><strong>{{ current_nav_app.name }}</strong></span>
+          </a>
+          <a class="app-switch-link" href="{% url 'app_manager' %}" data-app-switcher-open title="Switch application" aria-label="Switch application">⇄</a>
+        </div>
+      {% else %}
+        <a class="application-launcher" href="{% url 'app_manager' %}" data-app-switcher-open>
+          <span class="nav-icon">▦</span><span>Switch application</span><i>⇄</i>
+        </a>
+      {% endif %}
+
+      <label class="menu-search" for="menu-search-input">
+        <span>⌕</span>
+        <input id="menu-search-input" type="search" placeholder="Search all menus..." autocomplete="off">
+      </label>
+
+      <div class="global-menu-results" id="global-menu-results" hidden>
+        <p class="nav-label">Search results</p>
+        {% for item in global_menu_items %}
+          <a class="global-menu-result" data-global-menu-item data-search="{{ item.search }}" href="{{ item.url }}">
+            <span class="nav-icon">{{ item.label|slice:":1" }}</span>
+            <span><strong>{{ item.label }}</strong><small>{{ item.app }} · {{ item.group }}</small></span>
+          </a>
+        {% endfor %}
+        <p class="menu-empty" id="global-menu-search-empty" hidden>No matching menu.</p>
+      </div>
+
+      <nav class="main-nav" id="primary-navigation" data-nav-mode="{% if current_nav_app %}application{% else %}workspace{% endif %}" aria-label="Primary navigation">
+        {% for section in nav_sections %}
+          {% if section.collapsible %}
+            <details class="nav-section nav-group" {% if section.open %}open{% endif %}>
+              <summary data-group-search="{{ section.label|lower }}"><span class="nav-icon">{{ section.icon }}</span><span>{{ section.label }}</span><i>⌄</i></summary>
+              <div class="nav-children">
+                {% for item in section.items %}
+                  {% if item.app_slug %}
+                    <a data-menu-item data-search="{{ item.label|lower }} {{ item.category|lower }}" class="nav-item nav-child {% if request.resolver_match.url_name == 'app_workspace' and active_app_slug == item.app_slug %}active{% endif %}" href="{% url 'app_workspace' item.app_slug %}">
+                      <span class="nav-dot"></span>{{ item.label }}
+                    </a>
+                  {% elif item.entity %}
+                    <a data-menu-item data-search="{{ item.label|lower }} {{ section.label|lower }}" class="nav-item nav-child {% if request.resolver_match.kwargs.entity == item.entity %}active{% endif %}" href="{% url 'entity_list' item.entity %}">
+                      <span class="nav-dot"></span>{{ item.label }}
+                    </a>
+                  {% elif item.feature %}
+                    <a data-menu-item data-search="{{ item.label|lower }} {{ section.label|lower }}" class="nav-item nav-child {% if request.resolver_match.url_name == 'hr_feature' and request.resolver_match.kwargs.feature == item.feature %}active{% endif %}" href="{% url 'hr_feature' item.feature %}">
+                      <span class="nav-dot"></span>{{ item.label }}
+                    </a>
+                  {% elif item.url %}
+                    <a data-menu-item data-search="{{ item.label|lower }} {{ section.label|lower }}" class="nav-item nav-child" href="{{ item.url }}">
+                      <span class="nav-dot"></span>{{ item.label }}
+                    </a>
+                  {% endif %}
+                {% endfor %}
+              </div>
+            </details>
+          {% else %}
+            <section class="nav-section">
+              <p class="nav-label">{{ section.label }}</p>
+              {% for item in section.items %}
+                {% if item.name %}
+                  <a data-menu-item data-search="{{ item.label|lower }}" class="nav-item {% if request.resolver_match.url_name == item.name %}active{% endif %}" href="{% url item.name %}">
+                    <span class="nav-icon">{% if item.icon %}{{ item.icon }}{% else %}{{ item.label|slice:":1" }}{% endif %}</span>{{ item.label }}
+                  </a>
+                {% elif item.app_slug %}
+                  <a data-menu-item data-search="{{ item.label|lower }} {{ item.category|lower }}" class="nav-item {% if active_app_slug == item.app_slug %}active{% endif %}" href="{% url 'app_workspace' item.app_slug %}">
+                    <span class="nav-icon">{% if item.icon %}{{ item.icon }}{% else %}{{ item.label|slice:":1" }}{% endif %}</span>{{ item.label }}
+                  </a>
+                {% elif item.entity %}
+                  <a data-menu-item data-search="{{ item.label|lower }}" class="nav-item {% if request.resolver_match.kwargs.entity == item.entity %}active{% endif %}" href="{% url 'entity_list' item.entity %}">
+                    <span class="nav-icon">{% if item.icon %}{{ item.icon }}{% else %}{{ item.label|slice:":1" }}{% endif %}</span>{{ item.label }}
+                  </a>
+                {% elif item.feature %}
+                  <a data-menu-item data-search="{{ item.label|lower }}" class="nav-item {% if request.resolver_match.url_name == 'hr_feature' and request.resolver_match.kwargs.feature == item.feature %}active{% endif %}" href="{% url 'hr_feature' item.feature %}">
+                    <span class="nav-icon">{% if item.icon %}{{ item.icon }}{% else %}{{ item.label|slice:":1" }}{% endif %}</span>{{ item.label }}
+                  </a>
+                {% endif %}
+              {% endfor %}
+            </section>
+          {% endif %}
+        {% endfor %}
+        <p class="menu-empty" id="menu-search-empty" hidden>No matching menu.</p>
+      </nav>
+
+      <div class="sidebar-foot">
+        <a class="nav-item" href="{% url 'admin:index' %}"><span class="nav-icon">A</span>Administration</a>
+        <form method="post" action="{% url 'logout' %}">
+          {% csrf_token %}
+          <button class="nav-item nav-button" type="submit"><span class="nav-icon">↗</span>Sign out</button>
+        </form>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <div>
+          <nav class="breadcrumbs" aria-label="Breadcrumb">
+            {% for crumb in breadcrumbs %}
+              {% if crumb.url %}<a href="{{ crumb.url }}">{{ crumb.label }}</a>{% else %}<span>{{ crumb.label }}</span>{% endif %}
+              {% if not forloop.last %}<i>›</i>{% endif %}
+            {% endfor %}
+          </nav>
+          <p class="eyebrow">Business operations</p>
+          <h1>{% block page_title %}ERP GSSHOP{% endblock %}</h1>
+        </div>
+        <div class="user-chip">
+          <span class="avatar">{{ request.user.username|slice:":1"|upper }}</span>
+          <span><strong>{{ request.user.get_full_name|default:request.user.username }}</strong><small>{{ request.user.username }}{% if request.user.is_superuser %} · System Admin{% else %} · ERP Operator{% endif %}</small></span>
+        </div>
+      </header>
+
+      {% if messages %}
+        <div class="messages" aria-live="polite">
+          {% for message in messages %}<div class="message {{ message.tags }}">{{ message }}</div>{% endfor %}
+        </div>
+      {% endif %}
+
+      <section class="page-content">
+        {% block content %}{% endblock %}
+      </section>
+    </main>
+  </div>
+
+  <div class="application-switcher" id="application-switcher" hidden>
+    <button class="application-switcher-backdrop" type="button" data-app-switcher-close aria-label="Close application switcher"></button>
+    <section class="application-switcher-dialog" role="dialog" aria-modal="true" aria-labelledby="application-switcher-title">
+      <header class="application-switcher-head">
+        <div>
+          <p class="eyebrow">ERP GSSHOP</p>
+          <h2 id="application-switcher-title">Switch application</h2>
+        </div>
+        <button class="application-switcher-close" type="button" data-app-switcher-close aria-label="Close">×</button>
+      </header>
+      <label class="application-search" for="application-search-input">
+        <svg aria-hidden="true"><use href="{% static 'img/app-icons.svg' %}#icon-target"></use></svg>
+        <input id="application-search-input" type="search" placeholder="Search application or module..." autocomplete="off">
+        <kbd>Esc</kbd>
+      </label>
+      <div class="application-switcher-scroll">
+        {% if switcher_recent_apps %}
+          <section class="switcher-section" data-app-switcher-group>
+            <div class="switcher-section-title"><span>Recently opened</span><small>{{ switcher_recent_apps|length }} applications</small></div>
+            <div class="recent-application-grid">
+              {% for app in switcher_recent_apps %}
+                <a class="application-tile recent app-tone-{{ app|app_category_key }}" data-application-card data-search="{{ app.name|lower }} {{ app.category|lower }} {{ app.slug }}" href="{% url 'app_workspace' app.slug %}">
+                  <span class="application-tile-icon"><svg aria-hidden="true"><use href="{% static 'img/app-icons.svg' %}#icon-{{ app|app_icon_key }}"></use></svg></span>
+                  <span><strong>{{ app.name }}</strong><small>{{ app.category }}</small></span>
+                </a>
+              {% endfor %}
+            </div>
+          </section>
+        {% endif %}
+
+        {% for category, apps in switcher_app_groups %}
+          <section class="switcher-section" data-app-switcher-group>
+            <div class="switcher-section-title"><span>{{ category }}</span><small>{{ apps|length }} applications</small></div>
+            <div class="application-grid">
+              {% for app in apps %}
+                <a class="application-tile app-tone-{{ app|app_category_key }} {% if active_app_slug == app.slug %}current{% endif %}" data-application-card data-search="{{ app.name|lower }} {{ app.category|lower }} {{ app.slug }}" href="{% url 'app_workspace' app.slug %}">
+                  <span class="application-tile-icon"><svg aria-hidden="true"><use href="{% static 'img/app-icons.svg' %}#icon-{{ app|app_icon_key }}"></use></svg></span>
+                  <span><strong>{{ app.name }}</strong><small>{% if active_app_slug == app.slug %}Current application{% else %}Open workspace{% endif %}</small></span>
+                </a>
+              {% endfor %}
+            </div>
+          </section>
+        {% endfor %}
+        <p class="application-search-empty" id="application-search-empty" hidden>No matching application.</p>
+      </div>
+      <footer class="application-switcher-foot">
+        <span>Only installed applications are shown.</span>
+        <a href="{% url 'app_manager' %}">Manage applications</a>
+      </footer>
+    </section>
+  </div>
+  <script>
+    (() => {
+      const input = document.getElementById('menu-search-input');
+      const navigation = document.getElementById('primary-navigation');
+      const globalResults = document.getElementById('global-menu-results');
+      const globalEmpty = document.getElementById('global-menu-search-empty');
+      if (input) {
+        input.addEventListener('input', () => {
+          const query = input.value.trim().toLowerCase();
+          let matches = 0;
+          navigation.hidden = Boolean(query);
+          globalResults.hidden = !query;
+          document.querySelectorAll('[data-global-menu-item]').forEach((item) => {
+            const visible = Boolean(query) && item.dataset.search.includes(query);
+            item.hidden = !visible;
+            if (visible) matches += 1;
+          });
+          globalEmpty.hidden = matches !== 0;
+        });
+      }
+
+      const switcher = document.getElementById('application-switcher');
+      const applicationSearch = document.getElementById('application-search-input');
+      const applicationEmpty = document.getElementById('application-search-empty');
+      let returnFocus = null;
+      const openSwitcher = (trigger) => {
+        returnFocus = trigger;
+        switcher.hidden = false;
+        document.body.classList.add('switcher-open');
+        requestAnimationFrame(() => applicationSearch.focus());
+      };
+      const closeSwitcher = () => {
+        switcher.hidden = true;
+        document.body.classList.remove('switcher-open');
+        applicationSearch.value = '';
+        applicationSearch.dispatchEvent(new Event('input'));
+        if (returnFocus) returnFocus.focus();
+      };
+      document.querySelectorAll('[data-app-switcher-open]').forEach((trigger) => {
+        trigger.addEventListener('click', (event) => { event.preventDefault(); openSwitcher(trigger); });
+      });
+      document.querySelectorAll('[data-app-switcher-close]').forEach((trigger) => trigger.addEventListener('click', closeSwitcher));
+      applicationSearch.addEventListener('input', () => {
+        const query = applicationSearch.value.trim().toLowerCase();
+        let matches = 0;
+        document.querySelectorAll('[data-app-switcher-group]').forEach((group) => {
+          let groupMatches = 0;
+          group.querySelectorAll('[data-application-card]').forEach((card) => {
+            const visible = !query || card.dataset.search.includes(query);
+            card.hidden = !visible;
+            if (visible) { matches += 1; groupMatches += 1; }
+          });
+          group.hidden = groupMatches === 0;
+        });
+        applicationEmpty.hidden = matches !== 0;
+      });
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && !switcher.hidden) closeSwitcher();
+      });
+    })();
+  </script>
+</body>
+</html>

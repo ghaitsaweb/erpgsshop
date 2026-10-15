@@ -1,0 +1,14 @@
+{
+  "slug": "example-module",
+  "name": "Example Module",
+  "category": "Custom",
+  "summary": "Describe the business capability supplied by this module.",
+  "icon": "EX",
+  "version": "0.1.0",
+  "status": "beta",
+  "sequence": 100,
+  "dependencies": ["foundation"],
+  "django_app": "addons.example_module.apps.ExampleModuleConfig",
+  "urlconf": "addons.example_module.urls",
+  "route": "/example-module/"
+}

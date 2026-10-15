@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">ERP GSSHOP</title>
+  <desc id="desc">Geometric GS monogram</desc>
+  <defs>
+    <linearGradient id="g" x1="8" y1="5" x2="58" y2="61" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#60a5fa"/>
+      <stop offset="1" stop-color="#2563eb"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="18" fill="#101a35"/>
+  <path d="M35 14H23C15.8 14 11 19 11 26s4.8 12 12 12h8v-8h-9c-2.4 0-4-1.6-4-4s1.6-4 4-4h13V14Z" fill="url(#g)"/>
+  <path d="M29 50h12c7.2 0 12-5 12-12s-4.8-12-12-12h-8v8h9c2.4 0 4 1.6 4 4s-1.6 4-4 4H29v8Z" fill="#f4b942"/>
+</svg>

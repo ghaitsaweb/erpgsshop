@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% load static gsshop_ui %}
+{% block title %}{{ app.name }} · ERP GSSHOP{% endblock %}
+{% block page_title %}{{ app.name }}{% endblock %}
+{% block content %}
+  <section class="module-hero">
+    <div class="module-hero-main">
+      <span class="module-mark app-tone-{{ app|app_category_key }}"><svg aria-hidden="true"><use href="{% static 'img/app-icons.svg' %}#icon-{{ app|app_icon_key }}"></use></svg></span>
+      <div>
+        <p class="eyebrow">{{ app.category }} application</p>
+        <h2>{{ workspace.tagline }}</h2>
+        <p>{{ app.summary }}</p>
+        <div class="module-meta">
+          <span class="status status-{{ app.status }}">{{ app.get_status_display }}</span>
+          <span class="install-state {% if app.enabled %}is-installed{% endif %}">{% if app.enabled %}Installed{% else %}Not installed{% endif %}</span>
+          <span>Version {{ app.version }}</span>
+        </div>
+      </div>
+    </div>
+    <div class="module-hero-actions">
+      {% if app.enabled and custom_launch_url %}<a class="btn btn-primary" href="{{ custom_launch_url }}">Open module</a>{% endif %}
+      {% if request.user.is_superuser and not app.is_core and app.status != 'planned' %}
+        <form method="post" action="{% url 'app_installation' app.slug %}">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="{% if app.enabled %}uninstall{% else %}install{% endif %}">
+          <input type="hidden" name="next" value="{% url 'app_workspace' app.slug %}">
+          <button class="btn {% if app.enabled %}btn-secondary{% else %}btn-primary{% endif %}" type="submit">{% if app.enabled %}Uninstall application{% else %}Install application{% endif %}</button>
+        </form>
+      {% elif app.is_core %}<span class="app-core">Core application · always installed</span>{% endif %}
+    </div>
+  </section>
+
+  {% if not app.enabled %}
+    <section class="panel module-empty">
+      <span class="module-empty-icon">{{ app.icon }}</span>
+      <h3>{% if app.status == 'planned' %}This application is on the roadmap{% else %}Install {{ app.name }} to begin{% endif %}</h3>
+      <p>{% if app.status == 'planned' %}Its capability map is defined, but operational screens are not ready to install yet.{% else %}Installation enables its menus and screens. Existing data is preserved if you uninstall it later.{% endif %}</p>
+      {% if dependencies %}<p class="dependency-note">Dependencies: {% for dependency in dependencies %}{{ dependency.name }}{% if not forloop.last %}, {% endif %}{% endfor %}</p>{% endif %}
+    </section>
+  {% else %}
+    {% if workspace_menu_groups %}
+      <section class="module-navigation">
+        <div class="panel-head workspace-heading">
+          <div><p class="eyebrow">Module navigation</p><h2>{{ app.name }} areas</h2></div>
+          <span>{{ workspace_menu_groups|length }} groups</span>
+        </div>
+        <div class="module-navigation-grid">
+          {% for group in workspace_menu_groups %}
+            <article class="module-navigation-card">
+              <header><span>{{ group.icon }}</span><div><h3>{{ group.label }}</h3><small>{{ group.items|length }} menus</small></div></header>
+              <div class="module-navigation-links">
+                {% for item in group.items %}
+                  {% if item.entity %}
+                    <a href="{% url 'entity_list' item.entity %}">{{ item.label }}<i>›</i></a>
+                  {% elif item.feature %}
+                    <a href="{% url 'hr_feature' item.feature %}">{{ item.label }}<i>›</i></a>
+                  {% elif item.app_slug %}
+                    <a href="{% url 'app_workspace' item.app_slug %}">{{ item.label }}<i>›</i></a>
+                  {% elif item.url %}
+                    <a href="{{ item.url }}">{{ item.label }}<i>›</i></a>
+                  {% endif %}
+                {% endfor %}
+              </div>
+            </article>
+          {% endfor %}
+        </div>
+      </section>
+    {% endif %}
+    <div class="workspace-grid">
+      <section>
+        <div class="panel-head workspace-heading"><div><p class="eyebrow">Workspace</p><h2>Operations</h2></div><span>{{ entity_cards|length }} menus</span></div>
+        <div class="workspace-cards">
+          {% for item in entity_cards %}
+            <article class="workspace-card">
+              <div><span class="workspace-count">{{ item.count }}</span><p>records</p></div>
+              <h3>{{ item.title }}</h3>
+              <div class="workspace-actions">
+                <a href="{{ item.list_url }}">Open</a>
+                {% if item.can_add %}<a href="{{ item.create_url }}">New {{ item.singular }}</a>{% endif %}
+              </div>
+            </article>
+          {% empty %}
+            <div class="panel module-empty compact"><h3>Configuration application</h3><p>This application operates through shared platform services and administration.</p></div>
+          {% endfor %}
+        </div>
+      </section>
+      <aside class="workspace-side">
+        <section class="panel workflow-panel">
+          <p class="eyebrow">Typical flow</p>
+          <ol>{% for step in workspace.workflow %}<li><span>{{ forloop.counter }}</span>{{ step }}</li>{% endfor %}</ol>
+        </section>
+        {% if recent_items %}
+          <section class="panel recent-panel">
+            <div class="panel-head"><h2>Recent records</h2></div>
+            <ul>{% for item in recent_items %}<li>{{ item }}</li>{% endfor %}</ul>
+          </section>
+        {% endif %}
+      </aside>
+    </div>
+  {% endif %}
+
+  {% if related_apps %}
+    <section class="related-apps">
+      <div class="panel-head workspace-heading"><div><p class="eyebrow">Also in {{ app.category }}</p><h2>Related applications</h2></div></div>
+      <div class="related-app-list">
+        {% for related in related_apps %}<a href="{% url 'app_workspace' related.slug %}"><span>{{ related.icon }}</span><strong>{{ related.name }}</strong><small>{% if related.enabled %}Installed{% else %}Not installed{% endif %}</small></a>{% endfor %}
+      </div>
+    </section>
+  {% endif %}
+{% endblock %}

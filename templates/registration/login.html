@@ -1,0 +1,43 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · ERP GSSHOP</title>
+  <link rel="icon" href="{% static 'img/logo.svg' %}" type="image/svg+xml">
+  <link rel="stylesheet" href="{% static 'css/app.css' %}">
+</head>
+<body class="login-page">
+  <main class="login-layout">
+    <section class="login-story">
+      <div class="brand brand-light">
+        <img src="{% static 'img/logo.svg' %}" alt="ERP GSSHOP logo">
+        <span><strong>ERP</strong> GSSHOP</span>
+      </div>
+      <div>
+        <p class="eyebrow light">One workspace. Every operation.</p>
+        <h1>Run your business<br>with clarity.</h1>
+        <p class="login-copy">Sales, purchasing, inventory, finance, and people operations in a single modular platform.</p>
+      </div>
+      <p class="login-caption">Built for GSSHOP operations</p>
+    </section>
+    <section class="login-panel">
+      <form method="post" class="login-card">
+        {% csrf_token %}
+        <p class="eyebrow">Welcome back</p>
+        <h2>Sign in to ERP GSSHOP</h2>
+        <p class="muted">Use your operator account to continue.</p>
+        {% if form.errors %}<div class="message error">Username or password is incorrect.</div>{% endif %}
+        <label for="id_username">Username</label>
+        <input class="form-control" id="id_username" type="text" name="username" autofocus autocomplete="username" required>
+        <label for="id_password">Password</label>
+        <input class="form-control" id="id_password" type="password" name="password" autocomplete="current-password" required>
+        {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+        <button class="btn btn-primary btn-block" type="submit">Sign in</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>
+

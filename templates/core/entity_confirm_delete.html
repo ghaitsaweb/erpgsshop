@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Delete {{ config.singular }} · ERP GSSHOP{% endblock %}
+{% block page_title %}Delete {{ config.singular }}{% endblock %}
+{% block content %}
+  <div class="panel danger-panel">
+    <p class="eyebrow danger-text">Confirmation required</p>
+    <h2>Delete “{{ object }}”?</h2>
+    <p>This action may fail if other business records still depend on it.</p>
+    <form method="post" class="form-actions">
+      {% csrf_token %}
+      <a class="btn btn-secondary" href="{% url 'entity_list' entity %}">Cancel</a>
+      <button class="btn btn-danger" type="submit">Delete record</button>
+    </form>
+  </div>
+{% endblock %}
+

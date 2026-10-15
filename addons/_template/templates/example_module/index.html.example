@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% load gsshop_ui %}
+
+{% block title %}Example Module · ERP GSSHOP{% endblock %}
+{% block page_title %}Example Module{% endblock %}
+
+{% block content %}
+  <section class="panel form-panel">
+    <p class="eyebrow">GSSHOP add-on</p>
+    <h2>Module workspace</h2>
+    <p class="muted">Build the module interface here.</p>
+  </section>
+{% endblock %}

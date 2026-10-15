@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}{{ feature.title }} · ERP GSSHOP{% endblock %}
+{% block page_title %}{{ feature.title }}{% endblock %}
+{% block content %}
+  <section class="feature-foundation-hero">
+    <div>
+      <p class="eyebrow">Human Resources · {{ feature.group }}</p>
+      <h2>{{ feature.title }}</h2>
+      <p>{{ feature.description }}</p>
+    </div>
+    <span class="feature-readiness">Foundation</span>
+  </section>
+
+  <div class="feature-foundation-grid">
+    <section class="panel feature-foundation-panel">
+      <span class="feature-foundation-mark">{{ feature.title|slice:":1" }}</span>
+      <div>
+        <h3>Navigation is ready</h3>
+        <p>This clean-room screen reserves the workflow and URL for {{ feature.title }}. Its transactional model, permissions, approvals, and reports will be implemented as a separate GSSHOP capability.</p>
+      </div>
+    </section>
+    <aside class="panel feature-related-panel">
+      <p class="eyebrow">{{ feature.group }}</p>
+      <h3>Related menus</h3>
+      <nav>
+        {% for item in feature.group_items %}
+          {% if item.entity %}
+            <a href="{% url 'entity_list' item.entity %}">{{ item.label }}<span>›</span></a>
+          {% elif item.feature %}
+            <a class="{% if item.feature == feature.slug %}current{% endif %}" href="{% url 'hr_feature' item.feature %}">{{ item.label }}<span>›</span></a>
+          {% elif item.app_slug %}
+            <a href="{% url 'app_workspace' item.app_slug %}">{{ item.label }}<span>›</span></a>
+          {% endif %}
+        {% endfor %}
+      </nav>
+    </aside>
+  </div>
+{% endblock %}

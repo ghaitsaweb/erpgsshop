@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% load static gsshop_ui %}
+{% block title %}Apps · ERP GSSHOP{% endblock %}
+{% block page_title %}GSSHOP Apps{% endblock %}
+{% block content %}
+  <div class="dashboard-intro">
+    <div>
+      <p>Modular business capabilities with transparent implementation status.</p>
+      <form class="app-search-form" method="get" role="search">
+        <span>⌕</span>
+        <input type="search" name="q" value="{{ query }}" placeholder="Search apps, categories, or capabilities..." aria-label="Search applications">
+        <button type="submit">Search</button>
+        {% if query %}<a href="{% url 'app_manager' %}">Clear</a>{% endif %}
+      </form>
+      {% if query %}<small class="search-result-count">{{ result_count }} applications found for “{{ query }}”.</small>{% endif %}
+    </div>
+    <div class="app-summary-side">
+      <div class="app-summary">
+        <span><strong>{{ summary.enabled }}</strong> enabled</span>
+        <span><strong>{{ summary.stable }}</strong> stable</span>
+        <span><strong>{{ summary.beta }}</strong> beta</span>
+        <span><strong>{{ summary.planned }}</strong> planned</span>
+      </div>
+      {% if request.user.is_superuser %}
+        <form method="post" action="{% url 'app_catalog_refresh' %}">
+          {% csrf_token %}
+          <button class="btn btn-secondary app-refresh-button" type="submit">↻ Refresh Apps</button>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="info-strip">Install adds an application and its dependencies to your workspace. Uninstall removes access but preserves all business data. Planned applications are visible roadmap items and cannot be installed yet.</div>
+
+  {% for category, apps in app_groups %}
+    <section class="app-section">
+      <div class="panel-head app-section-head"><div><p class="eyebrow">Application suite</p><h2>{{ category }}</h2></div><span>{{ apps|length }} apps</span></div>
+      <div class="app-grid">
+        {% for app in apps %}
+          <article class="app-card {% if not app.enabled %}app-disabled{% endif %}">
+            <div class="app-card-top">
+              <span class="app-logo app-tone-{{ app|app_category_key }}"><svg aria-hidden="true"><use href="{% static 'img/app-icons.svg' %}#icon-{{ app|app_icon_key }}"></use></svg></span>
+              <div class="app-badges">
+                <span class="status status-{{ app.status }}">{{ app.get_status_display }}</span>
+                <span class="install-state {% if app.enabled %}is-installed{% endif %}">{% if app.enabled %}Installed{% else %}Not installed{% endif %}</span>
+              </div>
+            </div>
+            <h3>{{ app.name }}</h3>
+            <p>{{ app.summary }}</p>
+            <div class="app-card-foot">
+              <small>v{{ app.version }}</small>
+              <div class="app-actions">
+                <a class="app-open" href="{{ app.launch_url }}">{% if app.enabled %}Open{% else %}Details{% endif %}</a>
+                {% if request.user.is_superuser and not app.is_core and app.status != 'planned' %}
+                  <form method="post" action="{% url 'app_installation' app.slug %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="{% if app.enabled %}uninstall{% else %}install{% endif %}">
+                    <input type="hidden" name="next" value="{% url 'app_manager' %}">
+                    <button class="app-toggle {% if app.enabled %}app-uninstall{% endif %}" type="submit">{% if app.enabled %}Uninstall{% else %}Install{% endif %}</button>
+                  </form>
+                {% elif app.is_core %}<span class="app-core">Required</span>{% endif %}
+              </div>
+            </div>
+          </article>
+        {% endfor %}
+      </div>
+    </section>
+  {% empty %}
+    <section class="panel module-empty">
+      <span class="module-empty-icon">⌕</span>
+      <h3>No applications found</h3>
+      <p>Try a module name such as Human Resources, Payroll, Construction, School, or POS.</p>
+    </section>
+  {% endfor %}
+{% endblock %}

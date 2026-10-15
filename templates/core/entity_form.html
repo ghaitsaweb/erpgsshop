@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}{{ mode }} {{ config.singular }} · ERP GSSHOP{% endblock %}
+{% block page_title %}{{ mode }} {{ config.singular }}{% endblock %}
+{% block content %}
+  <div class="form-layout">
+    <form method="post" class="panel form-panel">
+      {% csrf_token %}
+      {% if form.non_field_errors %}<div class="message error">{{ form.non_field_errors }}</div>{% endif %}
+      <div class="form-grid">
+        {% for field in form %}
+          <div class="field {% if field.field.widget.input_type == 'checkbox' %}field-checkbox{% endif %}">
+            <label for="{{ field.id_for_label }}">{{ field.label }}{% if field.field.required %}<span class="required">*</span>{% endif %}</label>
+            {{ field }}
+            {% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}
+            {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          </div>
+        {% endfor %}
+      </div>
+      <div class="form-actions">
+        <a class="btn btn-secondary" href="{% url 'entity_list' entity %}">Cancel</a>
+        {% if workflow_locked %}<span class="document-state status-{{ current_status }}">Locked · {{ current_status|title }}</span>{% else %}<button class="btn btn-primary" type="submit">Save {{ config.singular }}</button>{% endif %}
+      </div>
+    </form>
+    <aside class="form-help">
+      <p class="eyebrow">ERP GSSHOP</p>
+      <h2>{{ config.singular }} record</h2>
+      <p>Fields marked with an asterisk are required. Changes are recorded immediately after saving.</p>
+      {% if workflow_actions %}
+        <section class="workflow-actions-panel">
+          <div><small>Current status</small><strong>{{ current_status|title }}</strong></div>
+          {% for action in workflow_actions %}
+            <form method="post" action="{% url 'document_action' entity object.pk action.key %}">
+              {% csrf_token %}
+              <button class="btn {% if action.primary %}btn-primary{% else %}btn-secondary{% endif %} btn-block" type="submit">{{ action.label }}</button>
+            </form>
+          {% endfor %}
+        </section>
+      {% endif %}
+      {% if entity == 'stock-moves' %}<div class="info-strip">Stock ledger entries are immutable. Corrections use an opposite movement to preserve the audit trail.</div>{% endif %}
+    </aside>
+  </div>
+{% endblock %}

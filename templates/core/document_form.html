@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+{% block title %}{{ mode }} {{ config.singular }} · ERP GSSHOP{% endblock %}
+{% block page_title %}{{ config.singular }}{% endblock %}
+{% block content %}
+  <div class="document-shell">
+    <header class="document-commandbar">
+      <div class="document-actions">
+        <a class="btn btn-secondary" href="{% url 'entity_list' entity %}">Back</a>
+        {% if object %}<a class="btn btn-secondary" href="{% url 'document_pdf' entity object.pk %}" target="_blank" rel="noopener">Print PDF</a>{% endif %}
+        {% for action in available_actions %}
+          <form method="post" action="{% url 'document_action' entity object.pk action.key %}">
+            {% csrf_token %}
+            <button class="btn {% if action.primary %}btn-primary{% else %}btn-secondary{% endif %}" type="submit">{{ action.label }}</button>
+          </form>
+        {% endfor %}
+      </div>
+      {% if status_choices %}
+        <div class="document-statusbar" aria-label="Document status">
+          {% for value, label in status_choices %}
+            <span class="{% if current_status == value %}current{% endif %}">{{ label }}</span>
+          {% endfor %}
+        </div>
+      {% endif %}
+    </header>
+
+    <form method="post" class="document-form">
+      {% csrf_token %}
+      {{ formset.management_form }}
+      {% if form.non_field_errors %}<div class="message error">{{ form.non_field_errors }}</div>{% endif %}
+      {% if formset.non_form_errors %}<div class="message error">{{ formset.non_form_errors }}</div>{% endif %}
+
+      <section class="document-paper">
+        <div class="document-title-row">
+          <div>
+            <p class="eyebrow">ERP GSSHOP document</p>
+            <h2>{% if object %}{{ object }}{% else %}New {{ config.singular }}{% endif %}</h2>
+          </div>
+          {% if current_status %}<span class="document-state status-{{ current_status }}">{{ object.get_status_display }}</span>{% endif %}
+        </div>
+
+        <div class="document-header-grid">
+          {% for field in form %}
+            <div class="field {% if field.field.widget.input_type == 'checkbox' %}field-checkbox{% endif %}">
+              <label for="{{ field.id_for_label }}">{{ field.label }}{% if field.field.required %}<span class="required">*</span>{% endif %}</label>
+              {{ field }}
+              {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+            </div>
+          {% endfor %}
+        </div>
+
+        <section class="document-lines">
+          <div class="document-tabbar"><span class="active">{{ document.line_title }}</span><span>Other Information</span></div>
+          <div class="line-table-wrap">
+            <table class="line-table">
+              <thead>
+                <tr>
+                  {% for field in formset.empty_form.visible_fields %}<th>{{ field.label }}</th>{% endfor %}
+                  {% if editable %}<th class="line-action-column">Action</th>{% endif %}
+                </tr>
+              </thead>
+              <tbody id="document-line-body">
+                {% for line_form in formset.forms %}
+                  <tr class="document-line-row">
+                    {% for hidden in line_form.hidden_fields %}{{ hidden }}{% endfor %}
+                    {% for field in line_form.visible_fields %}
+                      <td class="{% if field.name == 'DELETE' %}delete-field{% endif %}">
+                        {{ field }}
+                        {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+                      </td>
+                    {% endfor %}
+                    {% if editable %}<td class="line-action-column"><button class="line-remove" type="button" aria-label="Hapus line">Hapus</button></td>{% endif %}
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% if editable %}<button class="add-line-button" id="add-document-line" type="button">+ Add a line</button>{% endif %}
+        </section>
+
+        {% if totals %}
+          <div class="document-totals">
+            {% for total in totals %}<div><span>{{ total.label }}</span><strong>{{ total.value }}</strong></div>{% endfor %}
+          </div>
+        {% endif %}
+
+        <footer class="document-footer">
+          <p>{% if editable %}Save the header and all detail lines together.{% else %}This document is locked. Use an available workflow action to continue.{% endif %}</p>
+          {% if editable %}<button class="btn btn-primary" type="submit">Save {{ config.singular }}</button>{% endif %}
+        </footer>
+      </section>
+    </form>
+  </div>
+
+  {% if editable %}
+    <template id="empty-document-line">
+      <tr class="document-line-row">
+        {% for hidden in formset.empty_form.hidden_fields %}{{ hidden }}{% endfor %}
+        {% for field in formset.empty_form.visible_fields %}<td class="{% if field.name == 'DELETE' %}delete-field{% endif %}">{{ field }}</td>{% endfor %}
+        <td class="line-action-column"><button class="line-remove" type="button" aria-label="Hapus line">Hapus</button></td>
+      </tr>
+    </template>
+  {% endif %}
+  <script>
+    (() => {
+      const body = document.getElementById('document-line-body');
+      const addButton = document.getElementById('add-document-line');
+      const totalForms = document.getElementById('id_document_lines-TOTAL_FORMS');
+      const template = document.getElementById('empty-document-line');
+
+      const enhanceMasterSearch = (container) => {
+        container.querySelectorAll('input[data-master-search-url]').forEach((hiddenInput) => {
+          if (hiddenInput.dataset.searchReady === 'true') return;
+          hiddenInput.dataset.searchReady = 'true';
+
+          const searchInput = document.createElement('input');
+          const choices = document.createElement('datalist');
+          const listId = `${hiddenInput.id}-master-choices`;
+          let timer = null;
+          let requestController = null;
+
+          searchInput.type = 'search';
+          searchInput.className = 'form-control master-record-search';
+          searchInput.placeholder = hiddenInput.dataset.masterSearchPlaceholder;
+          searchInput.autocomplete = 'off';
+          searchInput.setAttribute('list', listId);
+          searchInput.value = hiddenInput.dataset.initialLabel || '';
+          searchInput.readOnly = hiddenInput.disabled;
+          choices.id = listId;
+
+          hiddenInput.insertAdjacentElement('afterend', searchInput);
+          searchInput.insertAdjacentElement('afterend', choices);
+
+          const selectExactChoice = () => {
+            const match = Array.from(choices.options).find((option) => option.value === searchInput.value);
+            hiddenInput.value = match ? match.dataset.recordId : '';
+          };
+
+          const loadProducts = async (query = '', productId = '') => {
+            if (searchInput.readOnly) return;
+            if (requestController) requestController.abort();
+            requestController = new AbortController();
+            const params = new URLSearchParams(productId ? {id: productId} : {q: query});
+            try {
+              const response = await fetch(`${hiddenInput.dataset.masterSearchUrl}?${params}`, {
+                headers: {'Accept': 'application/json'},
+                signal: requestController.signal,
+              });
+              if (!response.ok) return;
+              const payload = await response.json();
+              choices.replaceChildren(...payload.results.map((record) => {
+                const option = document.createElement('option');
+                option.value = record.text;
+                option.dataset.recordId = record.id;
+                return option;
+              }));
+              if (productId && payload.results.length) {
+                searchInput.value = payload.results[0].text;
+                hiddenInput.value = payload.results[0].id;
+              } else {
+                selectExactChoice();
+              }
+            } catch (error) {
+              if (error.name !== 'AbortError') console.error('Master search failed', error);
+            }
+          };
+
+          searchInput.addEventListener('focus', () => loadProducts(searchInput.value));
+          searchInput.addEventListener('input', () => {
+            selectExactChoice();
+            window.clearTimeout(timer);
+            timer = window.setTimeout(() => loadProducts(searchInput.value), 180);
+          });
+          searchInput.addEventListener('change', selectExactChoice);
+
+          if (hiddenInput.value && !searchInput.value) loadProducts('', hiddenInput.value);
+        });
+      };
+
+      const bindRemove = (button) => button.addEventListener('click', () => {
+        const row = button.closest('tr');
+        const deleteInput = row.querySelector('input[name$="-DELETE"]');
+        const idInput = row.querySelector('input[name$="-id"]');
+        if (idInput && idInput.value && deleteInput) {
+          deleteInput.checked = true;
+          row.hidden = true;
+        } else {
+          row.remove();
+        }
+      });
+
+      enhanceMasterSearch(document);
+      body.querySelectorAll('.line-remove').forEach(bindRemove);
+      if (addButton && totalForms && template) {
+        addButton.addEventListener('click', () => {
+          const index = Number(totalForms.value);
+          const html = template.innerHTML.replaceAll('__prefix__', index);
+          body.insertAdjacentHTML('beforeend', html);
+          totalForms.value = index + 1;
+          const row = body.lastElementChild;
+          bindRemove(row.querySelector('.line-remove'));
+          enhanceMasterSearch(row);
+        });
+      }
+    })();
+  </script>
+{% endblock %}

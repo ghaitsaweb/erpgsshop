@@ -1,0 +1,221 @@
+{% extends "base.html" %}
+{% block title %}{{ mode }} Training Conduct · ERP GSSHOP{% endblock %}
+{% block page_title %}Training Conduct{% endblock %}
+{% block content %}
+  <div class="tc-form-shell">
+    <header class="document-commandbar tc-commandbar">
+      <div class="document-actions">
+        <a class="btn btn-secondary" href="{% url 'entity_list' entity %}">Back</a>
+        {% if object %}
+          {% for action in workflow_actions %}
+            <form method="post" action="{% url 'document_action' entity object.pk action.key %}">
+              {% csrf_token %}
+              <button class="btn {% if action.primary %}btn-primary{% else %}btn-secondary{% endif %}" type="submit">{{ action.label }}</button>
+            </form>
+          {% endfor %}
+        {% endif %}
+      </div>
+      {% if object %}
+        <div class="document-statusbar" aria-label="Training status">
+          {% for value, label in status_choices %}<span class="{% if current_status == value %}current{% endif %}">{{ label }}</span>{% endfor %}
+        </div>
+      {% endif %}
+    </header>
+
+    <form method="post" class="tc-form" novalidate>
+      {% csrf_token %}
+      {{ schedule_formset.management_form }}
+      {{ participant_formset.management_form }}
+      {% if form.non_field_errors %}<div class="message error">{{ form.non_field_errors }}</div>{% endif %}
+      {% if schedule_formset.non_form_errors %}<div class="message error">{{ schedule_formset.non_form_errors }}</div>{% endif %}
+      {% if participant_formset.non_form_errors %}<div class="message error">{{ participant_formset.non_form_errors }}</div>{% endif %}
+
+      <section class="tc-basic-panel">
+        <div class="tc-section-title"><span>▤</span><h2>Basic Information</h2>{% if object %}<small>{{ object.reference }}</small>{% endif %}</div>
+        {% if not setup_editable %}<div class="tc-lock-note">Basic information and schedule are locked after Draft. Participants remain manageable until cancellation.</div>{% endif %}
+        <div class="tc-basic-grid">
+          <div class="field">
+            <label for="{{ form.name.id_for_label }}">Conduct Name <span class="required">*</span></label>{{ form.name }}
+            {% for error in form.name.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          </div>
+          <fieldset class="field tc-type-field">
+            <legend>Training Type <span class="required">*</span></legend>{{ form.training_type }}
+            {% for error in form.training_type.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          </fieldset>
+          <div class="field">
+            <label for="{{ form.training_source.id_for_label }}">Training Source <span class="required">*</span></label>{{ form.training_source }}
+            {% for error in form.training_source.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          </div>
+          <div class="field tc-source-choice" data-source="course">
+            <label for="{{ form.course.id_for_label }}">Training Course <span class="required">*</span></label>{{ form.course }}
+            {% for error in form.course.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          </div>
+          <div class="field tc-source-choice" data-source="program">
+            <label for="{{ form.program.id_for_label }}">Training Program <span class="required">*</span></label>{{ form.program }}
+            {% for error in form.program.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          </div>
+          <div class="field">
+            <label for="{{ form.company.id_for_label }}">Company <span class="required">*</span></label>{{ form.company }}
+            {% for error in form.company.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          </div>
+          <div class="field">
+            <label for="{{ form.pic.id_for_label }}">PIC <span class="required">*</span></label>{{ form.pic }}
+            {% for error in form.pic.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          </div>
+          <div class="field">
+            <label for="{{ form.location.id_for_label }}">Location</label>{{ form.location }}
+            {% for error in form.location.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          </div>
+          <div class="field field-checkbox tc-active-field"><label>{{ form.active }} Active</label></div>
+        </div>
+
+        <section class="tc-public-rules" data-public-rules>
+          <h3>Public Training Participant Rules</h3>
+          <div class="tc-rules-grid">
+            <div class="field field-checkbox"><label>{{ form.use_minimum_participant }} Use Minimum Participant</label></div>
+            <div class="field"><label for="{{ form.minimum_participants.id_for_label }}">Minimum Participants</label>{{ form.minimum_participants }}{% for error in form.minimum_participants.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>
+            <div class="field field-checkbox"><label>{{ form.use_maximum_participant }} Use Maximum Participant</label></div>
+            <div class="field"><label for="{{ form.maximum_participants.id_for_label }}">Maximum Participants</label>{{ form.maximum_participants }}{% for error in form.maximum_participants.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>
+          </div>
+        </section>
+
+        {% with primary=schedule_formset.forms.0 %}
+          <section class="tc-planning-summary">
+            <div class="tc-section-title compact"><span>▣</span><div><h3>Planning Date</h3><small>Primary schedule</small></div></div>
+            <div class="tc-plan-grid">
+              <label><span>Start Date <i class="required">*</i></span>{{ primary.start_date }}{% for error in primary.start_date.errors %}<span class="field-error">{{ error }}</span>{% endfor %}</label>
+              <label><span>End Date <i class="required">*</i></span>{{ primary.end_date }}{% for error in primary.end_date.errors %}<span class="field-error">{{ error }}</span>{% endfor %}</label>
+              <label><span>Start Hour <i class="required">*</i></span>{{ primary.start_time }}{% for error in primary.start_time.errors %}<span class="field-error">{{ error }}</span>{% endfor %}</label>
+              <label><span>End Hour <i class="required">*</i></span>{{ primary.end_time }}{% for error in primary.end_time.errors %}<span class="field-error">{{ error }}</span>{% endfor %}</label>
+            </div>
+          </section>
+        {% endwith %}
+      </section>
+
+      <section class="tc-detail-panel">
+        <header class="tc-tabs">
+          <button class="active" type="button" data-tc-tab="schedule">Schedule</button>
+          <button type="button" data-tc-tab="participants">Participants</button>
+          <label class="tc-line-search"><input type="search" placeholder="Search..." data-tc-line-search><span>⌕</span></label>
+        </header>
+
+        <div class="tc-tab-pane active" data-tc-pane="schedule">
+          <div class="tc-pane-title"><span>▣</span><h3>Training Schedule</h3></div>
+          <div class="line-table-wrap">
+            <table class="line-table tc-line-table">
+              <thead><tr><th>#</th><th>Course</th><th>Trainer</th><th>Start Date</th><th>End Date</th><th>Start Hour</th><th>End Hour</th><th>Notes</th>{% if setup_editable %}<th></th>{% endif %}</tr></thead>
+              <tbody id="tc-schedule-body">
+                {% for line in schedule_formset.forms %}
+                  <tr data-tc-row>
+                    {% for hidden in line.hidden_fields %}{{ hidden }}{% endfor %}
+                    <td>{{ line.sequence }}{% for error in line.sequence.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</td>
+                    <td>{{ line.course }}{% for error in line.course.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</td>
+                    <td>{{ line.trainer }}{% for error in line.trainer.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</td>
+                    {% if forloop.first %}
+                      <td colspan="4"><span class="tc-primary-plan">Uses the Planning Date above</span></td>
+                    {% else %}
+                      <td>{{ line.start_date }}{% for error in line.start_date.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</td>
+                      <td>{{ line.end_date }}{% for error in line.end_date.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</td>
+                      <td>{{ line.start_time }}{% for error in line.start_time.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</td>
+                      <td>{{ line.end_time }}{% for error in line.end_time.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</td>
+                    {% endif %}
+                    <td>{{ line.notes }}{% for error in line.notes.errors %}<p class="field-error">{{ error }}</p>{% endfor %}{{ line.DELETE }}</td>
+                    {% if setup_editable %}<td>{% if not forloop.first %}<button class="line-remove" type="button" data-remove-line>×</button>{% endif %}</td>{% endif %}
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% if setup_editable %}<button class="add-line-button" type="button" data-add-line="schedule">+ Add Schedule</button>{% endif %}
+        </div>
+
+        <div class="tc-tab-pane" data-tc-pane="participants" hidden>
+          <div class="tc-pane-title"><span>♣</span><h3>Training Participants</h3></div>
+          <div class="line-table-wrap">
+            <table class="line-table tc-line-table participant-table">
+              <thead><tr><th>Employee</th><th>Status</th><th>Notes</th>{% if participants_editable %}<th></th>{% endif %}</tr></thead>
+              <tbody id="tc-participant-body">
+                {% for line in participant_formset.forms %}
+                  <tr data-tc-row>
+                    {% for hidden in line.hidden_fields %}{{ hidden }}{% endfor %}
+                    <td>{{ line.employee }}{% for error in line.employee.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</td>
+                    <td>{{ line.status }}{% for error in line.status.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</td>
+                    <td>{{ line.notes }}{% for error in line.notes.errors %}<p class="field-error">{{ error }}</p>{% endfor %}{{ line.DELETE }}</td>
+                    {% if participants_editable %}<td><button class="line-remove" type="button" data-remove-line>×</button></td>{% endif %}
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% if participants_editable %}<button class="add-line-button" type="button" data-add-line="participant">+ Add Participant</button>{% endif %}
+        </div>
+      </section>
+
+      {% if setup_editable or participants_editable %}
+        <footer class="tc-form-footer">
+          <span>{% if setup_editable %}Save Basic Information, Schedule, and Participants together.{% else %}Only participant changes can be saved at this status.{% endif %}</span>
+          <button class="btn btn-primary" type="submit">Save Training Conduct</button>
+        </footer>
+      {% endif %}
+    </form>
+  </div>
+
+  {% if setup_editable %}
+    <template id="tc-empty-schedule"><tr data-tc-row>{% for hidden in schedule_formset.empty_form.hidden_fields %}{{ hidden }}{% endfor %}<td>{{ schedule_formset.empty_form.sequence }}</td><td>{{ schedule_formset.empty_form.course }}</td><td>{{ schedule_formset.empty_form.trainer }}</td><td>{{ schedule_formset.empty_form.start_date }}</td><td>{{ schedule_formset.empty_form.end_date }}</td><td>{{ schedule_formset.empty_form.start_time }}</td><td>{{ schedule_formset.empty_form.end_time }}</td><td>{{ schedule_formset.empty_form.notes }}{{ schedule_formset.empty_form.DELETE }}</td><td><button class="line-remove" type="button" data-remove-line>×</button></td></tr></template>
+  {% endif %}
+  {% if participants_editable %}
+    <template id="tc-empty-participant"><tr data-tc-row>{% for hidden in participant_formset.empty_form.hidden_fields %}{{ hidden }}{% endfor %}<td>{{ participant_formset.empty_form.employee }}</td><td>{{ participant_formset.empty_form.status }}</td><td>{{ participant_formset.empty_form.notes }}{{ participant_formset.empty_form.DELETE }}</td><td><button class="line-remove" type="button" data-remove-line>×</button></td></tr></template>
+  {% endif %}
+
+  <script>
+    (() => {
+      const source = document.getElementById('id_training_source');
+      const typeRadios = document.querySelectorAll('input[name="training_type"]');
+      const sourceRows = document.querySelectorAll('[data-source]');
+      const publicRules = document.querySelector('[data-public-rules]');
+      const toggleConditionalFields = () => {
+        if (source) sourceRows.forEach(row => row.hidden = row.dataset.source !== source.value);
+        const selectedType = document.querySelector('input[name="training_type"]:checked');
+        if (publicRules) publicRules.hidden = !selectedType || selectedType.value !== 'public';
+      };
+      source?.addEventListener('change', toggleConditionalFields);
+      typeRadios.forEach(input => input.addEventListener('change', toggleConditionalFields));
+      toggleConditionalFields();
+
+      document.querySelectorAll('[data-tc-tab]').forEach(button => button.addEventListener('click', () => {
+        document.querySelectorAll('[data-tc-tab]').forEach(item => item.classList.toggle('active', item === button));
+        document.querySelectorAll('[data-tc-pane]').forEach(pane => {
+          const active = pane.dataset.tcPane === button.dataset.tcTab;
+          pane.classList.toggle('active', active);
+          pane.hidden = !active;
+        });
+      }));
+
+      const bindRemove = button => button.addEventListener('click', () => {
+        const row = button.closest('tr');
+        const id = row.querySelector('input[name$="-id"]');
+        const deleted = row.querySelector('input[name$="-DELETE"]');
+        if (id?.value && deleted) { deleted.checked = true; row.hidden = true; } else { row.remove(); }
+      });
+      document.querySelectorAll('[data-remove-line]').forEach(bindRemove);
+
+      const addLine = (kind, prefix) => {
+        const total = document.getElementById(`id_${prefix}-TOTAL_FORMS`);
+        const template = document.getElementById(`tc-empty-${kind}`);
+        const body = document.getElementById(`tc-${kind}-body`);
+        if (!total || !template || !body) return;
+        const index = Number(total.value);
+        body.insertAdjacentHTML('beforeend', template.innerHTML.replaceAll('__prefix__', index));
+        total.value = index + 1;
+        bindRemove(body.lastElementChild.querySelector('[data-remove-line]'));
+      };
+      document.querySelector('[data-add-line="schedule"]')?.addEventListener('click', () => addLine('schedule', 'schedule_lines'));
+      document.querySelector('[data-add-line="participant"]')?.addEventListener('click', () => addLine('participant', 'participant_lines'));
+
+      document.querySelector('[data-tc-line-search]')?.addEventListener('input', event => {
+        const value = event.target.value.toLowerCase();
+        document.querySelectorAll('.tc-tab-pane.active [data-tc-row]').forEach(row => row.hidden = !row.textContent.toLowerCase().includes(value));
+      });
+    })();
+  </script>
+{% endblock %}

@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Training Conduct · ERP GSSHOP{% endblock %}
+{% block page_title %}Training Conduct{% endblock %}
+{% block content %}
+  <section class="tc-list-shell">
+    <form class="tc-search" method="get">
+      <span aria-hidden="true">⌕</span>
+      <input type="search" name="q" value="{{ query }}" placeholder="Conduct Name" aria-label="Search Training Conduct">
+      <input type="hidden" name="type" value="{{ type_filter }}">
+      <input type="hidden" name="sort" value="{{ sort }}">
+      <input type="hidden" name="layout" value="{{ layout }}">
+      <button class="btn btn-secondary" type="submit">Search</button>
+    </form>
+
+    <header class="tc-list-heading">
+      <div class="tc-title-actions">
+        <h2>Training Conduct</h2>
+        <a class="tc-icon-button" href="?q={{ query|urlencode }}&type={{ type_filter }}&sort={{ sort }}&layout={{ layout }}&export=csv" title="Export CSV" aria-label="Export CSV">↓</a>
+      </div>
+      <div class="tc-view-actions">
+        <a class="tc-view-toggle {% if layout == 'list' %}active{% endif %}" href="?q={{ query|urlencode }}&type={{ type_filter }}&sort={{ sort }}&layout=list" aria-label="List view">▤</a>
+        <a class="tc-view-toggle {% if layout == 'kanban' %}active{% endif %}" href="?q={{ query|urlencode }}&type={{ type_filter }}&sort={{ sort }}&layout=kanban" aria-label="Kanban view">▦</a>
+        {% if can_add %}<a class="btn btn-primary tc-create" href="{% url 'entity_create' entity %}">＋ Create</a>{% endif %}
+      </div>
+    </header>
+
+    <div class="tc-controls">
+      <nav class="tc-filter-pills" aria-label="Training type filter">
+        <a class="{% if type_filter == 'all' %}active{% endif %}" href="?q={{ query|urlencode }}&type=all&sort={{ sort }}&layout={{ layout }}">All</a>
+        <a class="{% if type_filter == 'internal' %}active{% endif %}" href="?q={{ query|urlencode }}&type=internal&sort={{ sort }}&layout={{ layout }}">Internal Training</a>
+        <a class="{% if type_filter == 'public' %}active{% endif %}" href="?q={{ query|urlencode }}&type=public&sort={{ sort }}&layout={{ layout }}">Public Training</a>
+      </nav>
+      <form method="get" class="tc-sort-form">
+        <input type="hidden" name="q" value="{{ query }}">
+        <input type="hidden" name="type" value="{{ type_filter }}">
+        <input type="hidden" name="layout" value="{{ layout }}">
+        <label>⇅ Sort by:
+          <select name="sort" onchange="this.form.submit()">
+            <option value="name" {% if sort == 'name' %}selected{% endif %}>Conduct Name</option>
+            <option value="start" {% if sort == 'start' %}selected{% endif %}>Start Date</option>
+            <option value="newest" {% if sort == 'newest' %}selected{% endif %}>Newest</option>
+          </select>
+        </label>
+      </form>
+    </div>
+
+    {% if access_scope_missing %}
+      <div class="tc-scope-warning"><span>!</span><div><strong>No company scope is linked to this login.</strong><small>Link this user to an Employee/company record, or sign in with the System Admin account, to see company Training Conduct records.</small></div></div>
+    {% endif %}
+
+    {% if layout == "list" %}
+      <div class="panel table-panel tc-table-panel">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Reference</th><th>Conduct Name</th><th>Type</th><th>Planning Date</th><th>Employees</th><th>Source</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+              {% for item in records %}
+                <tr>
+                  <td><strong>{{ item.reference }}</strong></td>
+                  <td>{{ item.name }}</td>
+                  <td>{{ item.get_training_type_display }}</td>
+                  <td>{{ item.date_start|date:"d M Y"|default:"—" }} – {{ item.date_end|date:"d M Y"|default:"—" }}</td>
+                  <td>{{ item.visible_participants }}</td>
+                  <td>{% if item.course %}Course / {{ item.course.name }}{% else %}Program / {{ item.program.name }}{% endif %}</td>
+                  <td><span class="tc-status status-{{ item.status }}">{{ item.get_status_display }}</span></td>
+                  <td><a class="tc-open-link" href="{% url 'entity_edit' entity item.pk %}">Open Form</a></td>
+                </tr>
+              {% empty %}<tr><td colspan="8" class="empty">No Training Conduct found.</td></tr>{% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    {% else %}
+      <div class="tc-board">
+        <section class="tc-board-column internal">
+          <header><span class="tc-column-mark"></span><strong>Internal Training</strong><small>{{ internal_count }}</small></header>
+          <div class="tc-card-stack">
+            {% for item in internal_records %}{% include "hr/_training_conduct_card.html" %}{% empty %}<div class="tc-empty-column"><span>✦</span><strong>No internal training yet</strong><small>Create an internal conduct to start planning.</small></div>{% endfor %}
+          </div>
+        </section>
+        <section class="tc-board-column public">
+          <header><span class="tc-column-mark"></span><strong>Public Training</strong><small>{{ public_count }}</small></header>
+          <div class="tc-card-stack">
+            {% for item in public_records %}{% include "hr/_training_conduct_card.html" %}{% empty %}<div class="tc-empty-column"><span>◎</span><strong>No public training yet</strong><small>Public programs will be organized here.</small></div>{% endfor %}
+          </div>
+        </section>
+      </div>
+    {% endif %}
+
+    {% if page.paginator.num_pages > 1 %}
+      <nav class="pagination">
+        {% if page.has_previous %}<a href="?q={{ query|urlencode }}&type={{ type_filter }}&sort={{ sort }}&layout={{ layout }}&page={{ page.previous_page_number }}">← Previous</a>{% endif %}
+        <span>Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
+        {% if page.has_next %}<a href="?q={{ query|urlencode }}&type={{ type_filter }}&sort={{ sort }}&layout={{ layout }}&page={{ page.next_page_number }}">Next →</a>{% endif %}
+      </nav>
+    {% endif %}
+  </section>
+{% endblock %}

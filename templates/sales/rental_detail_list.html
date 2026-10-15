@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block title %}Detail Sewa · ERP GSSHOP{% endblock %}
+{% block page_title %}Detail Sewa{% endblock %}
+{% block content %}
+  <div class="rental-shell">
+    <header class="rental-hero">
+      <div>
+        <span class="rental-kicker">Sales · Rental Operations</span>
+        <h2>Detail Sewa</h2>
+        <p>Pantau barang di customer, tanggal kembali, dan nilai sewa dalam satu layar.</p>
+      </div>
+      <div class="rental-hero-actions">
+        <a class="btn btn-secondary" href="?q={{ query|urlencode }}&status={{ status_filter }}&urgency={{ urgency_filter }}&view={{ view_mode }}&start_month={{ group_start_filter }}&return_month={{ group_return_filter }}&sort={{ sort }}&export=csv">↓ Export</a>
+        <a class="btn btn-primary" href="{% url 'entity_create' 'sales' %}">＋ New Rental Order</a>
+      </div>
+    </header>
+
+    <section class="rental-metrics">
+      <article><span>Rental Lines</span><strong>{{ summary.line_count }}</strong><small>matching current filters</small></article>
+      <article><span>Total Quantity</span><strong>{{ summary.total_quantity|floatformat:0 }}</strong><small>units in selected view</small></article>
+      <article class="accent"><span>Rental Value</span><strong>Rp {{ summary.value|floatformat:0 }}</strong><small>subtotal before tax</small></article>
+      <article><span>As of</span><strong>{{ today|date:"d M Y" }}</strong><small>overdue monitoring date</small></article>
+    </section>
+
+    <section class="rental-toolbar">
+      <form method="get" class="rental-search">
+        <span>⌕</span>
+        <input type="search" name="q" value="{{ query }}" placeholder="Search SO, customer, product, or description...">
+        <input type="hidden" name="status" value="{{ status_filter }}">
+        <input type="hidden" name="urgency" value="{{ urgency_filter }}">
+        <input type="hidden" name="view" value="{{ view_mode }}">
+        <input type="hidden" name="sort" value="{{ sort }}">
+        <button class="btn btn-secondary" type="submit">Search</button>
+      </form>
+      {% if view_mode == "list" %}
+        <form method="get" class="rental-sort">
+          <input type="hidden" name="q" value="{{ query }}">
+          <input type="hidden" name="status" value="{{ status_filter }}">
+          <input type="hidden" name="urgency" value="{{ urgency_filter }}">
+          <input type="hidden" name="view" value="list">
+          <input type="hidden" name="start_month" value="{{ group_start_filter }}">
+          <input type="hidden" name="return_month" value="{{ group_return_filter }}">
+          <select name="sort" onchange="this.form.submit()">
+            <option value="return_date" {% if sort == 'return_date' %}selected{% endif %}>Return Date</option>
+            <option value="newest" {% if sort == 'newest' %}selected{% endif %}>Newest Order</option>
+            <option value="customer" {% if sort == 'customer' %}selected{% endif %}>Customer</option>
+          </select>
+        </form>
+      {% else %}
+        <span class="rental-group-note">Grouped by Tanggal Sewa › Tanggal Kembali</span>
+      {% endif %}
+    </section>
+
+    <div class="rental-filter-row">
+      <nav aria-label="Rental status">
+        <a class="{% if status_filter == 'all' %}active{% endif %}" href="?q={{ query|urlencode }}&status=all&urgency={{ urgency_filter }}&view={{ view_mode }}&sort={{ sort }}">All Status</a>
+        <a class="{% if status_filter == 'at_customer' %}active{% endif %}" href="?q={{ query|urlencode }}&status=at_customer&urgency={{ urgency_filter }}&view={{ view_mode }}&sort={{ sort }}">Di Customer</a>
+        <a class="{% if status_filter == 'returned' %}active{% endif %}" href="?q={{ query|urlencode }}&status=returned&urgency={{ urgency_filter }}&view={{ view_mode }}&sort={{ sort }}">Sudah Kembali</a>
+      </nav>
+      <nav aria-label="Rental urgency">
+        <a class="{% if urgency_filter == 'all' %}active{% endif %}" href="?q={{ query|urlencode }}&status={{ status_filter }}&urgency=all&view={{ view_mode }}&sort={{ sort }}">All Dates</a>
+        <a class="danger {% if urgency_filter == 'overdue' %}active{% endif %}" href="?q={{ query|urlencode }}&status={{ status_filter }}&urgency=overdue&view={{ view_mode }}&sort={{ sort }}">Overdue</a>
+        <a class="warning {% if urgency_filter == 'due_soon' %}active{% endif %}" href="?q={{ query|urlencode }}&status={{ status_filter }}&urgency=due_soon&view={{ view_mode }}&sort={{ sort }}">Due ≤ 2 Days</a>
+      </nav>
+    </div>
+
+    <div class="rental-view-tabs" aria-label="Rental view">
+      <a class="{% if view_mode == 'grouped' %}active{% endif %}" href="?q={{ query|urlencode }}&status={{ status_filter }}&urgency={{ urgency_filter }}&view=grouped">▤ Grouped</a>
+      <a class="{% if view_mode == 'list' %}active{% endif %}" href="?q={{ query|urlencode }}&status={{ status_filter }}&urgency={{ urgency_filter }}&view=list">☷ All Lines</a>
+    </div>
+
+    <section class="rental-table-card">
+      <div class="table-wrap">
+        <table class="rental-table">
+          <thead><tr><th>Sales Order</th><th>Customer</th><th>Rental Item</th><th>Qty</th><th>Tanggal Sewa</th><th>Tanggal Kembali</th><th>Status Barang</th><th class="align-right">Subtotal</th><th></th></tr></thead>
+          {% if view_mode == "grouped" %}
+            <tbody class="rental-group-body">
+              {% for group in groups %}
+                <tr class="rental-group-row {% if group.expanded %}expanded{% endif %}">
+                  <td colspan="3"><a href="?q={{ query|urlencode }}&status={{ status_filter }}&urgency={{ urgency_filter }}&view=grouped&group_start={{ group.key }}"><span>{% if group.expanded %}▾{% else %}▸{% endif %}</span>{{ group.label }} ({{ group.line_count }})</a></td>
+                  <td>{{ group.total_quantity|floatformat:"-3" }}</td>
+                  <td colspan="3"></td>
+                  <td class="align-right rental-money">Rp {{ group.total_value|floatformat:0 }}</td>
+                  <td></td>
+                </tr>
+                {% if group.expanded %}
+                  {% for child in group.children %}
+                    <tr class="rental-subgroup-row">
+                      <td colspan="3"><a href="?q={{ query|urlencode }}&status={{ status_filter }}&urgency={{ urgency_filter }}&view=list&start_month={{ group.key }}&return_month={{ child.key }}"><span>▸</span>{{ child.label }} ({{ child.line_count }})</a></td>
+                      <td>{{ child.total_quantity|floatformat:"-3" }}</td>
+                      <td colspan="3"></td>
+                      <td class="align-right rental-money">Rp {{ child.total_value|floatformat:0 }}</td>
+                      <td><a class="rental-open" href="?q={{ query|urlencode }}&status={{ status_filter }}&urgency={{ urgency_filter }}&view=list&start_month={{ group.key }}&return_month={{ child.key }}">View lines →</a></td>
+                    </tr>
+                  {% endfor %}
+                {% endif %}
+              {% empty %}
+                <tr><td colspan="9"><div class="rental-empty"><span>⌁</span><strong>No rental details found</strong><small>Adjust filters or create a new rental Sales Order.</small></div></td></tr>
+              {% endfor %}
+            </tbody>
+          {% else %}
+            <tbody>
+              {% for line in rows %}
+                <tr class="{% if line.is_overdue %}rental-overdue{% elif line.is_due_soon %}rental-due-soon{% endif %}">
+                  <td><a class="rental-order-link" href="{% url 'entity_edit' 'sales' line.order_id %}">{{ line.order.number }}</a><small>{{ line.order.order_date|date:"d M Y" }}</small></td>
+                  <td><strong>{{ line.order.customer.name }}</strong><small>{{ line.order.company.code }}</small></td>
+                  <td><strong>{{ line.product.name|default:"Section / Note" }}</strong><small>{{ line.description }}</small></td>
+                  <td>{{ line.quantity|floatformat:"-3" }}</td>
+                  <td>{{ line.rental_start_date|date:"d M Y"|default:"—" }}</td>
+                  <td><span class="rental-date {% if line.is_overdue %}overdue{% elif line.is_due_soon %}due-soon{% endif %}">{{ line.rental_return_date|date:"d M Y"|default:"—" }}</span></td>
+                  <td>
+                    {% if can_change and not line.display_type %}
+                      <form class="rental-status-form" method="post" action="{% url 'rental_line_status' line.pk %}">
+                        {% csrf_token %}
+                        <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                        <select name="rental_status" aria-label="Status Barang {{ line.order.number }}" onchange="this.form.submit()">
+                          <option value="" {% if not line.rental_status %}selected{% endif %}>Not Set</option>
+                          <option value="at_customer" {% if line.rental_status == 'at_customer' %}selected{% endif %}>Di Customer</option>
+                          <option value="returned" {% if line.rental_status == 'returned' %}selected{% endif %}>Sudah Kembali</option>
+                        </select>
+                      </form>
+                    {% else %}
+                      <span class="rental-status status-{{ line.rental_status|default:'unset' }}">{% if line.rental_status %}{{ line.get_rental_status_display }}{% else %}Not Set{% endif %}</span>
+                    {% endif %}
+                  </td>
+                  <td class="align-right rental-money">Rp {{ line.subtotal|floatformat:0 }}</td>
+                  <td>
+                    <div class="rental-row-actions">
+                      <a class="rental-open" href="{% url 'entity_edit' 'sales' line.order_id %}">Open Order →</a>
+                      {% if can_delete %}
+                        {% if line.odoo_source_id or line.order.status == 'draft' %}
+                          <form method="post" action="{% url 'rental_line_delete' line.pk %}" onsubmit="return confirm('Hapus line ini dari {{ line.order.number|escapejs }}? Data impor Odoo dapat dipulihkan dengan impor ulang.');">
+                            {% csrf_token %}
+                            <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                            <button class="rental-delete" type="submit">Hapus</button>
+                          </form>
+                        {% endif %}
+                      {% endif %}
+                    </div>
+                  </td>
+                </tr>
+              {% empty %}
+                <tr><td colspan="9"><div class="rental-empty"><span>⌁</span><strong>No rental details found</strong><small>Adjust filters or return to the grouped view.</small></div></td></tr>
+              {% endfor %}
+            </tbody>
+          {% endif %}
+          {% if groups or rows %}<tfoot><tr><td colspan="3">TOTAL</td><td>{{ summary.total_quantity|floatformat:"-3" }}</td><td colspan="3"></td><td class="align-right">Rp {{ summary.value|floatformat:0 }}</td><td></td></tr></tfoot>{% endif %}
+        </table>
+      </div>
+      {% if page and page.paginator.num_pages > 1 %}
+        <nav class="pagination">
+          {% if page.has_previous %}<a href="?q={{ query|urlencode }}&status={{ status_filter }}&urgency={{ urgency_filter }}&view=list&start_month={{ group_start_filter }}&return_month={{ group_return_filter }}&sort={{ sort }}&page={{ page.previous_page_number }}">← Previous</a>{% endif %}
+          <span>Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
+          {% if page.has_next %}<a href="?q={{ query|urlencode }}&status={{ status_filter }}&urgency={{ urgency_filter }}&view=list&start_month={{ group_start_filter }}&return_month={{ group_return_filter }}&sort={{ sort }}&page={{ page.next_page_number }}">Next →</a>{% endif %}
+        </nav>
+      {% endif %}
+    </section>
+  </div>
+{% endblock %}

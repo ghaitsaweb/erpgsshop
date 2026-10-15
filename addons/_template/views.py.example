@@ -1,0 +1,8 @@
+from django.shortcuts import render
+
+from modules.apphub.access import enabled_app_required
+
+
+@enabled_app_required("example-module")
+def index(request):
+    return render(request, "example_module/index.html")

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}{{ config.title }} · ERP GSSHOP{% endblock %}
+{% block page_title %}{{ config.title }}{% endblock %}
+{% block content %}
+  <div class="toolbar">
+    <form method="get" class="search-form">
+      <input class="form-control" type="search" name="q" value="{{ query }}" placeholder="Search {{ config.title|lower }}…">
+      <button class="btn btn-secondary" type="submit">Search</button>
+    </form>
+    {% if can_add %}<a class="btn btn-primary" href="{% url 'entity_create' entity %}">+ Add {{ config.singular }}</a>{% endif %}
+  </div>
+
+  {% if config.admin_detail %}
+    <div class="info-strip">Create the document here, then use <a href="{% url 'admin:index' %}">Administration</a> to add detailed line items.</div>
+  {% endif %}
+
+  <div class="panel table-panel">
+    <div class="table-wrap">
+      <table>
+        <thead><tr>{% for header in headers %}<th>{{ header }}</th>{% endfor %}<th class="align-right">Actions</th></tr></thead>
+        <tbody>
+          {% for row in rows %}
+            <tr>
+              {% for value in row.values %}<td>{% if forloop.first %}<strong>{{ value }}</strong>{% else %}{{ value }}{% endif %}</td>{% endfor %}
+              <td class="actions align-right">
+                {% if can_change %}<a href="{% url 'entity_edit' entity row.object.pk %}">Edit</a>{% endif %}
+                {% if can_delete %}<a class="danger-link" href="{% url 'entity_delete' entity row.object.pk %}">Delete</a>{% endif %}
+                {% if not can_change and not can_delete %}<span class="muted">Posted</span>{% endif %}
+              </td>
+            </tr>
+          {% empty %}<tr><td class="empty" colspan="20">No records found. Add the first {{ config.singular|lower }}.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if page.paginator.num_pages > 1 %}
+      <div class="pagination">
+        {% if page.has_previous %}<a href="?q={{ query }}&page={{ page.previous_page_number }}">← Previous</a>{% endif %}
+        <span>Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
+        {% if page.has_next %}<a href="?q={{ query }}&page={{ page.next_page_number }}">Next →</a>{% endif %}
+      </div>
+    {% endif %}
+  </div>
+{% endblock %}
+

@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}{{ feature.title }} · ERP GSSHOP{% endblock %}
+{% block page_title %}{{ feature.title }}{% endblock %}
+{% block content %}
+  <section class="module-hero">
+    <div class="module-hero-main">
+      <span class="module-mark">{{ feature.title|slice:":1" }}</span>
+      <div>
+        <p class="eyebrow light">Human Resources · {{ feature.group }}</p>
+        <h2>{{ feature.title }}</h2>
+        <p>{{ feature.description }} The figures below respect your role, employee scope, and company boundary.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="metric-grid">
+    {% for metric in analytics.metrics %}
+      <article class="metric-card {{ metric.tone }}">
+        <span class="metric-dot"></span>
+        <p>{{ metric.label }}</p>
+        <strong>{{ metric.value }}</strong>
+        <small>{{ metric.detail }}</small>
+      </article>
+    {% endfor %}
+  </section>
+
+  <div class="dashboard-grid">
+    <section class="panel">
+      <div class="panel-head"><h2>{{ analytics.breakdown_title }}</h2></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Category</th><th class="align-right">Total</th></tr></thead>
+          <tbody>
+            {% for row in analytics.breakdown %}
+              <tr>
+                <td>{{ row.label|title }}</td>
+                <td class="align-right"><strong>{{ row.total }}</strong></td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="2" class="empty">No data in your access scope.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <aside class="panel">
+      <div class="panel-head"><h2>{{ analytics.recent_title }}</h2></div>
+      <div class="attention-list">
+        {% for item in analytics.recent %}
+          <div class="attention-item">
+            <span><strong>{{ item }}</strong><small>{{ item.updated_at|date:"d M Y H:i" }}</small></span>
+            {% if item.status %}<span class="status status-{{ item.status }}">{{ item.get_status_display }}</span>{% endif %}
+          </div>
+        {% empty %}
+          <p class="empty">No recent records.</p>
+        {% endfor %}
+      </div>
+    </aside>
+  </div>
+{% endblock %}

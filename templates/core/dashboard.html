@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · ERP GSSHOP{% endblock %}
+{% block page_title %}Good day, {{ request.user.first_name|default:request.user.username }}{% endblock %}
+{% block content %}
+  <div class="dashboard-intro">
+    <p>Here is the operating picture for {{ today|date:"d F Y" }}.</p>
+    <div class="quick-actions">
+      <a class="btn btn-secondary" href="{% url 'entity_create' 'stock-moves' %}">Record stock</a>
+      <a class="btn btn-primary" href="{% url 'entity_create' 'sales' %}">New sales order</a>
+    </div>
+  </div>
+
+  <div class="metric-grid">
+    {% for metric in metrics %}
+      <article class="metric-card {{ metric.tone }}">
+        <span class="metric-dot"></span>
+        <p>{{ metric.label }}</p>
+        <strong>{% if metric.kind == 'currency' %}Rp {% endif %}{{ metric.value|floatformat:0 }}</strong>
+        <small>Current operational data</small>
+      </article>
+    {% endfor %}
+  </div>
+
+  <div class="dashboard-grid">
+    <article class="panel panel-wide">
+      <div class="panel-head">
+        <div><p class="eyebrow">Sales</p><h2>Recent orders</h2></div>
+        <a href="{% url 'entity_list' 'sales' %}">View all</a>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Order</th><th>Customer</th><th>Status</th><th class="align-right">Total</th></tr></thead>
+          <tbody>
+            {% for order in recent_sales %}
+              <tr><td><strong>{{ order.number }}</strong><small>{{ order.order_date|date:"d M Y" }}</small></td><td>{{ order.customer.name }}</td><td><span class="status status-{{ order.status }}">{{ order.get_status_display }}</span></td><td class="align-right">Rp {{ order.total|floatformat:0 }}</td></tr>
+            {% empty %}<tr><td class="empty" colspan="4">No sales orders yet.</td></tr>{% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </article>
+
+    <article class="panel">
+      <div class="panel-head"><div><p class="eyebrow">Inventory</p><h2>Stock attention</h2></div></div>
+      <div class="attention-list">
+        {% for product in low_stock %}
+          <div class="attention-item"><span><strong>{{ product.name }}</strong><small>{{ product.sku }}</small></span><span class="stock-number">{{ product.current_stock|floatformat:0 }}</span></div>
+        {% empty %}<p class="empty">All products are above reorder level.</p>{% endfor %}
+      </div>
+    </article>
+  </div>
+
+  <div class="mini-grid">
+    <a class="mini-card" href="{% url 'entity_list' 'attendance' %}"><span>Today's attendance</span><strong>{{ today_attendance }}</strong></a>
+    <a class="mini-card" href="{% url 'entity_list' 'companies' %}"><span>Active companies</span><strong>{{ company_count }}</strong></a>
+    <a class="mini-card accent" href="{% url 'admin:index' %}"><span>Advanced records</span><strong>Open admin →</strong></a>
+  </div>
+{% endblock %}
+

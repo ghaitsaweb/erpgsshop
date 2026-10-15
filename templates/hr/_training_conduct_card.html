@@ -1,0 +1,13 @@
+<article class="tc-card">
+  <div class="tc-card-meta">
+    <span class="tc-reference"><i></i>{{ item.reference }}</span>
+    <span class="tc-status status-{{ item.status }}">● {{ item.get_status_display }}</span>
+  </div>
+  <h3>{{ item.name }}</h3>
+  <p class="tc-card-detail"><span>▣</span>{{ item.date_start|date:"d M Y"|default:"Not planned" }}{% if item.date_end %} – {{ item.date_end|date:"d M Y" }}{% endif %}</p>
+  <p class="tc-card-detail"><span>♣</span>{{ item.visible_participants }} employee{{ item.visible_participants|pluralize }}</p>
+  <footer>
+    <span>{% if item.course %}Course / {{ item.course.name }}{% else %}Program / {{ item.program.name }}{% endif %}</span>
+    <a class="tc-open-link" href="{% url 'entity_edit' entity item.pk %}">Open Form</a>
+  </footer>
+</article>

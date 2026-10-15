@@ -121,6 +121,16 @@ def navigation(request):
 
         seen_targets = set()
         for app in installed_apps:
+            app_url = (
+                reverse("app_manager")
+                if app.slug == "app-manager"
+                else reverse("app_workspace", args=[app.slug])
+            )
+            app_search_aliases = (
+                "apps applications modules install uninstall upgrade update manage manager"
+                if app.slug == "app-manager"
+                else ""
+            )
             global_menu_items.append(
                 {
                     "label": app.name,
@@ -128,10 +138,10 @@ def navigation(request):
                     "app": app.category,
                     "app_slug": app.slug,
                     "kind": "application",
-                    "url": reverse("app_workspace", args=[app.slug]),
+                    "url": app_url,
                     "search": (
                         f"{app.name} {app.category} {app.slug} {app.summary} "
-                        "installed application app module"
+                        f"installed application app module {app_search_aliases}"
                     ).lower(),
                     "installed": True,
                 }

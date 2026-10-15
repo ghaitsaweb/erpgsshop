@@ -254,6 +254,13 @@ class ERPIntegrityTests(TestCase):
         self.assertTrue(
             any(item["kind"] == "application" and item["app_slug"] == "hr" for item in items)
         )
+        app_manager_item = next(
+            item
+            for item in items
+            if item["kind"] == "application" and item["app_slug"] == "app-manager"
+        )
+        self.assertEqual(app_manager_item["url"], "/apps/")
+        self.assertIn("apps applications modules install uninstall upgrade", app_manager_item["search"])
         self.assertFalse(
             any(item["kind"] == "application" and item["app_slug"] == "pos" for item in items)
         )

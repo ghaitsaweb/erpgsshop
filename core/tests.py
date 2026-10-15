@@ -233,12 +233,35 @@ class ERPIntegrityTests(TestCase):
         dashboard_response = self.client.get("/")
         self.assertEqual(dashboard_response.status_code, 200)
         self.assertContains(dashboard_response, "Search all menus")
-        self.assertContains(dashboard_response, 'data-search="training conduct training human resources"')
+        self.assertContains(dashboard_response, 'data-search="training conduct training human resources people installed menu"')
         self.assertContains(dashboard_response, 'href="/app/training-conducts/"')
         for entity in ENTITY_CONFIG:
             with self.subTest(entity=entity):
                 self.assertEqual(self.client.get(f"/app/{entity}/").status_code, 200)
                 self.assertEqual(self.client.get(f"/app/{entity}/new/").status_code, 200)
+
+    def test_global_menu_search_includes_only_installed_apps_and_admin_users(self):
+        call_command("sync_apps", verbosity=0)
+        ERPApp.objects.filter(slug="pos").update(enabled=False)
+        self.client.force_login(self.user)
+
+        response = self.client.get("/")
+        items = response.context["global_menu_items"]
+        users_item = next(item for item in items if item["label"] == "Users")
+
+        self.assertEqual(users_item["url"], "/admin/auth/user/")
+        self.assertTrue(users_item["installed"])
+        self.assertTrue(
+            any(item["kind"] == "application" and item["app_slug"] == "hr" for item in items)
+        )
+        self.assertFalse(
+            any(item["kind"] == "application" and item["app_slug"] == "pos" for item in items)
+        )
+        self.assertContains(response, "ERP Foundation · Administration · Installed")
+        stylesheet = (Path(__file__).resolve().parent.parent / "static" / "css" / "app.css").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(".global-menu-result[hidden]", stylesheet)
 
     def test_app_manager_renders_synced_catalog(self):
         call_command("sync_apps", verbosity=0)

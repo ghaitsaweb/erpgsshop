@@ -121,6 +121,21 @@ def navigation(request):
 
         seen_targets = set()
         for app in installed_apps:
+            global_menu_items.append(
+                {
+                    "label": app.name,
+                    "group": "Application",
+                    "app": app.category,
+                    "app_slug": app.slug,
+                    "kind": "application",
+                    "url": reverse("app_workspace", args=[app.slug]),
+                    "search": (
+                        f"{app.name} {app.category} {app.slug} {app.summary} "
+                        "installed application app module"
+                    ).lower(),
+                    "installed": True,
+                }
+            )
             for group in app_menu_groups(app.slug):
                 for item in group["items"]:
                     target_url = None
@@ -143,10 +158,53 @@ def navigation(request):
                             "label": item["label"],
                             "group": group["label"],
                             "app": app.name,
+                            "app_slug": app.slug,
+                            "kind": "menu",
                             "url": target_url,
-                            "search": f"{item['label']} {group['label']} {app.name}".lower(),
+                            "search": (
+                                f"{item['label']} {group['label']} {app.name} {app.category} "
+                                "installed menu"
+                            ).lower(),
+                            "installed": True,
                         }
                     )
+
+        administration_items = []
+        if request.user.is_staff:
+            administration_items.append(
+                {
+                    "label": "Administration",
+                    "url": reverse("admin:index"),
+                    "search": "administration admin settings configuration installed menu",
+                }
+            )
+        if request.user.has_perm("auth.view_user"):
+            administration_items.append(
+                {
+                    "label": "Users",
+                    "url": reverse("admin:auth_user_changelist"),
+                    "search": "users user accounts permissions administration installed menu",
+                }
+            )
+        if request.user.has_perm("auth.view_group"):
+            administration_items.append(
+                {
+                    "label": "Groups & Permissions",
+                    "url": reverse("admin:auth_group_changelist"),
+                    "search": "groups roles permissions access administration installed menu",
+                }
+            )
+        for item in administration_items:
+            global_menu_items.append(
+                {
+                    **item,
+                    "group": "Administration",
+                    "app": "ERP Foundation",
+                    "app_slug": "foundation",
+                    "kind": "menu",
+                    "installed": True,
+                }
+            )
 
     breadcrumbs = [{"label": "Home", "url": reverse("dashboard")}]
     if url_name == "app_manager":

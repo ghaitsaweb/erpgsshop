@@ -45,6 +45,7 @@ button, input, select, textarea { font: inherit; }
 .menu-empty { margin: 18px 10px; color: #7f91b8; font-size: 11px; }
 .global-menu-results { flex: 1; min-height: 0; overflow-y: auto; }
 .global-menu-result { display: grid; grid-template-columns: 24px minmax(0, 1fr); align-items: center; gap: 10px; margin: 2px 4px; padding: 9px 10px; border-radius: 9px; color: #d7e1f4; }
+.global-menu-results[hidden], .global-menu-result[hidden], .menu-empty[hidden] { display: none; }
 .global-menu-result:hover { color: white; background: rgba(59, 130, 246, .20); }
 .global-menu-result > span:last-child { min-width: 0; display: flex; flex-direction: column; }
 .global-menu-result strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }

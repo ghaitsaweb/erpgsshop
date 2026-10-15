@@ -43,7 +43,7 @@
         {% for item in global_menu_items %}
           <a class="global-menu-result" data-global-menu-item data-search="{{ item.search }}" href="{{ item.url }}">
             <span class="nav-icon">{{ item.label|slice:":1" }}</span>
-            <span><strong>{{ item.label }}</strong><small>{{ item.app }} · {{ item.group }}</small></span>
+            <span><strong>{{ item.label }}</strong><small>{{ item.app }} · {{ item.group }}{% if item.installed %} · Installed{% endif %}</small></span>
           </a>
         {% endfor %}
         <p class="menu-empty" id="global-menu-search-empty" hidden>No matching menu.</p>
@@ -202,12 +202,14 @@
       const globalEmpty = document.getElementById('global-menu-search-empty');
       if (input) {
         input.addEventListener('input', () => {
-          const query = input.value.trim().toLowerCase();
+          const query = input.value.trim().toLowerCase().replace(/\s+/g, ' ');
+          const terms = query.split(' ').filter(Boolean);
           let matches = 0;
           navigation.hidden = Boolean(query);
           globalResults.hidden = !query;
           document.querySelectorAll('[data-global-menu-item]').forEach((item) => {
-            const visible = Boolean(query) && item.dataset.search.includes(query);
+            const haystack = item.dataset.search.toLowerCase();
+            const visible = terms.length > 0 && terms.every((term) => haystack.includes(term));
             item.hidden = !visible;
             if (visible) matches += 1;
           });

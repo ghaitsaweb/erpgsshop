@@ -225,7 +225,20 @@ class SaleOrderLine(TimeStampedModel):
 
 
 class PurchaseOrder(OrderBase):
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        SENT = "sent", "Sent"
+        WAITING_APPROVAL = "waiting_approval", "Waiting Approval"
+        REJECTED = "rejected", "Rejected"
+        CONFIRMED = "confirmed", "Approved"
+        COMPLETED = "completed", "Completed"
+        CLOSED = "closed", "Closed"
+        CANCELLED = "cancelled", "Cancelled"
+        REVISED = "revised", "Revised"
+        EXPIRED = "expired", "Expired"
+
     vendor = models.ForeignKey(Contact, on_delete=models.PROTECT, related_name="purchase_orders")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
 
     class Meta(OrderBase.Meta):
         constraints = [models.UniqueConstraint(fields=["company", "number"], name="unique_purchase_number_per_company")]

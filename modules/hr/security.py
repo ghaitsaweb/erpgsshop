@@ -41,6 +41,19 @@ SELF_SERVICE_VIEW_MODELS = {
     "trainingconduct",
     "trainingconductschedule",
     "trainingconductparticipant",
+    "employeeaddress",
+    "employeerelation",
+    "scheduleexchange",
+    "attendancechangerequest",
+    "livetrackingsession",
+    "leaveopeningbalance",
+    "leavemovement",
+    "leaveencashment",
+    "employeeloanrequest",
+    "loaninstallment",
+    "loanrepayment",
+    "trainingrequest",
+    "trainingprogress",
 }
 SELF_SERVICE_REQUEST_MODELS = {
     "leaverequest",
@@ -51,9 +64,44 @@ SELF_SERVICE_REQUEST_MODELS = {
     "cashadvance",
     "careertransitionrequest",
     "expenseclaim",
+    "scheduleexchange",
+    "attendancechangerequest",
+    "leaveencashment",
+    "employeeloanrequest",
+    "trainingrequest",
 }
-PAYROLL_MODELS = {"employee", "employmentcontract", "payslip", "payrollperiod", "salarycomponent", "payrollrun", "compensationbenefit"}
-FINANCE_MODELS = {"employee", "loan", "expenseclaim", "cashadvance", "loantype", "loanpolicy", "expenseproduct"}
+PAYROLL_MODELS = {
+    "employee",
+    "employmentcontract",
+    "contracttype",
+    "contractallowance",
+    "contractletter",
+    "payslip",
+    "payrollperiod",
+    "salarycomponent",
+    "payrollvariable",
+    "salarypackage",
+    "payrollreporttemplate",
+    "payrollrun",
+    "compensationbenefit",
+}
+FINANCE_MODELS = {
+    "employee",
+    "loan",
+    "expenseclaim",
+    "cashadvance",
+    "loantype",
+    "loanpolicy",
+    "employeeloanrequest",
+    "loaninstallment",
+    "loanrepayment",
+    "loaneligibilityassignment",
+    "expenseproduct",
+    "advancecycle",
+    "expensecycle",
+    "advancelimitconsumption",
+    "expenselimitconsumption",
+}
 CAREER_MODELS = {"employee", "careertransitionrequest", "careertransitiontype", "careertransitionletter"}
 
 

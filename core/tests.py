@@ -17,10 +17,13 @@ from django.utils import timezone
 
 from modules.apphub.discovery import discover_app_catalog
 from modules.apphub.models import ERPApp
+from modules.apphub.workspaces import app_menu_groups
 from modules.finance.models import Account, JournalEntry, JournalLine
 from modules.hr.access import HR_MANAGER, HR_SUPERVISOR, HR_USER, scope_hr_queryset
 from modules.hr.models import (
     EmployeeChangeRequest,
+    EmployeeLoanRequest,
+    LoanType,
     Payslip,
     TrainingConduct,
     TrainingConductParticipant,
@@ -30,8 +33,12 @@ from modules.hr.models import (
 )
 from modules.hr.security import ensure_hr_roles
 from modules.pos.models import POSOrder, POSOrderLine, POSRegister, POSSession
+from modules.purchase.access import PURCHASE_MANAGER
+from modules.purchase.entity_config import ENTITY_MODELS as PURCHASE_ENTITY_MODELS
+from modules.purchase.models import PurchaseOrderControl, PurchaseRequest
+from modules.purchase.security import ensure_purchase_roles
 
-from .models import Company, Contact, Employee, Product, SaleOrder, SaleOrderLine, StockMove, Warehouse
+from .models import Company, Contact, Employee, Product, PurchaseOrder, SaleOrder, SaleOrderLine, StockMove, Warehouse
 from .document_pdf import REPORT_CONFIG, _footer
 from .views import DOCUMENT_CONFIG, ENTITY_CONFIG
 
@@ -239,6 +246,172 @@ class ERPIntegrityTests(TestCase):
             with self.subTest(entity=entity):
                 self.assertEqual(self.client.get(f"/app/{entity}/").status_code, 200)
                 self.assertEqual(self.client.get(f"/app/{entity}/new/").status_code, 200)
+
+    def test_prd_hr_extended_domains_are_exposed_in_crud_and_navigation(self):
+        expected_entities = {
+            "job-classifications",
+            "job-experience-levels",
+            "employee-categories",
+            "employee-addresses",
+            "employee-relations",
+            "working-calendars",
+            "work-patterns",
+            "schedule-exchanges",
+            "contract-types",
+            "contract-allowances",
+            "contract-letters",
+            "disciplinary-stages",
+            "attendance-change-requests",
+            "live-tracking-sessions",
+            "attendance-recomputes",
+            "leave-structures",
+            "leave-opening-balances",
+            "leave-movements",
+            "leave-encashments",
+            "payroll-variables",
+            "salary-packages",
+            "payroll-report-templates",
+            "employee-loan-requests",
+            "loan-installments",
+            "loan-repayments",
+            "loan-eligibility",
+            "training-requests",
+            "training-progress",
+            "advance-cycles",
+            "expense-cycles",
+            "advance-limit-consumptions",
+            "expense-limit-consumptions",
+        }
+        navigation_entities = {
+            item["entity"]
+            for group in app_menu_groups("hr")
+            for item in group["items"]
+            if "entity" in item
+        }
+
+        self.assertTrue(expected_entities.issubset(ENTITY_CONFIG))
+        self.assertTrue(expected_entities.issubset(navigation_entities))
+
+    def test_prd_purchase_domains_are_exposed_in_crud_and_navigation(self):
+        expected_entities = set(PURCHASE_ENTITY_MODELS)
+        navigation_entities = {
+            item["entity"]
+            for group in app_menu_groups("purchase")
+            for item in group["items"]
+            if "entity" in item
+        }
+
+        self.assertEqual(len(expected_entities), 40)
+        self.assertTrue(expected_entities.issubset(ENTITY_CONFIG))
+        self.assertTrue(expected_entities.issubset(navigation_entities))
+        self.assertTrue(
+            {"sent", "waiting_approval", "rejected", "closed", "revised", "expired"}.issubset(
+                set(PurchaseOrder.Status.values)
+            )
+        )
+        self.assertTrue(
+            {
+                "quotation",
+                "blanket_order",
+                "vendor_pricelist",
+                "tax_percent",
+                "discount_percent",
+                "cost_center",
+                "contract_terms",
+                "communication_history",
+            }.issubset({field.name for field in PurchaseOrderControl._meta.fields})
+        )
+
+    def test_purchase_request_list_query_count_does_not_grow(self):
+        self.client.force_login(self.user)
+        PurchaseRequest.objects.bulk_create(
+            [
+                PurchaseRequest(
+                    company=self.company,
+                    number=f"SCALE-PR-{index:03d}",
+                    requestor=self.user,
+                    required_date=timezone.localdate(),
+                    justification="Scale test",
+                )
+                for index in range(2)
+            ]
+        )
+        url = "/app/purchase-requests/"
+        self.client.get(url)
+        with CaptureQueriesContext(connection) as small_context:
+            small_response = self.client.get(url)
+        PurchaseRequest.objects.bulk_create(
+            [
+                PurchaseRequest(
+                    company=self.company,
+                    number=f"SCALE-PR-{index:03d}",
+                    requestor=self.user,
+                    required_date=timezone.localdate(),
+                    justification="Scale test",
+                )
+                for index in range(2, 22)
+            ]
+        )
+        with CaptureQueriesContext(connection) as large_context:
+            large_response = self.client.get(url)
+
+        self.assertEqual(small_response.status_code, 200)
+        self.assertEqual(large_response.status_code, 200)
+        self.assertEqual(len(small_context), len(large_context))
+
+    def test_purchase_manager_permissions_do_not_include_sales_orders(self):
+        ensure_purchase_roles()
+        permissions = Group.objects.get(name=PURCHASE_MANAGER).permissions.values_list(
+            "content_type__app_label",
+            "content_type__model",
+        )
+        self.assertIn(("core", "purchaseorder"), permissions)
+        self.assertNotIn(("core", "saleorder"), permissions)
+
+    def test_employee_loan_list_query_count_does_not_grow(self):
+        self.client.force_login(self.user)
+        loan_type = LoanType.objects.create(
+            company=self.company,
+            code="SCALE-LOAN",
+            name="Scale Loan",
+        )
+        employee = Employee.objects.create(
+            company=self.company,
+            employee_id="SCALE-EMPLOYEE",
+            name="Scale Employee",
+        )
+        EmployeeLoanRequest.objects.bulk_create(
+            [
+                EmployeeLoanRequest(
+                    employee=employee,
+                    loan_type=loan_type,
+                    number=f"SCALE-LOAN-{index:03d}",
+                    amount=1000,
+                )
+                for index in range(2)
+            ]
+        )
+        url = "/app/employee-loan-requests/"
+        self.client.get(url)
+        with CaptureQueriesContext(connection) as small_context:
+            small_response = self.client.get(url)
+        EmployeeLoanRequest.objects.bulk_create(
+            [
+                EmployeeLoanRequest(
+                    employee=employee,
+                    loan_type=loan_type,
+                    number=f"SCALE-LOAN-{index:03d}",
+                    amount=1000,
+                )
+                for index in range(2, 22)
+            ]
+        )
+        with CaptureQueriesContext(connection) as large_context:
+            large_response = self.client.get(url)
+
+        self.assertEqual(small_response.status_code, 200)
+        self.assertEqual(large_response.status_code, 200)
+        self.assertEqual(len(small_context), len(large_context))
 
     def test_global_menu_search_includes_only_installed_apps_and_admin_users(self):
         call_command("sync_apps", verbosity=0)

@@ -1,0 +1,48 @@
+from django.contrib import admin
+
+from . import models as purchase_models
+
+
+for model in [
+    purchase_models.PurchaseRequest,
+    purchase_models.PurchaseRequestLine,
+    purchase_models.PurchaseQuotation,
+    purchase_models.DirectPurchase,
+    purchase_models.ServiceWorkOrder,
+    purchase_models.AwardStrategy,
+    purchase_models.PurchaseTender,
+    purchase_models.TenderBid,
+    purchase_models.BlanketOrder,
+    purchase_models.VendorCategory,
+    purchase_models.VendorProfile,
+    purchase_models.VendorLegalDocument,
+    purchase_models.VendorPrequalification,
+    purchase_models.VendorDocumentReview,
+    purchase_models.VendorPricelist,
+    purchase_models.VendorPricelistAmendment,
+    purchase_models.VendorPerformanceTemplate,
+    purchase_models.VendorPerformanceEvaluation,
+    purchase_models.PurchaseTeam,
+    purchase_models.PurchaseTeamMember,
+    purchase_models.PurchaseKPITemplate,
+    purchase_models.PurchaseKPITarget,
+    purchase_models.PurchaseOrderType,
+    purchase_models.PurchaseOrderTemplate,
+    purchase_models.PurchaseMilestoneTemplate,
+    purchase_models.PurchaseSetting,
+    purchase_models.PurchaseOrderControl,
+    purchase_models.PurchaseOrderMilestone,
+    purchase_models.ProductBudgetGroup,
+    purchase_models.ProductBudget,
+    purchase_models.BudgetProductTransfer,
+    purchase_models.BudgetProductCarryOver,
+    purchase_models.BudgetProductChangeRequest,
+    purchase_models.GoodsReceipt,
+    purchase_models.GoodsReceiptLine,
+    purchase_models.PurchaseReturnRequest,
+    purchase_models.PurchaseAccountingSetting,
+    purchase_models.PurchaseAccountMapping,
+    purchase_models.PurchasePeppolSubmission,
+    purchase_models.PurchaseInsight,
+]:
+    admin.site.register(model)

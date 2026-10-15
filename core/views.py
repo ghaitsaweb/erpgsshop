@@ -45,7 +45,11 @@ from modules.crm.models import Lead, Opportunity
 from modules.education.models import BookLoan, Course, Enrollment, Lesson, LibraryBook, School, Student
 from modules.finance.models import Account, Budget, ExpenseClaim, JournalEntry, JournalLine, Loan
 from modules.hr.models import (
+    AdvanceCycle,
+    AdvanceLimitConsumption,
     Appraisal,
+    AttendanceChangeRequest,
+    AttendanceRecompute,
     BusinessUnit,
     Candidate,
     CareerTransitionLetter,
@@ -53,43 +57,71 @@ from modules.hr.models import (
     CareerTransitionType,
     CashAdvance,
     CompanyHoliday,
+    CompensationBenefit,
+    ContractAllowance,
+    ContractLetter,
+    ContractType,
     Department,
+    DisciplinaryStage,
     DocumentType,
+    EmployeeAddress,
+    EmployeeCategory,
     EmployeeChangeRequest,
     EmployeeChecklist,
     EmployeeDisciplinary,
     EmployeeDocument,
     EmployeeGrade,
+    EmployeeLoanRequest,
     EmployeeOffboarding,
     EmployeeOnboarding,
-    ExpenseProduct,
+    EmployeeRelation,
     EmploymentContract,
-    HRYear,
+    ExpenseCycle,
+    ExpenseLimitConsumption,
+    ExpenseProduct,
     HRSetting,
+    HRYear,
+    JobClassification,
+    JobExperienceLevel,
     JobPosition,
     LeaveAllocation,
+    LeaveEncashment,
+    LeaveMovement,
+    LeaveOpeningBalance,
     LeaveRequest,
+    LeaveStructure,
     LeaveType,
+    LiveTrackingSession,
+    LoanEligibilityAssignment,
+    LoanInstallment,
     LoanPolicy,
+    LoanRepayment,
     LoanType,
     OvertimeRequest,
     OvertimeRule,
-    PayrollRun,
     PayrollPeriod,
+    PayrollReportTemplate,
+    PayrollRun,
+    PayrollVariable,
     Payslip,
     RawAttendance,
-    CompensationBenefit,
     SalaryComponent,
+    SalaryPackage,
     ScheduleAssignment,
+    ScheduleExchange,
     Shift,
     Skill,
     TrainingConduct,
     TrainingCourse,
+    TrainingProgress,
     TrainingProgram,
+    TrainingRequest,
     TrainingTrainer,
     TravelPackage,
     TravelRequest,
     WorkLocation,
+    WorkingCalendar,
+    WorkPattern,
     WorkSchedule,
 )
 from modules.localization.models import DocumentSequence, LocalizationPack, PayrollParameter, TaxRule
@@ -110,6 +142,13 @@ from modules.apphub.models import ERPApp
 from modules.apphub.workspaces import ENTITY_APP_MAP
 from modules.hr.access import can_hr_entity_action, can_hr_workflow_action, scope_hr_form, scope_hr_queryset
 from modules.hr.training_views import training_conduct_form, training_conduct_list
+from modules.purchase.access import (
+    can_purchase_entity_action,
+    can_purchase_workflow_action,
+    scope_purchase_form,
+    scope_purchase_queryset,
+)
+from modules.purchase.entity_config import PURCHASE_ENTITY_CONFIG
 from .rental_views import rental_detail_list
 from .document_pdf import REPORT_CONFIG, render_document_pdf
 
@@ -135,6 +174,30 @@ TRAINING_WORKFLOW = {
     "set-upcoming": {"label": "Set Upcoming", "from": ["open"], "to": "upcoming", "primary": True},
     "start": {"label": "Start", "from": ["upcoming"], "to": "on_going", "primary": True},
     "cancel": {"label": "Cancel", "from": ["draft", "open", "upcoming", "on_going"], "to": "cancelled"},
+}
+
+LOAN_REQUEST_WORKFLOW = {
+    "submit": {"label": "Submit", "from": ["draft"], "to": "waiting", "primary": True},
+    "confirm": {"label": "Approve", "from": ["waiting"], "to": "confirmed", "primary": True},
+    "refuse": {"label": "Refuse", "from": ["waiting"], "to": "refused"},
+    "disburse": {"label": "Disburse", "from": ["confirmed"], "to": "disbursed", "primary": True},
+    "activate": {"label": "Activate", "from": ["disbursed"], "to": "active", "primary": True},
+    "settle": {"label": "Settle", "from": ["active"], "to": "settled", "primary": True},
+    "cancel": {"label": "Cancel", "from": ["draft", "waiting", "confirmed"], "to": "cancelled"},
+}
+
+LIVE_TRACKING_WORKFLOW = {
+    "start": {"label": "Start", "from": ["draft", "stopped"], "to": "running", "primary": True},
+    "stop": {"label": "Stop", "from": ["running"], "to": "stopped", "primary": True},
+    "cancel": {"label": "Cancel", "from": ["draft", "running"], "to": "cancelled"},
+}
+
+ATTENDANCE_RECOMPUTE_WORKFLOW = {
+    "process": {"label": "Process", "from": ["draft"], "to": "processing", "primary": True},
+    "review": {"label": "Ready for Review", "from": ["processing"], "to": "ready", "primary": True},
+    "apply": {"label": "Apply", "from": ["ready"], "to": "applied", "primary": True},
+    "reject": {"label": "Reject", "from": ["ready"], "to": "rejected"},
+    "fail": {"label": "Mark Failed", "from": ["processing"], "to": "failed"},
 }
 
 
@@ -340,10 +403,10 @@ ENTITY_CONFIG = {
         "model": EmployeeDocument,
         "title": "Employee Documents",
         "singular": "Employee Document",
-        "columns": [("employee", "Employee"), ("document_type", "Document Type"), ("document_number", "Number"), ("expiry_date", "Expiry"), ("verified", "Verified")],
+        "columns": [("employee", "Employee"), ("document_type", "Document Type"), ("document_number", "Number"), ("expiry_date", "Expiry"), ("status", "Status"), ("verified", "Verified")],
         "search": ["employee__employee_id", "employee__name", "document_type__name", "document_number"],
-        "form_fields": ["employee", "document_type", "document_number", "issued_date", "expiry_date", "attachment_url", "verified", "notes"],
-        "select_related": ["employee", "document_type"],
+        "form_fields": ["employee", "document_type", "document_number", "issued_date", "expiry_date", "attachment_url", "verified", "status", "replaced_by", "notes"],
+        "select_related": ["employee", "document_type", "replaced_by"],
     },
     "employee-disciplinary": {
         "model": EmployeeDisciplinary,
@@ -351,8 +414,8 @@ ENTITY_CONFIG = {
         "singular": "Disciplinary Case",
         "columns": [("reference", "Reference"), ("employee", "Employee"), ("incident_date", "Incident"), ("violation", "Violation"), ("status", "Status")],
         "search": ["reference", "employee__employee_id", "employee__name", "violation"],
-        "form_fields": ["company", "employee", "reference", "incident_date", "violation", "action_taken", "status", "notes"],
-        "select_related": ["company", "employee"],
+        "form_fields": ["company", "employee", "reference", "incident_date", "violation", "stage", "expiry_date", "action_taken", "status", "notes"],
+        "select_related": ["company", "employee", "stage"],
     },
     "employee-checklists": {
         "model": EmployeeChecklist,
@@ -994,6 +1057,309 @@ ENTITY_CONFIG = {
 }
 
 
+ENTITY_CONFIG.update(
+    {
+        "job-classifications": {
+            "model": JobClassification,
+            "title": "Job Classifications",
+            "singular": "Job Classification",
+            "columns": [("code", "Code"), ("name", "Classification"), ("company", "Company"), ("active", "Active")],
+            "search": ["code", "name", "description"],
+            "form_fields": ["company", "code", "name", "description", "active"],
+            "select_related": ["company"],
+        },
+        "job-experience-levels": {
+            "model": JobExperienceLevel,
+            "title": "Job Experience Levels",
+            "singular": "Job Experience Level",
+            "columns": [("code", "Code"), ("name", "Level"), ("minimum_years", "Min Years"), ("maximum_years", "Max Years"), ("active", "Active")],
+            "search": ["code", "name"],
+            "form_fields": ["company", "code", "name", "minimum_years", "maximum_years", "active"],
+            "select_related": ["company"],
+        },
+        "employee-categories": {
+            "model": EmployeeCategory,
+            "title": "Employee Categories",
+            "singular": "Employee Category",
+            "columns": [("code", "Code"), ("name", "Category"), ("company", "Company"), ("active", "Active")],
+            "search": ["code", "name", "description"],
+            "form_fields": ["company", "code", "name", "description", "active"],
+            "select_related": ["company"],
+        },
+        "employee-addresses": {
+            "model": EmployeeAddress,
+            "title": "Employee Addresses",
+            "singular": "Employee Address",
+            "columns": [("employee", "Employee"), ("address_type", "Type"), ("city", "City"), ("province", "Province"), ("primary", "Primary")],
+            "search": ["employee__employee_id", "employee__name", "address", "city", "province"],
+            "form_fields": ["employee", "address_type", "address", "city", "province", "postal_code", "primary"],
+            "select_related": ["employee"],
+        },
+        "employee-relations": {
+            "model": EmployeeRelation,
+            "title": "Employee Relations",
+            "singular": "Employee Relation",
+            "columns": [("employee", "Employee"), ("name", "Contact"), ("relationship", "Relationship"), ("phone", "Phone"), ("emergency_contact", "Emergency")],
+            "search": ["employee__employee_id", "employee__name", "name", "relationship", "phone"],
+            "form_fields": ["employee", "name", "relationship", "phone", "email", "emergency_contact"],
+            "select_related": ["employee"],
+        },
+        "working-calendars": {
+            "model": WorkingCalendar,
+            "title": "Working Calendars",
+            "singular": "Working Calendar",
+            "columns": [("code", "Code"), ("name", "Calendar"), ("timezone", "Timezone"), ("hours_per_week", "Hours/Week"), ("active", "Active")],
+            "search": ["code", "name", "timezone"],
+            "form_fields": ["company", "code", "name", "timezone", "hours_per_week", "active"],
+            "select_related": ["company"],
+        },
+        "work-patterns": {
+            "model": WorkPattern,
+            "title": "Work Patterns",
+            "singular": "Work Pattern",
+            "columns": [("code", "Code"), ("name", "Pattern"), ("calendar", "Calendar"), ("cycle_days", "Cycle Days"), ("active", "Active")],
+            "search": ["code", "name", "calendar__name", "pattern"],
+            "form_fields": ["company", "calendar", "code", "name", "pattern", "cycle_days", "active"],
+            "select_related": ["company", "calendar"],
+        },
+        "schedule-exchanges": {
+            "model": ScheduleExchange,
+            "title": "Schedule Exchanges",
+            "singular": "Schedule Exchange",
+            "columns": [("employee", "Employee"), ("exchange_with", "Exchange With"), ("original_date", "Original Date"), ("requested_date", "Requested Date"), ("status", "Status")],
+            "search": ["employee__employee_id", "employee__name", "exchange_with__name", "reason"],
+            "form_fields": ["employee", "exchange_with", "original_date", "requested_date", "reason", "approver"],
+            "select_related": ["employee", "exchange_with", "approver"],
+            "workflow": APPROVAL_WORKFLOW,
+        },
+        "contract-types": {
+            "model": ContractType,
+            "title": "Contract Types",
+            "singular": "Contract Type",
+            "columns": [("code", "Code"), ("name", "Type"), ("default_duration_months", "Duration Months"), ("renewable", "Renewable"), ("active", "Active")],
+            "search": ["code", "name"],
+            "form_fields": ["company", "code", "name", "default_duration_months", "renewable", "active"],
+            "select_related": ["company"],
+        },
+        "contract-allowances": {
+            "model": ContractAllowance,
+            "title": "Contract Allowances",
+            "singular": "Contract Allowance",
+            "columns": [("contract", "Contract"), ("component", "Component"), ("amount", "Amount"), ("effective_date", "Effective"), ("active", "Active")],
+            "search": ["contract__number", "contract__employee__name", "component__name"],
+            "form_fields": ["contract", "component", "amount", "effective_date", "end_date", "active"],
+            "select_related": ["contract", "contract__employee", "component"],
+        },
+        "contract-letters": {
+            "model": ContractLetter,
+            "title": "Contract Letters",
+            "singular": "Contract Letter",
+            "columns": [("letter_number", "Letter Number"), ("contract", "Contract"), ("letter_type", "Type"), ("issued_date", "Issued Date")],
+            "search": ["letter_number", "contract__number", "contract__employee__name", "letter_type"],
+            "form_fields": ["contract", "letter_number", "letter_type", "issued_date", "attachment_url", "notes"],
+            "select_related": ["contract", "contract__employee"],
+        },
+        "disciplinary-stages": {
+            "model": DisciplinaryStage,
+            "title": "Disciplinary Stages",
+            "singular": "Disciplinary Stage",
+            "columns": [("code", "Code"), ("name", "Stage"), ("sequence", "Sequence"), ("validity_days", "Validity Days"), ("active", "Active")],
+            "search": ["code", "name"],
+            "form_fields": ["company", "code", "name", "sequence", "validity_days", "active"],
+            "select_related": ["company"],
+        },
+        "attendance-change-requests": {
+            "model": AttendanceChangeRequest,
+            "title": "Attendance Change Requests",
+            "singular": "Attendance Change Request",
+            "columns": [("employee", "Employee"), ("attendance_date", "Date"), ("requested_check_in", "Check In"), ("requested_check_out", "Check Out"), ("status", "Status")],
+            "search": ["employee__employee_id", "employee__name", "reason"],
+            "form_fields": ["employee", "attendance_date", "requested_check_in", "requested_check_out", "reason", "approver"],
+            "select_related": ["employee", "approver"],
+            "workflow": APPROVAL_WORKFLOW,
+        },
+        "live-tracking-sessions": {
+            "model": LiveTrackingSession,
+            "title": "Live Tracking Sessions",
+            "singular": "Live Tracking Session",
+            "columns": [("employee", "Employee"), ("started_at", "Started"), ("stopped_at", "Stopped"), ("status", "Status")],
+            "search": ["employee__employee_id", "employee__name", "notes"],
+            "form_fields": ["employee", "started_at", "stopped_at", "last_latitude", "last_longitude", "notes"],
+            "select_related": ["employee"],
+            "workflow": LIVE_TRACKING_WORKFLOW,
+        },
+        "attendance-recomputes": {
+            "model": AttendanceRecompute,
+            "title": "Attendance Recompute",
+            "singular": "Attendance Recompute",
+            "columns": [("company", "Company"), ("date_start", "Start"), ("date_end", "End"), ("employee_count", "Employees"), ("status", "Status")],
+            "search": ["company__name", "notes", "requested_by__username"],
+            "form_fields": ["company", "date_start", "date_end", "employee_count", "requested_by", "notes"],
+            "select_related": ["company", "requested_by"],
+            "workflow": ATTENDANCE_RECOMPUTE_WORKFLOW,
+        },
+        "leave-structures": {
+            "model": LeaveStructure,
+            "title": "Leave Structures",
+            "singular": "Leave Structure",
+            "columns": [("name", "Structure"), ("leave_type", "Leave Type"), ("entitlement_days", "Entitlement"), ("carry_forward_days", "Carry Forward"), ("active", "Active")],
+            "search": ["name", "leave_type__name"],
+            "form_fields": ["company", "name", "leave_type", "entitlement_days", "carry_forward_days", "minimum_service_months", "active"],
+            "select_related": ["company", "leave_type"],
+        },
+        "leave-opening-balances": {
+            "model": LeaveOpeningBalance,
+            "title": "Leave Opening Balances",
+            "singular": "Leave Opening Balance",
+            "columns": [("employee", "Employee"), ("leave_type", "Leave Type"), ("year", "Year"), ("balance_days", "Balance"), ("status", "Status")],
+            "search": ["employee__employee_id", "employee__name", "leave_type__name"],
+            "form_fields": ["employee", "leave_type", "year", "balance_days", "status", "notes"],
+            "select_related": ["employee", "leave_type"],
+        },
+        "leave-movements": {
+            "model": LeaveMovement,
+            "title": "Leave Movements",
+            "singular": "Leave Movement",
+            "columns": [("movement_date", "Date"), ("employee", "Employee"), ("leave_type", "Leave Type"), ("movement_type", "Type"), ("days", "Days")],
+            "search": ["employee__employee_id", "employee__name", "leave_type__name", "reference"],
+            "form_fields": ["employee", "leave_type", "movement_date", "movement_type", "days", "reference", "notes"],
+            "select_related": ["employee", "leave_type"],
+        },
+        "leave-encashments": {
+            "model": LeaveEncashment,
+            "title": "Leave Encashments",
+            "singular": "Leave Encashment",
+            "columns": [("request_date", "Date"), ("employee", "Employee"), ("leave_type", "Leave Type"), ("days", "Days"), ("amount", "Amount"), ("status", "Status")],
+            "search": ["employee__employee_id", "employee__name", "leave_type__name"],
+            "form_fields": ["employee", "leave_type", "request_date", "days", "amount", "approver"],
+            "select_related": ["employee", "leave_type", "approver"],
+            "workflow": APPROVAL_WORKFLOW,
+        },
+        "payroll-variables": {
+            "model": PayrollVariable,
+            "title": "Payroll Variables",
+            "singular": "Payroll Variable",
+            "columns": [("code", "Code"), ("name", "Variable"), ("value", "Value"), ("effective_date", "Effective"), ("active", "Active")],
+            "search": ["code", "name"],
+            "form_fields": ["company", "code", "name", "value", "effective_date", "active"],
+            "select_related": ["company"],
+        },
+        "salary-packages": {
+            "model": SalaryPackage,
+            "title": "Salary Packages",
+            "singular": "Salary Package",
+            "columns": [("code", "Code"), ("name", "Package"), ("grade", "Grade"), ("base_salary", "Base Salary"), ("active", "Active")],
+            "search": ["code", "name", "grade__name"],
+            "form_fields": ["company", "code", "name", "grade", "base_salary", "description", "active"],
+            "select_related": ["company", "grade"],
+        },
+        "payroll-report-templates": {
+            "model": PayrollReportTemplate,
+            "title": "Payroll Report Templates",
+            "singular": "Payroll Report Template",
+            "columns": [("code", "Code"), ("name", "Template"), ("file_format", "Format"), ("active", "Active")],
+            "search": ["code", "name", "columns"],
+            "form_fields": ["company", "code", "name", "columns", "file_format", "active"],
+            "select_related": ["company"],
+        },
+        "employee-loan-requests": {
+            "model": EmployeeLoanRequest,
+            "title": "Employee Loan Requests",
+            "singular": "Employee Loan Request",
+            "columns": [("number", "Number"), ("employee", "Employee"), ("loan_type", "Loan Type"), ("amount", "Amount"), ("term_months", "Term"), ("status", "Status")],
+            "search": ["number", "employee__employee_id", "employee__name", "loan_type__name", "purpose"],
+            "form_fields": ["employee", "loan_type", "number", "request_date", "amount", "term_months", "interest_rate", "purpose", "approver"],
+            "select_related": ["employee", "loan_type", "approver"],
+            "workflow": LOAN_REQUEST_WORKFLOW,
+        },
+        "loan-installments": {
+            "model": LoanInstallment,
+            "title": "Loan Installments",
+            "singular": "Loan Installment",
+            "columns": [("loan", "Loan"), ("sequence", "Sequence"), ("due_date", "Due Date"), ("principal", "Principal"), ("interest", "Interest"), ("status", "Status")],
+            "search": ["loan__number", "loan__employee__name"],
+            "form_fields": ["loan", "sequence", "due_date", "principal", "interest", "paid_amount", "status"],
+            "select_related": ["loan", "loan__employee"],
+        },
+        "loan-repayments": {
+            "model": LoanRepayment,
+            "title": "Loan Repayments",
+            "singular": "Loan Repayment",
+            "columns": [("payment_date", "Date"), ("loan", "Loan"), ("installment", "Installment"), ("amount", "Amount"), ("reference", "Reference"), ("status", "Status")],
+            "search": ["loan__number", "loan__employee__name", "reference"],
+            "form_fields": ["loan", "installment", "payment_date", "amount", "reference", "status", "notes"],
+            "select_related": ["loan", "loan__employee", "installment"],
+        },
+        "loan-eligibility": {
+            "model": LoanEligibilityAssignment,
+            "title": "Loan Eligibility Assignments",
+            "singular": "Loan Eligibility Assignment",
+            "columns": [("employee", "Employee"), ("policy", "Policy"), ("date_start", "Start"), ("date_end", "End"), ("maximum_amount", "Maximum"), ("active", "Active")],
+            "search": ["employee__employee_id", "employee__name", "policy__name"],
+            "form_fields": ["employee", "policy", "date_start", "date_end", "maximum_amount", "active"],
+            "select_related": ["employee", "policy"],
+        },
+        "training-requests": {
+            "model": TrainingRequest,
+            "title": "Training Requests",
+            "singular": "Training Request",
+            "columns": [("requested_date", "Date"), ("employee", "Employee"), ("course", "Course"), ("preferred_start_date", "Preferred Start"), ("estimated_cost", "Estimated Cost"), ("status", "Status")],
+            "search": ["employee__employee_id", "employee__name", "course__name", "business_reason"],
+            "form_fields": ["employee", "course", "requested_date", "preferred_start_date", "business_reason", "estimated_cost", "approver"],
+            "select_related": ["employee", "course", "approver"],
+            "workflow": APPROVAL_WORKFLOW,
+        },
+        "training-progress": {
+            "model": TrainingProgress,
+            "title": "Training Progress",
+            "singular": "Training Progress",
+            "columns": [("employee", "Employee"), ("conduct", "Training Conduct"), ("completion_percent", "Completion %"), ("score", "Score"), ("completed_date", "Completed")],
+            "search": ["employee__employee_id", "employee__name", "conduct__name", "conduct__reference"],
+            "form_fields": ["employee", "conduct", "completion_percent", "score", "completed_date", "certificate_url", "notes"],
+            "select_related": ["employee", "conduct"],
+        },
+        "advance-cycles": {
+            "model": AdvanceCycle,
+            "title": "Cash Advance Cycles",
+            "singular": "Cash Advance Cycle",
+            "columns": [("name", "Cycle"), ("company", "Company"), ("date_start", "Start"), ("date_end", "End"), ("limit_amount", "Limit"), ("active", "Active")],
+            "search": ["name", "company__name"],
+            "form_fields": ["company", "name", "date_start", "date_end", "limit_amount", "active"],
+            "select_related": ["company"],
+        },
+        "expense-cycles": {
+            "model": ExpenseCycle,
+            "title": "Expense Cycles",
+            "singular": "Expense Cycle",
+            "columns": [("name", "Cycle"), ("company", "Company"), ("date_start", "Start"), ("date_end", "End"), ("limit_amount", "Limit"), ("active", "Active")],
+            "search": ["name", "company__name"],
+            "form_fields": ["company", "name", "date_start", "date_end", "limit_amount", "active"],
+            "select_related": ["company"],
+        },
+        "advance-limit-consumptions": {
+            "model": AdvanceLimitConsumption,
+            "title": "Advance Limit Consumption",
+            "singular": "Advance Limit Consumption",
+            "columns": [("transaction_date", "Date"), ("employee", "Employee"), ("cycle", "Cycle"), ("transaction_reference", "Reference"), ("amount", "Amount"), ("active", "Active")],
+            "search": ["employee__employee_id", "employee__name", "cycle__name", "transaction_reference"],
+            "form_fields": ["employee", "cycle", "transaction_reference", "transaction_date", "amount", "active"],
+            "select_related": ["employee", "cycle"],
+        },
+        "expense-limit-consumptions": {
+            "model": ExpenseLimitConsumption,
+            "title": "Expense Limit Consumption",
+            "singular": "Expense Limit Consumption",
+            "columns": [("transaction_date", "Date"), ("employee", "Employee"), ("cycle", "Cycle"), ("transaction_reference", "Reference"), ("amount", "Amount"), ("active", "Active")],
+            "search": ["employee__employee_id", "employee__name", "cycle__name", "transaction_reference"],
+            "form_fields": ["employee", "cycle", "transaction_reference", "transaction_date", "amount", "active"],
+            "select_related": ["employee", "cycle"],
+        },
+    }
+)
+
+ENTITY_CONFIG.update(PURCHASE_ENTITY_CONFIG)
+
+
 DOCUMENT_CONFIG = {
     "sales": {
         "line_model": SaleOrderLine,
@@ -1016,11 +1382,59 @@ DOCUMENT_CONFIG = {
         "line_fields": ["product", "description", "quantity", "unit_price"],
         "line_title": "Order Lines",
         "total_fields": [("Total", "total")],
-        "editable_statuses": [PurchaseOrder.Status.DRAFT],
+        "editable_statuses": [PurchaseOrder.Status.DRAFT, PurchaseOrder.Status.REVISED],
         "actions": {
-            "confirm": {"label": "Confirm", "from": [PurchaseOrder.Status.DRAFT], "to": PurchaseOrder.Status.CONFIRMED, "primary": True},
+            "send": {
+                "label": "Send to Vendor",
+                "from": [PurchaseOrder.Status.DRAFT, PurchaseOrder.Status.REVISED],
+                "to": PurchaseOrder.Status.SENT,
+                "primary": True,
+            },
+            "request-approval": {
+                "label": "Request Approval",
+                "from": [PurchaseOrder.Status.SENT],
+                "to": PurchaseOrder.Status.WAITING_APPROVAL,
+                "primary": True,
+            },
+            "confirm": {
+                "label": "Approve",
+                "from": [PurchaseOrder.Status.DRAFT, PurchaseOrder.Status.WAITING_APPROVAL],
+                "to": PurchaseOrder.Status.CONFIRMED,
+                "primary": True,
+            },
+            "reject": {
+                "label": "Reject",
+                "from": [PurchaseOrder.Status.WAITING_APPROVAL],
+                "to": PurchaseOrder.Status.REJECTED,
+            },
+            "revise": {
+                "label": "Revise",
+                "from": [PurchaseOrder.Status.REJECTED, PurchaseOrder.Status.EXPIRED],
+                "to": PurchaseOrder.Status.REVISED,
+            },
             "complete": {"label": "Complete", "from": [PurchaseOrder.Status.CONFIRMED], "to": PurchaseOrder.Status.COMPLETED, "primary": True},
-            "cancel": {"label": "Cancel", "from": [PurchaseOrder.Status.DRAFT, PurchaseOrder.Status.CONFIRMED], "to": PurchaseOrder.Status.CANCELLED},
+            "close": {
+                "label": "Close",
+                "from": [PurchaseOrder.Status.CONFIRMED, PurchaseOrder.Status.COMPLETED],
+                "to": PurchaseOrder.Status.CLOSED,
+                "primary": True,
+            },
+            "expire": {
+                "label": "Mark Expired",
+                "from": [PurchaseOrder.Status.DRAFT, PurchaseOrder.Status.SENT, PurchaseOrder.Status.WAITING_APPROVAL],
+                "to": PurchaseOrder.Status.EXPIRED,
+            },
+            "cancel": {
+                "label": "Cancel",
+                "from": [
+                    PurchaseOrder.Status.DRAFT,
+                    PurchaseOrder.Status.SENT,
+                    PurchaseOrder.Status.WAITING_APPROVAL,
+                    PurchaseOrder.Status.CONFIRMED,
+                    PurchaseOrder.Status.REVISED,
+                ],
+                "to": PurchaseOrder.Status.CANCELLED,
+            },
         },
     },
     "invoices": {
@@ -1140,7 +1554,25 @@ def _config(entity):
 
 
 def _can(user, action, model, entity=None):
-    return user.has_perm(f"{model._meta.app_label}.{action}_{model._meta.model_name}") and can_hr_entity_action(
+    return (
+        user.has_perm(f"{model._meta.app_label}.{action}_{model._meta.model_name}")
+        and can_hr_entity_action(user, entity, action)
+        and can_purchase_entity_action(user, entity, action)
+    )
+
+
+def _scope_queryset(user, entity, queryset):
+    queryset = scope_hr_queryset(user, entity, queryset)
+    return scope_purchase_queryset(user, entity, queryset)
+
+
+def _scope_form(form, user, entity):
+    scope_hr_form(form, user, entity)
+    return scope_purchase_form(form, user, entity)
+
+
+def _can_workflow(user, entity, action, instance):
+    return can_hr_workflow_action(user, entity, action, instance) and can_purchase_workflow_action(
         user,
         entity,
         action,
@@ -1201,6 +1633,9 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
         prefix="document_lines",
         queryset=line_queryset,
     )
+    _scope_form(form, request.user, entity)
+    for line_form in formset.forms:
+        _scope_form(line_form, request.user, entity)
     current_status = getattr(instance, "status", None) if instance else None
     editable_statuses = document.get("editable_statuses")
     editable = instance is None or editable_statuses is None or current_status in editable_statuses
@@ -1231,7 +1666,9 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
     available_actions = [
         {"key": key, **definition}
         for key, definition in document.get("actions", {}).items()
-        if instance and current_status in definition["from"]
+        if instance
+        and current_status in definition["from"]
+        and _can_workflow(request.user, entity, key, instance)
     ]
     totals = []
     if instance:
@@ -1301,8 +1738,8 @@ def customer_search(request):
 @login_required
 def dashboard(request):
     today = timezone.localdate()
-    visible_employees = scope_hr_queryset(request.user, "employees", Employee.objects.all())
-    visible_attendance = scope_hr_queryset(request.user, "attendance", Attendance.objects.all())
+    visible_employees = _scope_queryset(request.user, "employees", Employee.objects.all())
+    visible_attendance = _scope_queryset(request.user, "attendance", Attendance.objects.all())
     sales_total = SaleOrder.objects.exclude(status=SaleOrder.Status.CANCELLED).aggregate(value=Sum("total"))["value"] or 0
     receivables = (
         Invoice.objects.filter(invoice_type=Invoice.InvoiceType.CUSTOMER)
@@ -1350,7 +1787,7 @@ def entity_list(request, entity):
             can_change=_can(request.user, "change", model, entity),
             can_delete=_can(request.user, "delete", model, entity),
         )
-    queryset = scope_hr_queryset(request.user, entity, model.objects.all())
+    queryset = _scope_queryset(request.user, entity, model.objects.all())
     if config.get("select_related"):
         queryset = queryset.select_related(*config["select_related"])
     query = request.GET.get("q", "").strip()
@@ -1393,7 +1830,7 @@ def entity_create(request, entity):
         context, response = _document_context(request, entity, config)
         return response or render(request, "core/document_form.html", context)
     form = _form_class(config)(request.POST or None)
-    scope_hr_form(form, request.user, entity)
+    _scope_form(form, request.user, entity)
     if form.is_valid():
         instance = form.save(commit=False)
         if isinstance(instance, StockMove):
@@ -1418,7 +1855,7 @@ def entity_edit(request, entity, pk):
         if not _can(request.user, "view", model, entity):
             messages.error(request, "You do not have permission to view this record.")
             return redirect("entity_list", entity=entity)
-        scoped_queryset = scope_hr_queryset(request.user, entity, model.objects.all())
+        scoped_queryset = _scope_queryset(request.user, entity, model.objects.all())
         instance = get_object_or_404(scoped_queryset, pk=pk)
         return training_conduct_form(
             request,
@@ -1429,7 +1866,7 @@ def entity_edit(request, entity, pk):
     if not config.get("editable", True) or not _can(request.user, "change", model, entity):
         messages.error(request, "This record is immutable or you do not have permission to edit it.")
         return redirect("entity_list", entity=entity)
-    scoped_queryset = scope_hr_queryset(request.user, entity, model.objects.all())
+    scoped_queryset = _scope_queryset(request.user, entity, model.objects.all())
     instance = get_object_or_404(scoped_queryset, pk=pk)
     if entity in DOCUMENT_CONFIG:
         context, response = _document_context(request, entity, config, instance=instance, mode="Edit")
@@ -1441,7 +1878,7 @@ def entity_edit(request, entity, pk):
         messages.error(request, "This record is locked by its workflow status.")
         return redirect("entity_edit", entity=entity, pk=pk)
     form = _form_class(config)(request.POST or None, instance=instance)
-    scope_hr_form(form, request.user, entity)
+    _scope_form(form, request.user, entity)
     if workflow_locked:
         for field in form.fields.values():
             field.disabled = True
@@ -1452,7 +1889,7 @@ def entity_edit(request, entity, pk):
     workflow_actions = [
         {"key": key, **definition}
         for key, definition in config.get("workflow", {}).items()
-        if current_status in definition["from"] and can_hr_workflow_action(request.user, entity, key, instance)
+        if current_status in definition["from"] and _can_workflow(request.user, entity, key, instance)
     ]
     return render(
         request,
@@ -1480,7 +1917,7 @@ def entity_delete(request, entity, pk):
     if not config.get("deletable", True) or not _can(request.user, "delete", model, entity):
         messages.error(request, "This record cannot be deleted or you do not have permission.")
         return redirect("entity_list", entity=entity)
-    scoped_queryset = scope_hr_queryset(request.user, entity, model.objects.all())
+    scoped_queryset = _scope_queryset(request.user, entity, model.objects.all())
     instance = get_object_or_404(scoped_queryset, pk=pk)
     if request.method == "POST":
         instance.delete()
@@ -1504,7 +1941,7 @@ def document_pdf(request, entity, pk):
     if not _can(request.user, "view", model, entity):
         messages.error(request, "You do not have permission to print this document.")
         return redirect("entity_list", entity=entity)
-    queryset = scope_hr_queryset(request.user, entity, model.objects.all()).select_related(*report["select_related"])
+    queryset = _scope_queryset(request.user, entity, model.objects.all()).select_related(*report["select_related"])
     line_queryset = document["line_model"].objects.all()
     if report["line_select_related"]:
         line_queryset = line_queryset.select_related(*report["line_select_related"])
@@ -1585,9 +2022,9 @@ def document_action(request, entity, pk, action):
         if not _can(request.user, "change", model, entity):
             messages.error(request, "You do not have permission to update this workflow.")
             return redirect("entity_list", entity=entity)
-        scoped_queryset = scope_hr_queryset(request.user, entity, model.objects.all())
+        scoped_queryset = _scope_queryset(request.user, entity, model.objects.all())
         instance = get_object_or_404(scoped_queryset, pk=pk)
-        if not can_hr_workflow_action(request.user, entity, action, instance):
+        if not _can_workflow(request.user, entity, action, instance):
             messages.error(request, "Your role cannot perform that workflow approval action.")
             return redirect("entity_edit", entity=entity, pk=pk)
         current_status = getattr(instance, "status", None)
@@ -1607,10 +2044,13 @@ def document_action(request, entity, pk, action):
     if not _can(request.user, "change", model, entity):
         messages.error(request, "You do not have permission to update this document.")
         return redirect("entity_list", entity=entity)
-    instance = get_object_or_404(model, pk=pk)
+    instance = get_object_or_404(_scope_queryset(request.user, entity, model.objects.all()), pk=pk)
     definition = document.get("actions", {}).get(action)
     if definition is None or instance.status not in definition["from"]:
         messages.error(request, "That workflow action is not available for the current status.")
+        return redirect("entity_edit", entity=entity, pk=pk)
+    if not _can_workflow(request.user, entity, action, instance):
+        messages.error(request, "Your role cannot perform that workflow approval action.")
         return redirect("entity_edit", entity=entity, pk=pk)
     if definition.get("requires_balance") and not instance.balanced:
         messages.error(request, "A journal entry must have equal non-zero debit and credit totals before posting.")

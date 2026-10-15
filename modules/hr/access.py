@@ -26,13 +26,34 @@ CAREER_USER = "Career Transition Self Service"
 FULL_HR_GROUPS = {HR_SUPER_USER, HR_MANAGER, HR_ADMINISTRATOR}
 PAYROLL_ENTITIES = {
     "contracts",
+    "contract-allowances",
+    "contract-letters",
+    "contract-types",
     "payslips",
     "payroll-periods",
+    "payroll-report-templates",
+    "payroll-variables",
     "salary-components",
+    "salary-packages",
     "payroll-runs",
     "compensation-benefits",
 }
-FINANCE_ENTITIES = {"expenses", "loans", "cash-advances", "loan-types", "loan-policies", "expense-products"}
+FINANCE_ENTITIES = {
+    "expenses",
+    "loans",
+    "cash-advances",
+    "loan-types",
+    "loan-policies",
+    "employee-loan-requests",
+    "loan-installments",
+    "loan-repayments",
+    "loan-eligibility",
+    "expense-products",
+    "advance-cycles",
+    "expense-cycles",
+    "advance-limit-consumptions",
+    "expense-limit-consumptions",
+}
 CAREER_ENTITIES = {"career-transition-requests", "career-transition-types", "career-transition-letters"}
 SELF_SERVICE_ENTITIES = {
     "employees",
@@ -56,6 +77,19 @@ SELF_SERVICE_ENTITIES = {
     "training-courses",
     "training-trainers",
     "training-conducts",
+    "employee-addresses",
+    "employee-relations",
+    "schedule-exchanges",
+    "attendance-change-requests",
+    "live-tracking-sessions",
+    "leave-opening-balances",
+    "leave-movements",
+    "leave-encashments",
+    "employee-loan-requests",
+    "loan-installments",
+    "loan-repayments",
+    "training-requests",
+    "training-progress",
 }
 SELF_MUTABLE_ENTITIES = {
     "leave-requests",
@@ -66,6 +100,11 @@ SELF_MUTABLE_ENTITIES = {
     "cash-advances",
     "career-transition-requests",
     "expenses",
+    "schedule-exchanges",
+    "attendance-change-requests",
+    "leave-encashments",
+    "employee-loan-requests",
+    "training-requests",
 }
 HR_SCOPED_ENTITIES = {
     "employees",
@@ -118,6 +157,38 @@ HR_SCOPED_ENTITIES = {
     "expense-products",
     "payroll-runs",
     "compensation-benefits",
+    "job-classifications",
+    "job-experience-levels",
+    "employee-categories",
+    "employee-addresses",
+    "employee-relations",
+    "working-calendars",
+    "work-patterns",
+    "schedule-exchanges",
+    "contract-types",
+    "contract-allowances",
+    "contract-letters",
+    "disciplinary-stages",
+    "attendance-change-requests",
+    "live-tracking-sessions",
+    "attendance-recomputes",
+    "leave-structures",
+    "leave-opening-balances",
+    "leave-movements",
+    "leave-encashments",
+    "payroll-variables",
+    "salary-packages",
+    "payroll-report-templates",
+    "employee-loan-requests",
+    "loan-installments",
+    "loan-repayments",
+    "loan-eligibility",
+    "training-requests",
+    "training-progress",
+    "advance-cycles",
+    "expense-cycles",
+    "advance-limit-consumptions",
+    "expense-limit-consumptions",
 }
 
 
@@ -228,6 +299,10 @@ def scope_hr_queryset(user, entity, queryset):
             if not elevated:
                 queryset = queryset.filter(status__in={"confirmed", "paid"})
         return queryset
+    if "contract" in fields:
+        return queryset.filter(contract__employee_id__in=employee_ids)
+    if "loan" in fields:
+        return queryset.filter(loan__employee_id__in=employee_ids)
     if "company" in fields:
         return queryset.filter(company_id__in=company_ids)
     if "course" in fields:
@@ -258,4 +333,8 @@ def scope_hr_form(form, user, entity):
             field.queryset = queryset.filter(company_id__in=company_ids)
         elif "employee" in related_fields:
             field.queryset = queryset.filter(employee_id__in=employee_queryset.values("pk"))
+        elif "contract" in related_fields:
+            field.queryset = queryset.filter(contract__employee_id__in=employee_queryset.values("pk"))
+        elif "loan" in related_fields:
+            field.queryset = queryset.filter(loan__employee_id__in=employee_queryset.values("pk"))
     return form

@@ -26,6 +26,7 @@ INSTALLED_APPS = [
     "core.apps.CoreConfig",
     "modules.apphub.apps.AppHubConfig",
     "modules.hr.apps.HRConfig",
+    "modules.purchase.apps.PurchaseConfig",
     "modules.finance.apps.FinanceConfig",
     "modules.crm.apps.CRMConfig",
     "modules.operations.apps.OperationsConfig",

@@ -55,25 +55,7 @@
             <details class="nav-section nav-group" {% if section.open %}open{% endif %}>
               <summary data-group-search="{{ section.label|lower }}"><span class="nav-icon">{{ section.icon }}</span><span>{{ section.label }}</span><i>⌄</i></summary>
               <div class="nav-children">
-                {% for item in section.items %}
-                  {% if item.app_slug %}
-                    <a data-menu-item data-search="{{ item.label|lower }} {{ item.category|lower }}" class="nav-item nav-child {% if request.resolver_match.url_name == 'app_workspace' and active_app_slug == item.app_slug %}active{% endif %}" href="{% url 'app_workspace' item.app_slug %}">
-                      <span class="nav-dot"></span>{{ item.label }}
-                    </a>
-                  {% elif item.entity %}
-                    <a data-menu-item data-search="{{ item.label|lower }} {{ section.label|lower }}" class="nav-item nav-child {% if request.resolver_match.kwargs.entity == item.entity %}active{% endif %}" href="{% url 'entity_list' item.entity %}">
-                      <span class="nav-dot"></span>{{ item.label }}
-                    </a>
-                  {% elif item.feature %}
-                    <a data-menu-item data-search="{{ item.label|lower }} {{ section.label|lower }}" class="nav-item nav-child {% if request.resolver_match.url_name == 'hr_feature' and request.resolver_match.kwargs.feature == item.feature %}active{% endif %}" href="{% url 'hr_feature' item.feature %}">
-                      <span class="nav-dot"></span>{{ item.label }}
-                    </a>
-                  {% elif item.url %}
-                    <a data-menu-item data-search="{{ item.label|lower }} {{ section.label|lower }}" class="nav-item nav-child" href="{{ item.url }}">
-                      <span class="nav-dot"></span>{{ item.label }}
-                    </a>
-                  {% endif %}
-                {% endfor %}
+                {% include "apphub/_nav_menu_items.html" with menu_items=section.items section_label=section.label %}
               </div>
             </details>
           {% else %}
@@ -93,7 +75,7 @@
                     <span class="nav-icon">{% if item.icon %}{{ item.icon }}{% else %}{{ item.label|slice:":1" }}{% endif %}</span>{{ item.label }}
                   </a>
                 {% elif item.feature %}
-                  <a data-menu-item data-search="{{ item.label|lower }}" class="nav-item {% if request.resolver_match.url_name == 'hr_feature' and request.resolver_match.kwargs.feature == item.feature %}active{% endif %}" href="{% url 'hr_feature' item.feature %}">
+                  <a data-menu-item data-search="{{ item.label|lower }}" class="nav-item {% if request.resolver_match.url_name == item.feature_url_name and request.resolver_match.kwargs.feature == item.feature %}active{% endif %}" href="{% url item.feature_url_name item.feature %}">
                     <span class="nav-icon">{% if item.icon %}{{ item.icon }}{% else %}{{ item.label|slice:":1" }}{% endif %}</span>{{ item.label }}
                   </a>
                 {% endif %}

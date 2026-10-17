@@ -37,6 +37,9 @@ PAYROLL_ENTITIES = {
     "salary-packages",
     "payroll-runs",
     "compensation-benefits",
+    "contract-allowance-history",
+    "payroll-disbursements",
+    "payroll-accounting-events",
 }
 FINANCE_ENTITIES = {
     "expenses",
@@ -53,8 +56,15 @@ FINANCE_ENTITIES = {
     "expense-cycles",
     "advance-limit-consumptions",
     "expense-limit-consumptions",
+    "employee-loan-offers",
+    "expense-product-categories",
 }
-CAREER_ENTITIES = {"career-transition-requests", "career-transition-types", "career-transition-letters"}
+CAREER_ENTITIES = {
+    "career-transition-requests",
+    "career-transition-types",
+    "career-transition-letters",
+    "career-transition-change-history",
+}
 SELF_SERVICE_ENTITIES = {
     "employees",
     "attendance",
@@ -90,6 +100,11 @@ SELF_SERVICE_ENTITIES = {
     "loan-repayments",
     "training-requests",
     "training-progress",
+    "employee-id-cards",
+    "multiple-job-assignments",
+    "employee-document-history",
+    "employee-loan-offers",
+    "face-recognition-profiles",
 }
 SELF_MUTABLE_ENTITIES = {
     "leave-requests",
@@ -189,6 +204,24 @@ HR_SCOPED_ENTITIES = {
     "expense-cycles",
     "advance-limit-consumptions",
     "expense-limit-consumptions",
+    "employee-id-card-templates",
+    "employee-id-cards",
+    "multiple-job-assignments",
+    "organization-configurations",
+    "hr-announcements",
+    "contract-allowance-history",
+    "employee-document-bulk-uploads",
+    "employee-document-history",
+    "attendance-recompute-transactions",
+    "leave-bulk-operations",
+    "payroll-disbursements",
+    "payroll-accounting-events",
+    "employee-loan-offers",
+    "career-transition-change-history",
+    "training-categories",
+    "face-recognition-profiles",
+    "expense-product-categories",
+    "hr-workflow-audits",
 }
 
 
@@ -303,6 +336,15 @@ def scope_hr_queryset(user, entity, queryset):
         return queryset.filter(contract__employee_id__in=employee_ids)
     if "loan" in fields:
         return queryset.filter(loan__employee_id__in=employee_ids)
+    model_lookup = {
+        "employeedocumenthistory": ("document__employee_id", employee_ids),
+        "payrolldisbursement": ("payroll_run__company_id", company_ids),
+        "payrollaccountingevent": ("payroll_run__company_id", company_ids),
+        "careertransitionchangehistory": ("request__employee_id", employee_ids),
+    }.get(model._meta.model_name)
+    if model_lookup:
+        lookup, values = model_lookup
+        return queryset.filter(**{f"{lookup}__in": values})
     if "company" in fields:
         return queryset.filter(company_id__in=company_ids)
     if "course" in fields:

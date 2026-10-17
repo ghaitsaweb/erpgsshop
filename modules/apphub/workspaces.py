@@ -111,9 +111,61 @@ APP_WORKSPACES = {
         "workflow": ["Schedule an appraisal", "Record performance feedback", "Track development plans"],
     },
     "accounting": {
-        "tagline": "A controlled foundation for double-entry accounting",
-        "entities": ["accounts", "journal-entries"],
-        "workflow": ["Configure the chart of accounts", "Prepare journal entries", "Post balanced transactions"],
+        "tagline": "Control the complete financial cycle from ledgers and receivables to treasury, tax, and reporting",
+        "entities": [
+            "accounts", "account-tags", "accounting-cost-centers", "account-journals", "journal-entries", "journal-items", "journal-line-cost-center-allocations",
+            "fiscal-years", "fiscal-periods", "fiscal-positions", "account-taxes", "withholding-taxes",
+            "payment-terms", "company-bank-accounts", "bank-statements", "bank-statement-lines",
+            "reconciliation-rules", "account-payments", "payment-allocations", "account-deposits",
+            "account-cheques", "internal-bank-transfers", "recurring-journals", "prepayments",
+            "currency-rates", "currency-revaluations", "accounting-settings", "accounting-audit-events",
+            "account-types", "journal-entry-templates", "journal-entry-template-lines", "account-payment-methods",
+            "other-income-expenses", "other-income-expense-lines", "payment-vouchers", "payment-voucher-lines",
+            "multi-payment-batches", "multi-payment-batch-lines", "withholding-tax-transactions",
+            "withholding-tax-transaction-lines", "withholding-tax-history", "reconciliation-history",
+            "bank-import-configurations", "accounting-import-previews", "currency-revaluation-lines",
+            "closing-entries", "opening-balance-lines", "company-account-mappings", "company-account-mapping-lines",
+            "financial-ratio-definitions", "cost-center-rules", "product-account-mappings",
+            "intercompany-partner-accounts", "soa-reminders", "account-report-definitions",
+            "account-tax-distributions", "fiscal-position-account-mappings", "fiscal-position-tax-mappings",
+            "commercial-accounting-settings", "partner-accounting-defaults",
+            "reconciliation-rule-conditions", "reconciliation-rule-counterparts", "reconciliation-rule-tests", "deposit-applications",
+            "prepayment-applications", "recurring-journal-executions", "currency-rate-logs",
+            "asset-accounting-settings", "asset-category-accounting-rules", "asset-capitalizations", "asset-capitalization-lines",
+            "asset-capitalization-allocations", "asset-capitalization-assets", "asset-depreciation-lines", "asset-revaluations", "asset-disposals",
+            "budget-account-groups", "budget-accounts", "budget-transactions", "budget-movement-audits", "budgets",
+            "budget-change-reason-categories", "budget-change-requests", "budget-change-request-lines",
+            "budget-transfers", "budget-transfer-lines", "budget-carry-overs", "budget-carry-over-lines",
+            "budget-cost-center-distributions",
+            "petty-cash-categories", "petty-cash-funds", "petty-cash-vouchers", "petty-cash-voucher-lines",
+            "petty-cash-replenishments", "petty-cash-reconciliations", "petty-cash-reconciliation-lines",
+            "petty-cash-replenishment-journal-logs", "accounting-integration-events",
+            "country-tax-profiles", "compliance-reports", "external-tax-submissions",
+            "localized-tax-transaction-lines", "tax-authority-callback-events", "tax-authority-sync-cursors",
+            "regulatory-rate-sync-runs", "pos-order-accounting", "sale-order-localizations", "sale-order-localized-tax-lines",
+            "bank-statement-parse-jobs", "company-accounting-provisioning-runs", "assets",
+            "account-tax-credit-note-distributions", "account-deposit-lines", "account-deposit-history",
+            "account-deposit-conversions", "account-deposit-conversion-lines", "account-payment-lines",
+            "payment-unreconcile-logs", "account-cheque-lines", "company-account-mapping-tax-lines",
+            "general-centralized-notifications", "soa-reminder-audits", "accounting-vision-reports",
+            "bank-cash-valuations", "bank-cash-valuation-lines", "source-document-cancellations",
+            "product-accounting-rules", "ar-reconciliation-sessions", "ar-reconciliation-lines", "ar-reconciliation-allocations",
+            "pos-accounting-settings", "pos-payment-account-mappings", "payroll-accounting-settings", "payroll-component-account-mappings", "inventory-accounting-settings",
+            "inventory-usage-types", "inventory-accounting-documents", "inventory-accounting-document-lines",
+            "expense-advance-accounting-settings", "expense-advance-settlements",
+            "localization-tax-codes", "statutory-report-templates", "statutory-report-lines",
+            "tax-authority-documents", "tax-identifier-lookups", "regulatory-exchange-rates",
+            "tax-middleware-connectors", "compliance-audit-events",
+            "payroll-accounting-events", "purchase-accounting-documents", "construction-accounting-postings",
+            "stock-moves", "pos-sessions", "expenses", "cash-advances",
+            "invoices", "contacts", "products",
+        ],
+        "workflow": [
+            "Configure fiscal foundations, accounts, journals, taxes, and controls",
+            "Post balanced journals, invoices, receipts, payments, deposits, and transfers",
+            "Reconcile cash and bank, revalue currency, close periods, and review financial statements",
+        ],
+        "hide_unlisted_menu_entities": True,
     },
     "budget": {
         "tagline": "Compare plans, commitments, and actual spending",
@@ -191,6 +243,134 @@ APP_WORKSPACES = {
         "workflow": ["Create a workspace", "Configure an agent and allowed tools", "Queue and review AI tasks"],
     },
 }
+
+# Detailed entities are attached after the compact application catalog above so
+# discovery, contextual navigation, and application installation share one list.
+APP_WORKSPACES["hr"]["entities"].extend(
+    [
+        "business-units", "work-locations", "job-positions", "employee-change-requests", "employee-documents",
+        "employee-disciplinary", "employee-checklists", "employee-onboarding", "employee-offboarding",
+        "raw-attendance", "shifts", "work-schedules", "schedule-assignments", "leave-types", "leave-allocations",
+        "overtime-rules", "payroll-periods", "salary-components", "travel-requests", "training-programs",
+        "cash-advances", "hr-years", "company-holidays", "employee-grades", "skills", "document-types",
+        "hr-settings", "loan-types", "loan-policies", "career-transition-types", "career-transition-letters",
+        "career-transition-requests", "travel-packages", "training-courses", "training-trainers",
+        "training-conducts", "expense-products", "payroll-runs", "compensation-benefits", "job-classifications",
+        "job-experience-levels", "employee-categories", "employee-addresses", "employee-relations",
+        "working-calendars", "work-patterns", "schedule-exchanges", "contract-types", "contract-allowances",
+        "contract-letters", "disciplinary-stages", "attendance-change-requests", "live-tracking-sessions",
+        "attendance-recomputes", "leave-structures", "leave-opening-balances", "leave-movements",
+        "leave-encashments", "payroll-variables", "salary-packages", "payroll-report-templates",
+        "employee-loan-requests", "loan-installments", "loan-repayments", "loan-eligibility",
+        "training-requests", "training-progress", "advance-cycles", "expense-cycles",
+        "advance-limit-consumptions", "expense-limit-consumptions", "employee-id-card-templates",
+        "employee-id-cards", "multiple-job-assignments", "organization-configurations", "hr-announcements",
+        "contract-allowance-history", "employee-document-bulk-uploads", "employee-document-history",
+        "attendance-recompute-transactions", "leave-bulk-operations", "payroll-disbursements",
+        "payroll-accounting-events", "employee-loan-offers", "career-transition-change-history",
+        "training-categories", "face-recognition-profiles", "expense-product-categories", "hr-workflow-audits",
+    ]
+)
+
+APP_WORKSPACES["purchase"]["entities"].extend(
+    [
+        "purchase-quotation-lines", "direct-purchase-lines", "service-work-order-lines", "purchase-tender-lines",
+        "tender-invitations", "tender-documents", "tender-audit-logs", "blanket-order-lines",
+        "purchase-product-categories", "purchase-product-variants", "vendor-communications",
+        "vendor-transaction-history", "purchase-order-communications", "product-budget-movements",
+        "purchase-accounting-documents", "purchase-accounting-lines", "purchase-stock-demands",
+        "purchase-inventory-transfers", "purchase-inventory-transfer-lines", "purchase-peppol-events",
+        "purchase-contract-terms", "purchase-order-revisions",
+    ]
+)
+
+APP_WORKSPACES["construction"].update(
+    {
+        "tagline": "Control projects from contract and BOQ through field execution, claims, and accounting",
+        "workflow": [
+            "Set up the project, contract, BOQ, and cost baseline",
+            "Execute job orders, quantities, resources, and procurement",
+            "Certify progress, claims, risks, issues, and financial handoff",
+        ],
+        "hide_unlisted_menu_entities": True,
+    }
+)
+APP_WORKSPACES["construction"]["entities"].extend(
+    [
+        "construction-contracts", "construction-contract-milestones", "construction-boqs",
+        "construction-boq-items", "construction-cost-sheets", "construction-cost-sheet-items",
+        "construction-budget-changes", "construction-budget-change-lines", "construction-job-orders",
+        "construction-progress-logs", "construction-task-workers", "construction-quantity-surveys",
+        "construction-quantity-survey-lines", "construction-resource-actualizations",
+        "construction-resource-lines", "construction-timesheets", "construction-timesheet-lines",
+        "construction-progressive-claims", "construction-claim-lines", "construction-risks",
+        "construction-issues", "construction-opening-balances", "construction-account-settings",
+        "construction-material-demands", "construction-material-demand-lines",
+        "construction-procurement-allocations", "construction-subcontract-job-orders",
+        "construction-product-groups", "construction-boq-templates", "construction-boq-template-items",
+        "construction-boq-template-cost-lines", "construction-contract-dp-lines",
+        "construction-boq-cost-lines", "construction-cost-sheet-resources",
+        "construction-equipment-facilities", "construction-quantity-survey-sources",
+        "construction-claim-cumulative-lines", "construction-claim-attachments",
+        "construction-project-profiles", "construction-account-setting-lines",
+        "construction-account-snapshots", "construction-opening-balance-imports",
+        "construction-opening-balance-exports", "construction-procurement-lines",
+        "construction-boq-imports",
+        "construction-inventory-transfers", "construction-inventory-transfer-lines",
+        "construction-subcontract-progress-lines", "construction-subcontract-milestones",
+        "construction-accounting-postings", "construction-procurement-budget-audits",
+        "purchase-requests", "purchase-quotations", "purchases", "direct-purchases", "goods-receipts",
+        "purchase-inventory-transfers", "warehouses", "employees", "assets", "accounts",
+    ]
+)
+
+POS_RETAIL_ENTITIES = [
+    "pos-profiles", "pos-stations", "pos-devices", "pos-device-sequences", "pos-registers",
+    "pos-sessions", "pos-orders", "pos-payments", "pos-bank-payments", "pos-bank-payment-logs",
+    "pos-cash-movements", "pos-product-categories", "products", "pos-product-variants",
+    "pos-product-attributes", "pos-product-attribute-values", "pos-product-bundles", "pos-product-bundle-lines",
+    "pos-boms", "pos-bom-lines",
+    "pos-bom-options", "pos-bom-option-lines", "pos-pricelists", "pos-pricelist-rules",
+    "pos-promotions", "pos-promotion-criteria", "pos-promotion-rules", "pos-promotion-rewards",
+    "pos-promotion-addons", "pos-campaigns", "pos-campaign-slides", "pos-campaign-running-texts",
+    "pos-payment-methods", "pos-profile-payment-methods", "pos-card-payments", "pos-mdr-charges",
+    "pos-member-deposits", "pos-deposit-movements", "pos-price-shortcuts", "pos-price-shortcut-lines",
+    "pos-home-delivery-fees", "pos-receipt-templates", "pos-receipt-sections", "pos-receipt-fields",
+    "pos-receipt-revisions", "pos-receipt-ocr-jobs", "pos-receipt-emails", "pos-email-templates",
+    "pos-receipt-print-logs", "pos-price-label-logs",
+    "pos-price-check-logs", "pos-otp-rules", "pos-otp-requests", "loyalty-programs", "loyalty-tiers",
+    "loyalty-wallets", "loyalty-transactions", "loyalty-welcome-points", "loyalty-tier-events",
+    "pos-rfm-configurations", "pos-rfm-runs", "pos-rfm-results", "pos-rfm-broadcast-logs",
+    "pos-outlet-orders", "pos-outlet-order-lines", "pos-stock-demands", "pos-stock-demand-lines",
+    "pos-inventory-transfers", "pos-inventory-transfer-lines", "pos-membership-themes", "pos-membership-accounts",
+    "pos-membership-otps", "pos-backups", "pos-backup-profiles", "pos-backup-lines", "pos-realtime-changes",
+    "pos-users", "invoices",
+]
+POS_FNB_ENTITIES = [
+    "pos-profiles", "pos-sessions", "pos-orders", "pos-reservations", "pos-reservation-lines",
+    "pos-areas", "restaurant-tables", "kitchen-tickets", "kitchen-ticket-lines", "pos-combos",
+    "pos-combo-categories", "pos-combo-lines", "pos-product-availability", "pos-service-charges",
+    "pos-takeaway-fees", "pos-queue-rules", "employee-meal-programs", "employee-meal-program-lines",
+    "employee-meal-records", "employee-meal-record-lines", "pos-consumption-reasons", "pos-internal-usages",
+    "pos-internal-usage-lines", "pos-cash-drawer-logs", "pos-fnb-sync-commands", "pos-boms",
+    "pos-bom-options", "pos-outlet-orders", "pos-stock-demands", "pos-inventory-transfers",
+]
+APP_WORKSPACES["pos"].update(
+    {
+        "tagline": "Operate the full retail lifecycle from profile and pricing through settlement and intelligence",
+        "entities": POS_RETAIL_ENTITIES,
+        "workflow": ["Configure outlets, stations, devices, products, and pricing", "Sell, collect payment, print receipts, and manage sessions", "Grow loyalty, membership, campaigns, and retail intelligence"],
+        "hide_unlisted_menu_entities": True,
+    }
+)
+APP_WORKSPACES["pos-fnb"].update(
+    {
+        "tagline": "Run table service, kitchen flow, reservations, meal benefits, and central-kitchen supply",
+        "entities": POS_FNB_ENTITIES,
+        "workflow": ["Configure areas, tables, menus, fees, and availability", "Reserve, order, route KOTs, serve, and settle", "Control meals, internal consumption, queues, and kitchen replenishment"],
+        "hide_unlisted_menu_entities": True,
+    }
+)
 
 
 LOCALIZATION_ENTITIES = ["localization-packs", "tax-rules", "payroll-parameters", "document-sequences"]
@@ -378,6 +558,150 @@ ENTITY_MENU_LABELS = {
     "expense-limit-consumptions": "Expense Limit Consumption",
     "accounts": "Chart of Accounts",
     "journal-entries": "Journal Entries",
+    "journal-items": "Journal Items",
+    "journal-line-cost-center-allocations": "Journal Cost Center Allocations",
+    "account-tags": "Account Tags",
+    "accounting-cost-centers": "Cost Centers",
+    "account-journals": "Accounting Journals",
+    "fiscal-years": "Fiscal Years",
+    "fiscal-periods": "Fiscal Periods",
+    "fiscal-positions": "Fiscal Positions",
+    "account-taxes": "Taxes",
+    "withholding-taxes": "Withholding Taxes",
+    "payment-terms": "Payment Terms",
+    "company-bank-accounts": "Bank Accounts",
+    "bank-statements": "Bank Statements",
+    "bank-statement-lines": "Bank Statement Lines",
+    "reconciliation-rules": "Reconciliation Rules",
+    "account-payments": "Receipts & Payments",
+    "payment-allocations": "Payment Allocations",
+    "account-deposits": "Deposits",
+    "account-cheques": "Receipt & Payment Cheques",
+    "internal-bank-transfers": "Internal Bank Transfers",
+    "recurring-journals": "Recurring Journals",
+    "prepayments": "Prepayments",
+    "currency-rates": "Currency Rates",
+    "currency-revaluations": "Currency Revaluations",
+    "accounting-settings": "Accounting Settings",
+    "accounting-audit-events": "Accounting Audit Trail",
+    "account-types": "Account Types",
+    "journal-entry-templates": "Journal Entry Templates",
+    "journal-entry-template-lines": "Journal Template Lines",
+    "account-payment-methods": "Payment Methods",
+    "other-income-expenses": "Other Income & Expenses",
+    "other-income-expense-lines": "Other Income & Expense Lines",
+    "payment-vouchers": "Payment & Receipt Vouchers",
+    "payment-voucher-lines": "Voucher Lines",
+    "multi-payment-batches": "Customer Multi Receipts & Vendor Multi Payments",
+    "multi-payment-batch-lines": "Multi Payment Lines",
+    "withholding-tax-transactions": "Withholding Tax Transactions",
+    "withholding-tax-transaction-lines": "Withholding Tax Lines",
+    "withholding-tax-history": "Withholding Tax History",
+    "reconciliation-history": "Reconciliation History",
+    "bank-import-configurations": "Bank Import Configurations",
+    "accounting-import-previews": "Accounting Import Preview",
+    "currency-revaluation-lines": "Currency Revaluation Lines",
+    "closing-entries": "Closing & Opening Entries",
+    "opening-balance-lines": "Opening Balance Lines",
+    "company-account-mappings": "Company Account Mapping",
+    "company-account-mapping-lines": "Company Account Mapping Lines",
+    "financial-ratio-definitions": "Financial Ratio Definitions",
+    "cost-center-rules": "Cost Center Rules",
+    "product-account-mappings": "Product Account Mapping",
+    "intercompany-partner-accounts": "Intercompany Partner Accounts",
+    "soa-reminders": "Statement of Account Reminders",
+    "account-report-definitions": "Accounting Report Definitions",
+    "account-tax-distributions": "Tax Distributions",
+    "commercial-accounting-settings": "Sales & Purchase Accounting Settings",
+    "partner-accounting-defaults": "Partner Accounting Defaults",
+    "fiscal-position-account-mappings": "Fiscal Position Account Mappings",
+    "fiscal-position-tax-mappings": "Fiscal Position Tax Mappings",
+    "reconciliation-rule-conditions": "Reconciliation Conditions",
+    "reconciliation-rule-counterparts": "Reconciliation Counterpart Lines",
+    "reconciliation-rule-tests": "Reconciliation Rule Test & Suggestions",
+    "deposit-applications": "Deposit Applications",
+    "prepayment-applications": "Prepayment Applications",
+    "recurring-journal-executions": "Recurring Journal Execution Log",
+    "currency-rate-logs": "Currency Average Rates & Logs",
+    "asset-accounting-settings": "Asset Accounting Settings",
+    "asset-category-accounting-rules": "Asset Category Accounting Rules",
+    "asset-capitalizations": "CIP Registrations & Asset Capitalization",
+    "asset-capitalization-lines": "CIP Source Lines",
+    "asset-capitalization-allocations": "CIP Asset Allocations",
+    "asset-capitalization-assets": "Assets Created from CIP",
+    "asset-depreciation-lines": "Asset Depreciation",
+    "asset-revaluations": "Asset Revaluation",
+    "asset-disposals": "Asset Disposal",
+    "budget-account-groups": "Budget Account Groups",
+    "budget-accounts": "Budget Accounts",
+    "budget-transactions": "Budget Allocations, Transfers & Carry-Overs",
+    "budget-movement-audits": "Budget Movement Audit",
+    "budget-change-reason-categories": "BCR Reason Categories",
+    "budget-change-requests": "Budget Change Requests",
+    "budget-change-request-lines": "Budget Change Request Lines",
+    "budget-transfers": "Budget Transfers",
+    "budget-transfer-lines": "Budget Transfer Lines",
+    "budget-carry-overs": "Budget Carry Overs",
+    "budget-carry-over-lines": "Budget Carry Over Lines",
+    "budget-cost-center-distributions": "Budget Cost Center Distribution",
+    "petty-cash-categories": "Petty Cash Categories",
+    "petty-cash-funds": "Petty Cash Fund Management",
+    "petty-cash-vouchers": "Petty Cash Requests & Vouchers",
+    "petty-cash-voucher-lines": "Petty Cash Voucher Lines",
+    "petty-cash-replenishments": "Petty Cash Replenishments",
+    "petty-cash-reconciliations": "Petty Cash Reconciliation",
+    "petty-cash-reconciliation-lines": "Petty Cash Reconciliation Lines",
+    "petty-cash-replenishment-journal-logs": "Payment Journal Override Log",
+    "accounting-integration-events": "Cross-Module Accounting Events",
+    "country-tax-profiles": "Country Accounting & Tax Profiles",
+    "compliance-reports": "Statutory Accounting Reports",
+    "external-tax-submissions": "External Tax Submission Queue",
+    "bank-statement-parse-jobs": "Bank Statement Import & AI/OCR Parser",
+    "localized-tax-transaction-lines": "Localized Document Tax Lines",
+    "tax-authority-callback-events": "Tax Authority Callback Events",
+    "tax-authority-sync-cursors": "Received Tax Document Synchronization",
+    "regulatory-rate-sync-runs": "Regulatory Rate Synchronization",
+    "pos-order-accounting": "POS Order Invoice, Deposit & MDR Accounting",
+    "sale-order-localizations": "Localized Sales Tax",
+    "sale-order-localized-tax-lines": "Localized Sales Tax Lines",
+    "company-accounting-provisioning-runs": "Company Accounting Provisioning",
+    "account-tax-credit-note-distributions": "Credit Note Tax Distributions",
+    "account-deposit-lines": "Deposit Lines",
+    "account-deposit-history": "Deposit History",
+    "account-deposit-conversions": "Deposit Conversions",
+    "account-deposit-conversion-lines": "Deposit Conversion Lines",
+    "account-payment-lines": "Payment Lines",
+    "payment-unreconcile-logs": "Payment Unreconcile Log",
+    "account-cheque-lines": "Cheque Payment Lines",
+    "company-account-mapping-tax-lines": "Consolidation Tax Mappings",
+    "general-centralized-notifications": "Centralized Accounting Notifications",
+    "soa-reminder-audits": "Statement Reminder Audit",
+    "accounting-vision-reports": "Accounting Vision & Intelligence",
+    "bank-cash-valuations": "Bank / Cash Multi-Currency Valuation",
+    "bank-cash-valuation-lines": "Bank / Cash Valuation Lines",
+    "source-document-cancellations": "Source Document Cancellation",
+    "product-accounting-rules": "Product Accounting Rules",
+    "ar-reconciliation-sessions": "AR Reconciliation",
+    "ar-reconciliation-lines": "AR Reconciliation Lines",
+    "ar-reconciliation-allocations": "AR Reconciliation Allocations",
+    "pos-accounting-settings": "POS Accounting Settings",
+    "pos-payment-account-mappings": "POS Payment Account Mappings",
+    "payroll-accounting-settings": "Payroll Accounting Settings",
+    "payroll-component-account-mappings": "Payroll Component Account Mappings",
+    "inventory-accounting-settings": "Inventory Accounting Settings",
+    "inventory-usage-types": "Inventory Usage Types",
+    "inventory-accounting-documents": "Inventory Accounting Control Documents",
+    "inventory-accounting-document-lines": "Inventory Accounting Document Lines",
+    "expense-advance-accounting-settings": "Advance & Expense Accounting Settings",
+    "expense-advance-settlements": "Advance & Expense Accounting Settlements",
+    "localization-tax-codes": "Localization Tax Codes",
+    "statutory-report-templates": "Statutory Report Templates",
+    "statutory-report-lines": "Statutory Report Lines",
+    "tax-authority-documents": "Tax Authority Documents",
+    "tax-identifier-lookups": "Tax Identifier Lookup",
+    "regulatory-exchange-rates": "Regulatory Exchange Rates",
+    "tax-middleware-connectors": "Tax Middleware Connectors",
+    "compliance-audit-events": "Compliance Audit History",
     "budgets": "Budgets",
     "expenses": "Expense Claims",
     "loans": "Loans",
@@ -455,6 +779,149 @@ ENTITY_MENU_LABELS.update(
         "purchase-accounting-settings": "Accounting Settings",
         "purchase-account-mappings": "Account Mappings",
         "purchase-peppol-submissions": "Peppol Submissions",
+        "purchase-quotation-lines": "RFQ Lines",
+        "direct-purchase-lines": "Direct Purchase Lines",
+        "service-work-order-lines": "Service Work Order Lines",
+        "purchase-tender-lines": "Tender Lines",
+        "tender-invitations": "Tender Invitations",
+        "tender-documents": "Tender Documents",
+        "tender-audit-logs": "Tender Audit",
+        "blanket-order-lines": "Blanket Order Lines",
+        "purchase-product-categories": "Purchase Product Categories",
+        "purchase-product-variants": "Purchase Product Variants",
+        "vendor-communications": "Vendor Communications",
+        "vendor-transaction-history": "Vendor Transaction History",
+        "purchase-order-communications": "Order Communications",
+        "product-budget-movements": "Budget Movements",
+        "purchase-accounting-documents": "Purchase Accounting Documents",
+        "purchase-accounting-lines": "Purchase Accounting Lines",
+        "purchase-stock-demands": "Purchase Stock Demands",
+        "purchase-inventory-transfers": "Purchase Inventory Transfers",
+        "purchase-inventory-transfer-lines": "Inventory Transfer Lines",
+        "purchase-peppol-events": "Peppol Event History",
+        "purchase-contract-terms": "Purchase Contract Terms",
+        "purchase-order-revisions": "Purchase Order Revisions",
+        "employee-id-card-templates": "Employee ID Card Templates",
+        "employee-id-cards": "Employee ID Cards",
+        "multiple-job-assignments": "Multiple Job Assignments",
+        "organization-configurations": "Organization Configuration",
+        "hr-announcements": "HR Announcements",
+        "contract-allowance-history": "Contract Allowance History",
+        "employee-document-bulk-uploads": "Document Bulk Uploads",
+        "employee-document-history": "Employee Document History",
+        "attendance-recompute-transactions": "Attendance Recompute Transactions",
+        "leave-bulk-operations": "Leave Bulk Operations",
+        "payroll-disbursements": "Payroll Disbursements",
+        "payroll-accounting-events": "Payroll Accounting Events",
+        "employee-loan-offers": "Employee Loan Offers",
+        "career-transition-change-history": "Career Transition History",
+        "training-categories": "Training Categories",
+        "face-recognition-profiles": "Face Recognition Profiles",
+        "expense-product-categories": "Expense Product Categories",
+        "hr-workflow-audits": "HR Workflow Audit",
+        "construction-contracts": "Contracts",
+        "construction-contract-milestones": "Contract Milestones",
+        "construction-boqs": "Bills of Quantity",
+        "construction-boq-items": "BOQ Items",
+        "construction-cost-sheets": "Cost Sheets",
+        "construction-cost-sheet-items": "Cost Sheet Items",
+        "construction-budget-changes": "Budget Change Requests",
+        "construction-budget-change-lines": "Budget Change Lines",
+        "construction-job-orders": "Job Orders",
+        "construction-progress-logs": "Progress Logs",
+        "construction-task-workers": "Task Workers",
+        "construction-quantity-surveys": "Quantity Surveys",
+        "construction-quantity-survey-lines": "Quantity Survey Lines",
+        "construction-resource-actualizations": "Resource Actualizations",
+        "construction-resource-lines": "Resource Lines",
+        "construction-timesheets": "Construction Timesheets",
+        "construction-timesheet-lines": "Timesheet Lines",
+        "construction-progressive-claims": "Progressive Claims",
+        "construction-claim-lines": "Claim Lines",
+        "construction-risks": "Risk Register",
+        "construction-issues": "Issue Log",
+        "construction-opening-balances": "Opening Balances",
+        "construction-account-settings": "Project Account Settings",
+        "construction-material-demands": "Material Demands",
+        "construction-material-demand-lines": "Material Demand Lines",
+        "construction-procurement-allocations": "Procurement Allocations",
+        "construction-subcontract-job-orders": "Subcontract Job Orders",
+        "construction-product-groups": "Groups of Product",
+        "construction-boq-templates": "BOQ Templates",
+        "construction-boq-template-items": "BOQ Template Items",
+        "construction-boq-template-cost-lines": "BOQ Template Resources",
+        "construction-contract-dp-lines": "Contract Down Payment Schedule",
+        "construction-boq-cost-lines": "BOQ Resource Costs",
+        "construction-cost-sheet-resources": "Cost Sheet Resources",
+        "construction-equipment-facilities": "Equipment & Facilities",
+        "construction-quantity-survey-sources": "Quantity Survey JO Sources",
+        "construction-claim-cumulative-lines": "Claim Cumulative History",
+        "construction-claim-attachments": "Claim Attachments",
+        "construction-project-profiles": "Construction Project Profiles",
+        "construction-account-setting-lines": "CIP Account Lines",
+        "construction-account-snapshots": "Project Account Snapshots",
+        "construction-opening-balance-imports": "Opening Balance Imports",
+        "construction-opening-balance-exports": "Opening Balance Exports",
+        "construction-boq-imports": "BOQ Import History",
+        "construction-procurement-lines": "Construction Procurement Detail",
+        "construction-inventory-transfers": "Construction Inventory Transfers",
+        "construction-inventory-transfer-lines": "Construction Transfer Lines",
+        "construction-subcontract-progress-lines": "Subcontract Progress",
+        "construction-subcontract-milestones": "Subcontract Milestones",
+        "construction-accounting-postings": "Construction Accounting Postings",
+        "construction-procurement-budget-audits": "Procurement Budget Audit",
+    }
+)
+
+
+ENTITY_MENU_LABELS.update(
+    {
+        "pos-profiles": "POS Profiles", "pos-stations": "POS Stations", "pos-devices": "POS Devices",
+        "pos-device-sequences": "POS Device Sequences", "pos-payments": "Payments",
+        "pos-bank-payments": "POS Bank Payments", "pos-bank-payment-logs": "Bank Payment Logs",
+        "pos-cash-movements": "Cash Movements", "pos-product-categories": "PoS Product Categories",
+        "pos-product-attributes": "Product Attributes", "pos-product-attribute-values": "Attribute Values",
+        "pos-product-variants": "Product Variants", "pos-product-bundles": "Product Bundles",
+        "pos-product-bundle-lines": "Product Bundle Lines",
+        "pos-boms": "POS BOM", "pos-bom-lines": "POS BOM Lines", "pos-bom-options": "POS BOM Options",
+        "pos-bom-option-lines": "POS BOM Option Lines", "pos-pricelists": "Pricelists",
+        "pos-pricelist-rules": "Pricelist Rules", "pos-promotions": "Promotions",
+        "pos-promotion-criteria": "Promotion Criteria", "pos-promotion-rules": "Promotion Rules",
+        "pos-promotion-rewards": "Promotion Rewards", "pos-promotion-addons": "Add-on Reward Lines",
+        "pos-campaigns": "Customer Facing Campaigns", "pos-campaign-slides": "Campaign Slides",
+        "pos-campaign-running-texts": "Campaign Running Texts", "pos-payment-methods": "Payment Methods",
+        "pos-profile-payment-methods": "Profile Payment Methods", "pos-card-payments": "Card Payment",
+        "pos-mdr-charges": "MDR Charges", "pos-member-deposits": "Member Deposits",
+        "pos-deposit-movements": "Deposit Movements", "pos-price-shortcuts": "Price Shortcuts",
+        "pos-price-shortcut-lines": "Price Shortcut Lines", "pos-home-delivery-fees": "Home Delivery Fees",
+        "pos-receipt-templates": "Receipt Templates", "pos-receipt-sections": "Receipt Sections",
+        "pos-receipt-fields": "Receipt Fields", "pos-receipt-revisions": "Receipt Revisions",
+        "pos-receipt-ocr-jobs": "Receipt OCR Jobs", "pos-email-templates": "Email Templates",
+        "pos-receipt-emails": "Receipt Emails", "pos-receipt-print-logs": "Receipt Print Log",
+        "pos-price-label-logs": "Price Label Print Log", "pos-price-check-logs": "Price Checker Log",
+        "pos-otp-rules": "OTP Approval Rules", "pos-otp-requests": "OTP Approval Log",
+        "loyalty-programs": "Loyalty Programs", "loyalty-tiers": "Loyalty Tiers",
+        "loyalty-wallets": "Loyalty Wallets", "loyalty-transactions": "Loyalty Transactions",
+        "loyalty-welcome-points": "Opening Balance", "loyalty-tier-events": "Tier Event Log",
+        "pos-rfm-configurations": "RFM Configuration", "pos-rfm-runs": "RFM Calculation Runs",
+        "pos-rfm-results": "Categorized Customers", "pos-rfm-broadcast-logs": "RFM Broadcast Logs",
+        "pos-areas": "Areas", "pos-reservations": "Reservations", "pos-reservation-lines": "Reservation Lines",
+        "kitchen-ticket-lines": "KOT Lines", "pos-combos": "Product Combos",
+        "pos-combo-categories": "Combo Categories", "pos-combo-lines": "Combo Options",
+        "pos-product-availability": "Product Availability", "pos-service-charges": "Service Charges",
+        "pos-takeaway-fees": "Takeaway Fee Configuration", "pos-queue-rules": "Queue Reset Rules",
+        "employee-meal-programs": "Employee Meal Programs", "employee-meal-program-lines": "Meal Program Lines",
+        "employee-meal-records": "Employee Meal Redemptions", "employee-meal-record-lines": "Meal Redemption Lines",
+        "pos-consumption-reasons": "Internal Consumption Reasons", "pos-internal-usages": "Internal Usage",
+        "pos-internal-usage-lines": "Internal Usage Lines", "pos-cash-drawer-logs": "Cash Drawer Log",
+        "pos-fnb-sync-commands": "F&B Sync Commands", "pos-outlet-orders": "Outlet Orders",
+        "pos-outlet-order-lines": "Outlet Order Lines", "pos-membership-themes": "Membership Apps Theme",
+        "pos-stock-demands": "POS Stock Demands", "pos-stock-demand-lines": "Stock Demand Lines",
+        "pos-inventory-transfers": "POS Inventory Transfers", "pos-inventory-transfer-lines": "Inventory Transfer Lines",
+        "pos-backups": "Compare Data", "pos-backup-profiles": "Backup Profile Files",
+        "pos-backup-lines": "Backup Progress Lines", "pos-users": "POS Users",
+        "pos-membership-accounts": "Membership App Accounts", "pos-membership-otps": "Membership OTP Log",
+        "pos-realtime-changes": "POS Monitor Realtime Changes",
     }
 )
 
@@ -472,25 +939,327 @@ APP_MENU_GROUPS = {
         {"label": "Sales", "icon": "S", "entities": ["sales", "rental-details"]},
         {"label": "Master Data", "icon": "M", "entities": ["contacts", "products"]},
     ],
+    "accounting": [
+        {
+            "label": "Dashboard",
+            "icon": "D",
+            "items": [
+                {"label": "Overview", "feature": "dashboard"},
+                {"label": "Accounting Vision", "feature": "accounting-vision"},
+                {"label": "Income Overview", "feature": "income-overview"},
+                {"label": "Aging Summary", "feature": "aging-summary"},
+                {"label": "Bank Balance", "feature": "bank-balance"},
+            ],
+        },
+        {
+            "label": "Accounting",
+            "icon": "G",
+            "items": [
+                {"label": "Journal Entries", "entity": "journal-entries"},
+                {"label": "Journal Items", "entity": "journal-items"},
+                {"label": "Journal Cost Center Allocations", "entity": "journal-line-cost-center-allocations"},
+                {"label": "Journal Entry Template", "entity": "journal-entry-templates"},
+                {"label": "Recurring Journal Entries", "entity": "recurring-journals"},
+                {"label": "Recurring Journal Execution Log", "entity": "recurring-journal-executions"},
+                {"label": "Other Income", "entity": "other-income-expenses"},
+                {"label": "Other Expense", "entity": "other-income-expenses"},
+                {"label": "Currency Revaluation", "entity": "currency-revaluations"},
+                {"label": "Generate Opening Balance", "entity": "closing-entries"},
+            ],
+        },
+        {
+            "label": "Customers",
+            "icon": "R",
+            "items": [
+                {"label": "Customer Invoices", "entity": "invoices"},
+                {"label": "Customer Multi Receipts", "entity": "multi-payment-batches"},
+                {"label": "Receipt Voucher", "entity": "payment-vouchers"},
+                {"label": "Receipt Cheque", "entity": "account-cheques"},
+                {"label": "Customer Deposits", "entity": "account-deposits"},
+                {"label": "Customer Deposit Conversion", "entity": "account-deposit-conversions"},
+                {"label": "Customer Deposit History", "entity": "account-deposit-history"},
+                {"label": "Customer Deposit Applications", "entity": "deposit-applications"},
+                {"label": "Customer Prepayments", "entity": "prepayments"},
+                {"label": "Customer Prepayment Applications", "entity": "prepayment-applications"},
+                {"label": "Customer Withholding Tax", "entity": "withholding-tax-transactions"},
+                {"label": "Statement of Account", "entity": "soa-reminders"},
+            ],
+        },
+        {
+            "label": "Vendors",
+            "icon": "V",
+            "items": [
+                {"label": "Vendor Bills", "entity": "invoices"},
+                {"label": "Vendor Multi Payments", "entity": "multi-payment-batches"},
+                {"label": "Payment Voucher", "entity": "payment-vouchers"},
+                {"label": "Payment Cheque", "entity": "account-cheques"},
+                {"label": "Vendor Deposits", "entity": "account-deposits"},
+                {"label": "Vendor Deposit Conversion", "entity": "account-deposit-conversions"},
+                {"label": "Vendor Deposit Applications", "entity": "deposit-applications"},
+                {"label": "Vendor Prepayments", "entity": "prepayments"},
+                {"label": "Vendor Prepayment Applications", "entity": "prepayment-applications"},
+                {"label": "Vendor Withholding Tax", "entity": "withholding-tax-transactions"},
+            ],
+        },
+        {
+            "label": "Cash & Bank",
+            "icon": "B",
+            "items": [
+                {"label": "Banks", "entity": "company-bank-accounts"},
+                {"label": "Bank Accounts", "entity": "company-bank-accounts"},
+                {"label": "Bank Statements", "entity": "bank-statements"},
+                {"label": "Reconciliation", "entity": "bank-statement-lines"},
+                {"label": "AR Reconciliation", "entity": "ar-reconciliation-sessions"},
+                {"label": "Reconciliation Rules", "entity": "reconciliation-rules"},
+                {"label": "Reconciliation Rule Test", "entity": "reconciliation-rule-tests"},
+                {"label": "Reconciliation History", "entity": "reconciliation-history"},
+                {"label": "Internal Bank Transfer", "entity": "internal-bank-transfers"},
+                {"label": "Deposit", "entity": "account-deposits"},
+                {"label": "Bank Import Configuration", "entity": "bank-import-configurations"},
+                {"label": "Bank Statement Import", "entity": "bank-statement-parse-jobs"},
+                {"label": "AI / OCR Bank Statement Parser", "entity": "bank-statement-parse-jobs"},
+                {"label": "Bank / Cash Multi-Currency Valuation", "entity": "bank-cash-valuations"},
+            ],
+        },
+        {
+            "label": "Tax",
+            "icon": "T",
+            "items": [
+                {"label": "Taxes", "entity": "account-taxes"},
+                {"label": "Tax Distribution", "entity": "account-tax-distributions"},
+                {"label": "Credit Note Tax Distribution", "entity": "account-tax-credit-note-distributions"},
+                {"label": "Withholding Taxes", "entity": "withholding-taxes"},
+                {"label": "Withholding Tax Transactions", "entity": "withholding-tax-transactions"},
+                {"label": "Withholding Tax History", "entity": "withholding-tax-history"},
+                {"label": "Withholding Dashboard", "feature": "withholding-dashboard"},
+            ],
+        },
+        {
+            "label": "Asset",
+            "icon": "A",
+            "items": [
+                {"label": "Asset", "entity": "assets"},
+                {"label": "CIP Registration", "entity": "asset-capitalizations"},
+                {"label": "CIP Source Lines", "entity": "asset-capitalization-lines"},
+                {"label": "CIP Asset Allocations", "entity": "asset-capitalization-allocations"},
+                {"label": "Assets Created from CIP", "entity": "asset-capitalization-assets"},
+                {"label": "Asset Depreciation", "entity": "asset-depreciation-lines"},
+                {"label": "Asset Revaluation", "entity": "asset-revaluations"},
+                {"label": "Asset Disposal", "entity": "asset-disposals"},
+                {"label": "Asset Accounting Settings", "entity": "asset-accounting-settings"},
+                {"label": "Asset Category Accounting Rules", "entity": "asset-category-accounting-rules"},
+            ],
+        },
+        {
+            "label": "Advance & Expense",
+            "icon": "E",
+            "items": [
+                {"label": "Advance", "entity": "cash-advances"},
+                {"label": "Manage Expense", "entity": "expenses"},
+                {"label": "Cash Advance Cycles", "entity": "advance-cycles"},
+                {"label": "Expense Cycles", "entity": "expense-cycles"},
+                {"label": "Expense Accounting Events", "entity": "accounting-integration-events"},
+                {"label": "Advance & Expense Settlements", "entity": "expense-advance-settlements"},
+                {"label": "Advance & Expense Accounting Settings", "entity": "expense-advance-accounting-settings"},
+            ],
+        },
+        {
+            "label": "Budget Management",
+            "icon": "U",
+            "items": [
+                {"label": "Dashboard", "entity": "budgets"},
+                {"label": "Budget Account", "entity": "budget-accounts"},
+                {"label": "Budget Allocation", "entity": "budget-transactions"},
+                {"label": "Budget Change Request", "entity": "budget-change-requests"},
+                {"label": "Budget Transfer", "entity": "budget-transfers"},
+                {"label": "Budget Carry Over", "entity": "budget-carry-overs"},
+                {"label": "Budget Cost Center Distribution", "entity": "budget-cost-center-distributions"},
+                {"label": "Budget Movement Audit", "entity": "budget-movement-audits"},
+                {"label": "Group of Account", "entity": "budget-account-groups"},
+                {"label": "BCR Reason Categories", "entity": "budget-change-reason-categories"},
+            ],
+        },
+        {
+            "label": "Petty Cash",
+            "icon": "P",
+            "items": [
+                {"label": "Fund Management", "entity": "petty-cash-funds"},
+                {"label": "Petty Cash Category", "entity": "petty-cash-categories"},
+                {"label": "Cash Request", "entity": "petty-cash-vouchers"},
+                {"label": "Petty Cash Replenishment", "entity": "petty-cash-replenishments"},
+                {"label": "Petty Cash Reconciliation", "entity": "petty-cash-reconciliations"},
+                {"label": "Payment Journal Override Log", "entity": "petty-cash-replenishment-journal-logs"},
+                {"label": "Petty Cash Report", "feature": "petty-cash-report"},
+            ],
+        },
+        {
+            "label": "Reports",
+            "icon": "Q",
+            "items": [
+                {"label": "Accounting Reports", "feature": "accounting-reports"},
+                {"label": "Accounting Vision Report", "entity": "accounting-vision-reports"},
+                {"label": "General Ledger", "feature": "general-ledger"},
+                {"label": "General Ledger Report", "feature": "general-ledger-report"},
+                {"label": "Trial Balance", "feature": "trial-balance"},
+                {"label": "Partner Ledger", "feature": "partner-ledger"},
+                {"label": "Partner Aging", "feature": "partner-aging"},
+                {"label": "Balance Sheet", "feature": "balance-sheet"},
+                {"label": "Profit and Loss", "feature": "profit-loss"},
+                {"label": "Cash Flow Statement", "feature": "cash-flow"},
+                {"label": "Statement of Changes in Equity", "feature": "changes-in-equity"},
+                {"label": "Financial Ratio", "feature": "financial-ratios"},
+                {"label": "Financial Statements", "feature": "financial-statements"},
+                {"label": "Business Statements", "feature": "business-statements"},
+                {"label": "Statement of Account", "feature": "statement-of-account"},
+                {"label": "Prepayment Report", "feature": "prepayment-report"},
+                {"label": "Customer Prepayment Details", "feature": "customer-prepayment-details"},
+                {"label": "Vendor Prepayment Details", "feature": "vendor-prepayment-details"},
+                {"label": "Foreign Exchange Report", "feature": "foreign-exchange"},
+                {"label": "Bank / Cash Book", "feature": "bank-cash-book"},
+                {"label": "Day Book", "feature": "day-book"},
+                {"label": "Journal Entry Report", "feature": "journal-entry-report"},
+                {"label": "Tax Report", "feature": "tax-report"},
+                {"label": "Cost Center Ledger", "feature": "cost-center-ledger"},
+                {"label": "Debt Collection", "feature": "debt-collection"},
+            ],
+        },
+        {
+            "label": "Master Data",
+            "icon": "M",
+            "items": [
+                {"label": "Chart of Account", "entity": "accounts"},
+                {"label": "Account Type", "entity": "account-types"},
+                {"label": "Account Tags", "entity": "account-tags"},
+                {"label": "Journal", "entity": "account-journals"},
+                {"label": "Fiscal Position", "entity": "fiscal-positions"},
+                {"label": "Payment Terms", "entity": "payment-terms"},
+                {"label": "Payment Methods", "entity": "account-payment-methods"},
+                {"label": "Cost Centers", "entity": "accounting-cost-centers"},
+                {"label": "Cost Center Rules", "entity": "cost-center-rules"},
+                {"label": "Product", "entity": "products"},
+                {"label": "Product Variants", "entity": "products"},
+                {"label": "Product Category", "entity": "products"},
+                {"label": "Product Account Mapping", "entity": "product-account-mappings"},
+                {"label": "Product / Category / Variant Rules", "entity": "product-accounting-rules"},
+                {"label": "Company Account Mapping", "entity": "company-account-mappings"},
+                {"label": "Consolidation Tax Mapping", "entity": "company-account-mapping-tax-lines"},
+                {"label": "Intercompany Partner Accounts", "entity": "intercompany-partner-accounts"},
+                {"label": "Partner Accounting Defaults", "entity": "partner-accounting-defaults"},
+                {"label": "Financial Ratio Definitions", "entity": "financial-ratio-definitions"},
+                {"label": "Accounting Report Definitions", "entity": "account-report-definitions"},
+            ],
+        },
+        {
+            "label": "Configuration",
+            "icon": "C",
+            "items": [
+                {"label": "Fiscal Years", "entity": "fiscal-years"},
+                {"label": "Fiscal Period", "entity": "fiscal-periods"},
+                {"label": "Fiscal Position Account Mapping", "entity": "fiscal-position-account-mappings"},
+                {"label": "Fiscal Position Tax Mapping", "entity": "fiscal-position-tax-mappings"},
+                {"label": "Currency Rates", "entity": "currency-rates"},
+                {"label": "Currency Average Rate", "entity": "currency-rate-logs"},
+                {"label": "Reconciliation Conditions", "entity": "reconciliation-rule-conditions"},
+                {"label": "Reconciliation Counterpart Lines", "entity": "reconciliation-rule-counterparts"},
+                {"label": "Accounting Settings", "entity": "accounting-settings"},
+                {"label": "Sales & Purchase Accounting Settings", "entity": "commercial-accounting-settings"},
+                {"label": "Company Accounting Provisioning", "entity": "company-accounting-provisioning-runs"},
+                {"label": "Accounting Analysis", "entity": "account-report-definitions"},
+                {"label": "Accounting Import Preview", "entity": "accounting-import-previews"},
+                {"label": "Accounting Audit Trail", "entity": "accounting-audit-events"},
+                {"label": "Source Document Cancellation", "entity": "source-document-cancellations"},
+                {"label": "Centralized Notifications", "entity": "general-centralized-notifications"},
+                {"label": "Statement Reminder Audit", "entity": "soa-reminder-audits"},
+            ],
+        },
+        {
+            "label": "Accounting Integrations",
+            "icon": "I",
+            "items": [
+                {"label": "Integration Event Queue", "entity": "accounting-integration-events"},
+                {"label": "Asset Accounting", "entity": "asset-depreciation-lines"},
+                {"label": "Inventory Accounting", "entity": "stock-moves"},
+                {"label": "Landed Cost / Usage / Count / Transfer", "entity": "inventory-accounting-documents"},
+                {"label": "Inventory Accounting Lines", "entity": "inventory-accounting-document-lines"},
+                {"label": "Inventory Usage Types", "entity": "inventory-usage-types"},
+                {"label": "Inventory Accounting Settings", "entity": "inventory-accounting-settings"},
+                {"label": "Purchase Accounting", "entity": "purchase-accounting-documents"},
+                {"label": "POS Accounting", "entity": "pos-sessions"},
+                {"label": "POS Accounting Settings", "entity": "pos-accounting-settings"},
+                {"label": "POS Payment Account Mappings", "entity": "pos-payment-account-mappings"},
+                {"label": "POS Order Invoice, Deposit & MDR", "entity": "pos-order-accounting"},
+                {"label": "Payroll Accounting", "entity": "payroll-accounting-events"},
+                {"label": "Payroll Accounting Settings", "entity": "payroll-accounting-settings"},
+                {"label": "Payroll Component Account Mappings", "entity": "payroll-component-account-mappings"},
+                {"label": "Construction Accounting", "entity": "construction-accounting-postings"},
+            ],
+        },
+        {
+            "label": "Localization & Compliance",
+            "icon": "L",
+            "items": [
+                {"label": "Country Tax Profiles", "entity": "country-tax-profiles"},
+                {"label": "Localization Tax Codes", "entity": "localization-tax-codes"},
+                {"label": "Statutory Form Templates", "entity": "statutory-report-templates"},
+                {"label": "Tax Middleware Connectors", "entity": "tax-middleware-connectors"},
+                {"label": "Compliance Audit History", "entity": "compliance-audit-events"},
+                {"label": "External Submission Queue", "entity": "external-tax-submissions"},
+                {"label": "Localized Document Tax Lines", "entity": "localized-tax-transaction-lines"},
+                {"label": "Tax Authority Callbacks", "entity": "tax-authority-callback-events"},
+                {"label": "Received Document Sync", "entity": "tax-authority-sync-cursors"},
+                {"label": "Regulatory Rate Sync", "entity": "regulatory-rate-sync-runs"},
+            ],
+        },
+    ],
     "purchase": [
-        {"label": "Dashboard", "icon": "D", "entities": ["purchase-insights"]},
+        {
+            "label": "Dashboard",
+            "icon": "D",
+            "items": [
+                {"label": "Overview", "feature": "overview"},
+                {"label": "Insight Feed", "feature": "insight-feed"},
+                {"label": "Spend Analysis", "feature": "spend-analysis"},
+                {"label": "Supplier Performance", "feature": "supplier-performance"},
+                {"label": "Demand Analysis", "feature": "demand-analysis"},
+                {"label": "Savings Opportunities", "feature": "savings-opportunities"},
+                {"label": "Contract Intelligence", "feature": "contract-intelligence"},
+                {"label": "Risk Center", "feature": "risk-center"},
+                {"label": "Insight Records", "entity": "purchase-insights"},
+            ],
+        },
         {"label": "Requests", "icon": "R", "entities": ["purchase-requests", "purchase-request-lines"]},
         {
             "label": "Sourcing & Orders",
             "icon": "O",
             "entities": [
                 "purchase-quotations",
+                "purchase-quotation-lines",
                 "purchases",
                 "direct-purchases",
+                "direct-purchase-lines",
                 "service-work-orders",
+                "service-work-order-lines",
                 "purchase-order-controls",
                 "purchase-order-milestones",
+                "purchase-order-communications",
+                "purchase-order-revisions",
+                "purchase-contract-terms",
             ],
         },
         {
             "label": "Tender & Agreements",
             "icon": "T",
-            "entities": ["purchase-tenders", "tender-bids", "award-strategies", "blanket-orders"],
+            "entities": [
+                "purchase-tenders",
+                "purchase-tender-lines",
+                "tender-bids",
+                "tender-invitations",
+                "tender-documents",
+                "tender-audit-logs",
+                "award-strategies",
+                "blanket-orders",
+                "blanket-order-lines",
+            ],
         },
         {
             "label": "Vendors",
@@ -505,6 +1274,8 @@ APP_MENU_GROUPS = {
                 "vendor-pricelist-amendments",
                 "vendor-performance-templates",
                 "vendor-performance-evaluations",
+                "vendor-communications",
+                "vendor-transaction-history",
             ],
         },
         {
@@ -515,7 +1286,14 @@ APP_MENU_GROUPS = {
         {
             "label": "Receiving",
             "icon": "G",
-            "entities": ["goods-receipts", "goods-receipt-lines", "purchase-return-requests"],
+            "entities": [
+                "goods-receipts",
+                "goods-receipt-lines",
+                "purchase-return-requests",
+                "purchase-stock-demands",
+                "purchase-inventory-transfers",
+                "purchase-inventory-transfer-lines",
+            ],
         },
         {
             "label": "Budget",
@@ -526,6 +1304,7 @@ APP_MENU_GROUPS = {
                 "budget-product-transfers",
                 "budget-product-carry-overs",
                 "budget-product-change-requests",
+                "product-budget-movements",
             ],
         },
         {
@@ -538,7 +1317,22 @@ APP_MENU_GROUPS = {
                 "purchase-settings",
                 "purchase-accounting-settings",
                 "purchase-account-mappings",
+                "purchase-accounting-documents",
+                "purchase-accounting-lines",
                 "purchase-peppol-submissions",
+                "purchase-peppol-events",
+                "purchase-product-categories",
+                "purchase-product-variants",
+            ],
+        },
+        {
+            "label": "Reporting",
+            "icon": "Q",
+            "items": [
+                {"label": "Purchase Performance", "feature": "purchase-performance"},
+                {"label": "Purchase Order Analysis", "feature": "order-analysis"},
+                {"label": "Purchase Request Analysis", "feature": "request-analysis"},
+                {"label": "Budget Product Report", "feature": "budget-report"},
             ],
         },
         {"label": "Master Data", "icon": "M", "entities": ["contacts", "products"]},
@@ -568,6 +1362,9 @@ APP_MENU_GROUPS = {
                 {"label": "Employee Categories", "entity": "employee-categories"},
                 {"label": "Working Calendars", "entity": "working-calendars"},
                 {"label": "Work Patterns", "entity": "work-patterns"},
+                {"label": "Multiple Job Assignments", "entity": "multiple-job-assignments"},
+                {"label": "Organization Configuration", "entity": "organization-configurations"},
+                {"label": "HR Announcements", "entity": "hr-announcements"},
             ],
         },
         {
@@ -585,6 +1382,12 @@ APP_MENU_GROUPS = {
                 {"label": "Contract Allowances", "entity": "contract-allowances"},
                 {"label": "Contract Letters", "entity": "contract-letters"},
                 {"label": "Disciplinary Stages", "entity": "disciplinary-stages"},
+                {"label": "Employee ID Cards", "entity": "employee-id-cards"},
+                {"label": "ID Card Templates", "entity": "employee-id-card-templates"},
+                {"label": "Face Recognition Profiles", "entity": "face-recognition-profiles"},
+                {"label": "Contract Allowance History", "entity": "contract-allowance-history"},
+                {"label": "Document Bulk Uploads", "entity": "employee-document-bulk-uploads"},
+                {"label": "Employee Document History", "entity": "employee-document-history"},
             ],
         },
         {
@@ -608,6 +1411,7 @@ APP_MENU_GROUPS = {
                 {"label": "Attendance Change Requests", "entity": "attendance-change-requests"},
                 {"label": "Live Tracking Sessions", "entity": "live-tracking-sessions"},
                 {"label": "Recompute Attendance", "entity": "attendance-recomputes"},
+                {"label": "Recompute Transactions", "entity": "attendance-recompute-transactions"},
                 {"label": "Work Schedules", "entity": "work-schedules"},
                 {"label": "Shift Master", "entity": "shifts"},
                 {"label": "Schedule Assignment", "entity": "schedule-assignments"},
@@ -625,6 +1429,7 @@ APP_MENU_GROUPS = {
                 {"label": "Leave Opening Balances", "entity": "leave-opening-balances"},
                 {"label": "Leave Movements", "entity": "leave-movements"},
                 {"label": "Leave Encashments", "entity": "leave-encashments"},
+                {"label": "Leave Bulk Operations", "entity": "leave-bulk-operations"},
                 {"label": "Leave Dashboard", "feature": "leave-dashboard"},
                 {"label": "Leave Reporting", "feature": "leave-reporting"},
             ],
@@ -650,6 +1455,8 @@ APP_MENU_GROUPS = {
                 {"label": "Payroll Variables", "entity": "payroll-variables"},
                 {"label": "Salary Packages", "entity": "salary-packages"},
                 {"label": "Payroll Report Templates", "entity": "payroll-report-templates"},
+                {"label": "Payroll Disbursements", "entity": "payroll-disbursements"},
+                {"label": "Payroll Accounting Events", "entity": "payroll-accounting-events"},
             ],
         },
         {
@@ -665,6 +1472,7 @@ APP_MENU_GROUPS = {
                 {"label": "Loan Types", "entity": "loan-types"},
                 {"label": "Loan Policies", "entity": "loan-policies"},
                 {"label": "Loan Analysis", "feature": "loan-analysis"},
+                {"label": "Employee Loan Offers", "entity": "employee-loan-offers"},
             ],
         },
         {
@@ -675,6 +1483,7 @@ APP_MENU_GROUPS = {
                 {"label": "Transition Types", "entity": "career-transition-types"},
                 {"label": "Transition Letters", "entity": "career-transition-letters"},
                 {"label": "Career Transition Analysis", "feature": "career-transition-analysis"},
+                {"label": "Transition Change History", "entity": "career-transition-change-history"},
             ],
         },
         {
@@ -697,6 +1506,7 @@ APP_MENU_GROUPS = {
                 {"label": "Training Requests", "entity": "training-requests"},
                 {"label": "Training Progress", "entity": "training-progress"},
                 {"label": "Trainers", "entity": "training-trainers"},
+                {"label": "Training Categories", "entity": "training-categories"},
             ],
         },
         {
@@ -712,6 +1522,7 @@ APP_MENU_GROUPS = {
                 {"label": "Expense Cycles", "entity": "expense-cycles"},
                 {"label": "Advance Limit Consumption", "entity": "advance-limit-consumptions"},
                 {"label": "Expense Limit Consumption", "entity": "expense-limit-consumptions"},
+                {"label": "Expense Product Categories", "entity": "expense-product-categories"},
             ],
         },
         {
@@ -724,6 +1535,7 @@ APP_MENU_GROUPS = {
                 {"label": "Employee Grades", "entity": "employee-grades"},
                 {"label": "Skills", "entity": "skills"},
                 {"label": "Document Types", "entity": "document-types"},
+                {"label": "Workflow Audit", "entity": "hr-workflow-audits"},
             ],
         },
         {
@@ -749,16 +1561,223 @@ APP_MENU_GROUPS = {
         {"label": "Project Planning", "icon": "P", "entities": ["projects", "project-tasks"]},
     ],
     "construction": [
-        {"label": "Projects", "icon": "P", "entities": ["construction-projects"]},
-        {"label": "Execution", "icon": "E", "entities": ["work-packages"]},
+        {"label": "Projects", "icon": "P", "items": [
+            {"label": "All Projects", "entity": "construction-projects"},
+            {"label": "Bill of Quantity", "entity": "construction-boqs"},
+            {"label": "Contracts", "entity": "construction-contracts"},
+            {"label": "Cost Sheet", "entity": "construction-cost-sheets"},
+            {"label": "Configuration", "children": [
+                {"label": "Group of Product", "entity": "construction-product-groups"},
+                {"label": "BoQ Template", "entity": "construction-boq-templates"},
+                {"label": "Project Account Settings", "entity": "construction-account-settings"},
+                {"label": "OPBAL Import", "entity": "construction-opening-balance-imports"},
+                {"label": "OPBAL Import List", "entity": "construction-opening-balance-imports"},
+            ]},
+            {"label": "Reports", "children": [
+                {"label": "S-Curve", "feature": "s-curve", "feature_url_name": "construction_feature"},
+                {"label": "Project Gantt Chart", "feature": "project-gantt", "feature_url_name": "construction_feature"},
+            ]},
+        ]},
+        {"label": "Budget & Cost Control", "icon": "B", "items": [
+            {"label": "Budget Change Request", "entity": "construction-budget-changes"},
+        ]},
+        {"label": "Procurements", "icon": "P", "items": [
+            {"label": "Purchase Requests", "entity": "purchase-requests"},
+            {"label": "Request for Quotation", "entity": "purchase-quotations"},
+            {"label": "Purchase Orders", "entity": "purchases"},
+            {"label": "Direct Purchase", "entity": "direct-purchases"},
+        ]},
+        {"label": "Subcontracting", "icon": "S", "items": [
+            {"label": "Procurement", "children": [
+                {"label": "Subcon Purchase Request", "entity": "purchase-requests"},
+                {"label": "Subcon Request for Quotation", "entity": "purchase-quotations"},
+                {"label": "Subcon Purchase Orders", "entity": "purchases"},
+                {"label": "Subcon Direct Purchase", "entity": "direct-purchases"},
+            ]},
+            {"label": "Job Order", "children": [
+                {"label": "Subcon Job Order", "entity": "construction-subcontract-job-orders"},
+            ]},
+        ]},
+        {"label": "Operations", "icon": "O", "items": [
+            {"label": "Goods Receipt", "entity": "goods-receipts"},
+            {"label": "Goods Issue", "entity": "construction-inventory-transfers"},
+        ]},
+        {"label": "Execution", "icon": "E", "items": [
+            {"label": "Job Orders", "entity": "construction-job-orders"},
+            {"label": "Resource Actualization", "entity": "construction-resource-actualizations"},
+        ]},
+        {"label": "Timesheets", "icon": "T", "items": [
+            {"label": "My Timesheets", "feature": "my-timesheets", "feature_url_name": "construction_feature"},
+            {"label": "Manage Timesheets", "entity": "construction-timesheets"},
+            {"label": "Timesheet Report", "feature": "timesheet-analysis", "feature_url_name": "construction_feature"},
+        ]},
+        {"label": "Quantity Surveying", "icon": "Q", "items": [
+            {"label": "Quantity Surveys", "entity": "construction-quantity-surveys"},
+        ]},
+        {"label": "Progressive Claim", "icon": "C", "items": [
+            {"label": "Progressive Claims", "entity": "construction-progressive-claims"},
+        ]},
+        {"label": "Risk & Issue Management", "icon": "R", "items": [
+            {"label": "Risk Register", "entity": "construction-risks"},
+            {"label": "Issue Log", "entity": "construction-issues"},
+        ]},
+        {"label": "Resource Management", "icon": "M", "items": [
+            {"label": "Employees", "entity": "employees"},
+            {"label": "Assets", "entity": "assets"},
+            {"label": "Resource Report", "feature": "resource-analysis", "feature_url_name": "construction_feature"},
+        ]},
+        {"label": "Reporting", "icon": "A", "items": [
+            {"label": "S-Curve", "feature": "s-curve", "feature_url_name": "construction_feature"},
+            {"label": "Cost Sheet Resource Analysis", "feature": "cost-resource-analysis", "feature_url_name": "construction_feature"},
+            {"label": "BOQ Commercial Analysis", "feature": "boq-commercial-analysis", "feature_url_name": "construction_feature"},
+            {"label": "Job Order Execution Analysis", "feature": "job-order-analysis", "feature_url_name": "construction_feature"},
+            {"label": "Quantity Survey Analysis", "feature": "quantity-survey-analysis", "feature_url_name": "construction_feature"},
+            {"label": "QS Job Order Progress Analysis", "feature": "qs-job-order-progress-analysis", "feature_url_name": "construction_feature"},
+            {"label": "Progressive Claim Analysis", "feature": "claim-analysis", "feature_url_name": "construction_feature"},
+            {"label": "Resource Actualization Analysis", "feature": "resource-analysis", "feature_url_name": "construction_feature"},
+            {"label": "Contract Analysis", "feature": "contract-analysis", "feature_url_name": "construction_feature"},
+            {"label": "Construction Timesheet Analysis", "feature": "timesheet-analysis", "feature_url_name": "construction_feature"},
+            {"label": "Construction Risk Analysis", "feature": "risk-analysis", "feature_url_name": "construction_feature"},
+            {"label": "Construction Issue Analysis", "feature": "issue-analysis", "feature_url_name": "construction_feature"},
+        ]},
     ],
     "pos": [
-        {"label": "Registers", "icon": "R", "entities": ["pos-registers", "pos-sessions"]},
-        {"label": "Transactions", "icon": "T", "entities": ["pos-orders"]},
+        {"label": "Dashboard", "icon": "D", "items": [{"label": "POS Dashboard", "feature": "overview", "feature_url_name": "pos_feature"}]},
+        {"label": "Orders", "icon": "O", "items": [
+            {"label": "POS Order", "entity": "pos-orders"},
+            {"label": "Pre-Orders", "feature": "pre-orders", "feature_url_name": "pos_feature"},
+            {"label": "Other FNB Order", "feature": "other-fnb-orders", "feature_url_name": "pos_feature"},
+            {"label": "Kitchen Order Tickets", "entity": "kitchen-tickets"},
+            {"label": "Reservation Orders", "entity": "pos-reservations"},
+            {"label": "Sessions", "entity": "pos-sessions"},
+            {"label": "Outlet Orders", "entity": "pos-outlet-orders"},
+        ]},
+        {"label": "Pricing & Promotions", "icon": "P", "items": [
+            {"label": "Pricelist", "entity": "pos-pricelists"},
+            {"label": "Promotions", "entity": "pos-promotions"},
+            {"label": "Customer Facing Campaign", "entity": "pos-campaigns"},
+        ]},
+        {"label": "Master Data", "icon": "M", "items": [
+            {"label": "PoS Product Category", "entity": "pos-product-categories"},
+            {"label": "Home Delivery Fee", "entity": "pos-home-delivery-fees"},
+            {"label": "Product", "children": [
+                {"label": "Product", "entity": "products"},
+                {"label": "Product Variant", "entity": "pos-product-variants"},
+                {"label": "Attributes", "entity": "pos-product-attributes"},
+            ]},
+            {"label": "Product Bundle", "entity": "pos-product-bundles"},
+            {"label": "Product Combo", "entity": "pos-combos"},
+            {"label": "Bill Of Materials", "children": [
+                {"label": "POS BOM", "entity": "pos-boms"},
+                {"label": "POS BOM Options", "entity": "pos-bom-options"},
+            ]},
+            {"label": "POS Users", "entity": "pos-users"},
+        ]},
+        {"label": "Trends", "icon": "T", "items": [
+            {"label": "POS Order Trends", "feature": "orders", "feature_url_name": "pos_feature"},
+            {"label": "POS Orderlines Trends", "feature": "order-lines", "feature_url_name": "pos_feature"},
+            {"label": "Payments Trends", "feature": "payments", "feature_url_name": "pos_feature"},
+        ]},
+        {"label": "Reporting", "icon": "R", "items": [
+            {"label": "Profit & Loss", "feature": "profit-loss", "feature_url_name": "pos_feature"},
+        ]},
+        {"label": "FNB Reporting", "icon": "F", "items": [
+            {"label": "Menu Engineering", "feature": "menu-engineering", "feature_url_name": "pos_fnb_feature"},
+            {"label": "Employee Meal Program", "feature": "employee-meals", "feature_url_name": "pos_fnb_feature"},
+        ]},
+        {"label": "Log", "icon": "L", "items": [
+            {"label": "Cash Movements", "entity": "pos-cash-movements"},
+            {"label": "Receipt Print Log", "entity": "pos-receipt-print-logs"},
+            {"label": "Price Label Print Log", "entity": "pos-price-label-logs"},
+            {"label": "Cash Drawer Log", "entity": "pos-cash-drawer-logs"},
+            {"label": "OTP Approval Log", "entity": "pos-otp-requests"},
+            {"label": "Price Checker Log", "entity": "pos-price-check-logs"},
+            {"label": "Invoices", "entity": "invoices"},
+        ]},
+        {"label": "Member", "icon": "B", "items": [
+            {"label": "Members", "entity": "contacts"},
+            {"label": "Loyalty Wallet", "entity": "loyalty-wallets"},
+            {"label": "Member Deposit", "entity": "pos-member-deposits"},
+            {"label": "Loyalty Transactions", "entity": "loyalty-transactions"},
+            {"label": "Membership Apps Theme", "entity": "pos-membership-themes"},
+        ]},
+        {"label": "Customer Categorization", "icon": "C", "items": [
+            {"label": "RFM Dashboard", "feature": "rfm", "feature_url_name": "pos_feature"},
+            {"label": "RFM Configuration", "entity": "pos-rfm-configurations"},
+            {"label": "Categorized Customer", "entity": "pos-rfm-results"},
+            {"label": "RFM Broadcast Logs", "entity": "pos-rfm-broadcast-logs"},
+        ]},
+        {"label": "Configuration", "icon": "C", "items": [
+            {"label": "POS Profile", "entity": "pos-profiles"},
+            {"label": "POS Device", "entity": "pos-devices"},
+            {"label": "POS Device Sequence", "entity": "pos-device-sequences"},
+            {"label": "Payment Method", "entity": "pos-payment-methods"},
+            {"label": "Card Payment", "entity": "pos-card-payments"},
+            {"label": "Price Shortcut", "entity": "pos-price-shortcuts"},
+            {"label": "Receipt Templates", "entity": "pos-receipt-templates"},
+            {"label": "Loyalty Program", "children": [
+                {"label": "Programs", "entity": "loyalty-programs"},
+                {"label": "Tiers", "entity": "loyalty-tiers"},
+                {"label": "Opening Balance", "entity": "loyalty-transactions"},
+                {"label": "Tier Event Log", "entity": "loyalty-tier-events"},
+            ]},
+            {"label": "Email", "children": [
+                {"label": "Emails", "entity": "pos-receipt-emails"},
+                {"label": "Email Template", "entity": "pos-email-templates"},
+            ]},
+            {"label": "FnB", "children": [
+                {"label": "Areas and Tables", "entity": "pos-areas"},
+                {"label": "Service Charge", "entity": "pos-service-charges"},
+                {"label": "Internal Consumption Reasons", "entity": "pos-consumption-reasons"},
+                {"label": "Employee Meal Programs", "entity": "employee-meal-programs"},
+                {"label": "Employee Meal Redemptions", "entity": "employee-meal-records"},
+                {"label": "Takeaway Fee Configuration", "entity": "pos-takeaway-fees"},
+            ]},
+            {"label": "General Settings", "feature": "general-settings", "feature_url_name": "pos_feature"},
+            {"label": "Generate Data", "entity": "pos-backups"},
+        ]},
+        {"label": "Intelligence", "icon": "I", "items": [
+            {"label": "Overview", "feature": "intelligence-overview", "feature_url_name": "pos_feature"},
+            {"label": "Insight Feed", "feature": "feed", "feature_url_name": "pos_feature"},
+            {"label": "RVE Analysis", "feature": "rve-analysis", "feature_url_name": "pos_feature"},
+            {"label": "Member Behavior", "feature": "member-behavior", "feature_url_name": "pos_feature"},
+            {"label": "Cross-Selling Products", "feature": "cross-selling", "feature_url_name": "pos_feature"},
+            {"label": "Cashier Performance", "feature": "cashier", "feature_url_name": "pos_feature"},
+            {"label": "Outlet Performance", "feature": "outlets", "feature_url_name": "pos_feature"},
+            {"label": "Pareto Analysis", "feature": "pareto", "feature_url_name": "pos_feature"},
+            {"label": "Top Selling Products", "feature": "top-selling", "feature_url_name": "pos_feature"},
+            {"label": "Promotion Analytics", "feature": "promotion-analytics", "feature_url_name": "pos_feature"},
+            {"label": "Risk Center", "feature": "risk", "feature_url_name": "pos_feature"},
+            {"label": "Expiry & Waste", "feature": "expiry-waste", "feature_url_name": "pos_feature"},
+        ]},
     ],
     "pos-fnb": [
-        {"label": "Restaurant Floor", "icon": "F", "entities": ["restaurant-tables", "pos-orders"]},
-        {"label": "Kitchen", "icon": "K", "entities": ["kitchen-tickets"]},
+        {"label": "Orders", "icon": "O", "items": [
+            {"label": "Other FNB Order", "feature": "other-fnb-orders", "feature_url_name": "pos_feature"},
+            {"label": "Kitchen Order Tickets", "entity": "kitchen-tickets"},
+            {"label": "Reservation Orders", "entity": "pos-reservations"},
+            {"label": "Outlet Orders", "entity": "pos-outlet-orders"},
+        ]},
+        {"label": "Master Data", "icon": "M", "items": [
+            {"label": "Product Combo", "entity": "pos-combos"},
+            {"label": "POS BOM", "entity": "pos-boms"},
+            {"label": "POS BOM Options", "entity": "pos-bom-options"},
+        ]},
+        {"label": "FNB Reporting", "icon": "R", "items": [
+            {"label": "Menu Engineering", "feature": "menu-engineering", "feature_url_name": "pos_fnb_feature"},
+            {"label": "Employee Meal Program", "feature": "employee-meals", "feature_url_name": "pos_fnb_feature"},
+        ]},
+        {"label": "Log", "icon": "L", "items": [
+            {"label": "Cash Drawer Log", "entity": "pos-cash-drawer-logs"},
+        ]},
+        {"label": "Configuration", "icon": "C", "items": [
+            {"label": "Areas and Tables", "entity": "pos-areas"},
+            {"label": "Service Charge", "entity": "pos-service-charges"},
+            {"label": "Internal Consumption Reasons", "entity": "pos-consumption-reasons"},
+            {"label": "Employee Meal Programs", "entity": "employee-meal-programs"},
+            {"label": "Employee Meal Redemptions", "entity": "employee-meal-records"},
+            {"label": "Takeaway Fee Configuration", "entity": "pos-takeaway-fees"},
+        ]},
     ],
     "school": [
         {"label": "School Setup", "icon": "S", "entities": ["schools"]},
@@ -778,6 +1797,73 @@ APP_MENU_GROUPS = {
 }
 
 
+def iter_menu_items(items):
+    """Yield leaf menu items while preserving their display order."""
+    for item in items:
+        children = item.get("children", [])
+        if children:
+            yield from iter_menu_items(children)
+        else:
+            yield item
+
+
+def filter_menu_items(items, predicate):
+    """Recursively retain permitted leaves and non-empty menu containers."""
+    permitted = []
+    for raw_item in items:
+        item = dict(raw_item)
+        children = item.get("children", [])
+        if children:
+            item["children"] = filter_menu_items(children, predicate)
+            if item["children"]:
+                permitted.append(item)
+        elif predicate(item):
+            permitted.append(item)
+    return permitted
+
+
+def register_workspace_contribution(app_slug, *, group_label, group_icon, items):
+    """Allow an installed module to contribute entities and menu leaves.
+
+    The app hub owns presentation only; feature modules own their entity names,
+    labels, and placement. Registration is idempotent for Django autoreload.
+    """
+    workspace = APP_WORKSPACES.setdefault(
+        app_slug,
+        {"tagline": "", "entities": [], "workflow": [], "hide_unlisted_menu_entities": True},
+    )
+    definitions = APP_MENU_GROUPS.setdefault(app_slug, [])
+    group = next((row for row in definitions if row.get("label") == group_label), None)
+    if group is None:
+        group = {"label": group_label, "icon": group_icon, "items": []}
+        definitions.append(group)
+    group_items = group.setdefault("items", [])
+    existing = {
+        (row.get("entity"), row.get("label"))
+        for row in group_items
+        if row.get("entity")
+    }
+    for raw_item in items:
+        entity = raw_item["entity"]
+        if entity not in workspace["entities"]:
+            workspace["entities"].append(entity)
+        ENTITY_APP_MAP[entity] = app_slug
+        ENTITY_MENU_LABELS.setdefault(entity, raw_item["label"])
+        key = (entity, raw_item["label"])
+        if key not in existing:
+            group_items.append(dict(raw_item))
+            existing.add(key)
+
+
+def find_menu_feature(app_slug, feature):
+    """Return the owning group and a feature leaf from a nested menu tree."""
+    for group in app_menu_groups(app_slug):
+        for item in iter_menu_items(group["items"]):
+            if item.get("feature") == feature:
+                return group, item
+    return None, None
+
+
 def app_menu_groups(app_slug):
     """Return complete, presentation-ready menu groups for an application."""
     workspace = APP_WORKSPACES.get(app_slug, {})
@@ -788,15 +1874,27 @@ def app_menu_groups(app_slug):
 
     groups = []
     included = set()
+    def prepare_item(raw_item):
+        item = dict(raw_item)
+        item.setdefault("icon", item["label"][:1].upper())
+        if item.get("feature"):
+            item.setdefault(
+                "feature_url_name",
+                "purchase_feature" if app_slug == "purchase" else (
+                    "accounting_feature" if app_slug == "accounting" else "hr_feature"
+                ),
+            )
+        if item.get("children"):
+            item["children"] = [prepare_item(child) for child in item["children"]]
+        if item.get("entity") in entities:
+            included.add(item["entity"])
+        return item
+
     for definition in definitions or []:
         items = []
         if "items" in definition:
             for raw_item in definition["items"]:
-                item = dict(raw_item)
-                item.setdefault("icon", item["label"][:1].upper())
-                if item.get("entity") in entities:
-                    included.add(item["entity"])
-                items.append(item)
+                items.append(prepare_item(raw_item))
         else:
             for entity in definition["entities"]:
                 if entity not in entities:
@@ -813,6 +1911,8 @@ def app_menu_groups(app_slug):
             groups.append({"label": definition["label"], "icon": definition.get("icon", "M"), "items": items})
 
     remaining = [entity for entity in entities if entity not in included]
+    if workspace.get("hide_unlisted_menu_entities"):
+        remaining = []
     if remaining:
         groups.append(
             {
@@ -836,7 +1936,7 @@ def app_navigation_contains(app_slug, *, entity=None, feature=None):
     return any(
         (entity and item.get("entity") == entity) or (feature and item.get("feature") == feature)
         for group in app_menu_groups(app_slug)
-        for item in group["items"]
+        for item in iter_menu_items(group["items"])
     )
 
 
@@ -854,7 +1954,7 @@ def hr_feature_definition(feature_slug):
         "my-advance": "Request and track employee cash advances and their settlement.",
     }
     for group in app_menu_groups("hr"):
-        for item in group["items"]:
+        for item in iter_menu_items(group["items"]):
             if item.get("feature") == feature_slug:
                 return {
                     "slug": feature_slug,
@@ -889,7 +1989,7 @@ APP_DEPENDENCIES = {
     "projects": ["foundation"],
     "assets": ["foundation"],
     "maintenance": ["assets"],
-    "construction": ["projects", "purchase"],
+    "construction": ["projects", "purchase", "inventory", "assets", "hr", "accounting"],
     "pos": ["sales", "inventory"],
     "pos-fnb": ["pos"],
     "school": ["foundation"],

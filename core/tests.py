@@ -17,12 +17,16 @@ from django.utils import timezone
 
 from modules.apphub.discovery import discover_app_catalog
 from modules.apphub.models import ERPApp
+from modules.apphub.upgrade import upgrade_target_apps
 from modules.apphub.workspaces import app_menu_groups
 from modules.finance.models import Account, JournalEntry, JournalLine
 from modules.hr.access import HR_MANAGER, HR_SUPERVISOR, HR_USER, scope_hr_queryset
+from modules.hr.detail_config import ENTITY_MODELS as HR_DETAIL_ENTITY_MODELS
 from modules.hr.models import (
     EmployeeChangeRequest,
     EmployeeLoanRequest,
+    HRWorkflowAudit,
+    LeaveBulkOperation,
     LoanType,
     Payslip,
     TrainingConduct,
@@ -34,9 +38,21 @@ from modules.hr.models import (
 from modules.hr.security import ensure_hr_roles
 from modules.pos.models import POSOrder, POSOrderLine, POSRegister, POSSession
 from modules.purchase.access import PURCHASE_MANAGER
+from modules.purchase.dashboard import build_purchase_analytics
 from modules.purchase.entity_config import ENTITY_MODELS as PURCHASE_ENTITY_MODELS
-from modules.purchase.models import PurchaseOrderControl, PurchaseRequest
+from modules.purchase.models import (
+    AwardStrategy,
+    ProductBudget,
+    ProductBudgetGroup,
+    ProductBudgetMovement,
+    PurchaseOrderControl,
+    PurchaseRequest,
+    PurchaseRequestLine,
+    PurchaseTender,
+    TenderAuditLog,
+)
 from modules.purchase.security import ensure_purchase_roles
+from modules.purchase.services import approve_budget_movement
 
 from .models import Company, Contact, Employee, Product, PurchaseOrder, SaleOrder, SaleOrderLine, StockMove, Warehouse
 from .document_pdf import REPORT_CONFIG, _footer
@@ -245,7 +261,8 @@ class ERPIntegrityTests(TestCase):
         for entity in ENTITY_CONFIG:
             with self.subTest(entity=entity):
                 self.assertEqual(self.client.get(f"/app/{entity}/").status_code, 200)
-                self.assertEqual(self.client.get(f"/app/{entity}/new/").status_code, 200)
+                expected_create_status = 200 if ENTITY_CONFIG[entity].get("creatable", True) else 302
+                self.assertEqual(self.client.get(f"/app/{entity}/new/").status_code, expected_create_status)
 
     def test_prd_hr_extended_domains_are_exposed_in_crud_and_navigation(self):
         expected_entities = {
@@ -282,6 +299,7 @@ class ERPIntegrityTests(TestCase):
             "advance-limit-consumptions",
             "expense-limit-consumptions",
         }
+        expected_entities.update(HR_DETAIL_ENTITY_MODELS)
         navigation_entities = {
             item["entity"]
             for group in app_menu_groups("hr")
@@ -301,7 +319,7 @@ class ERPIntegrityTests(TestCase):
             if "entity" in item
         }
 
-        self.assertEqual(len(expected_entities), 40)
+        self.assertEqual(len(expected_entities), 62)
         self.assertTrue(expected_entities.issubset(ENTITY_CONFIG))
         self.assertTrue(expected_entities.issubset(navigation_entities))
         self.assertTrue(
@@ -359,6 +377,111 @@ class ERPIntegrityTests(TestCase):
         self.assertEqual(large_response.status_code, 200)
         self.assertEqual(len(small_context), len(large_context))
 
+    def test_purchase_request_document_saves_header_and_lines_together(self):
+        self.client.force_login(self.user)
+        today = timezone.localdate().isoformat()
+
+        response = self.client.post(
+            "/app/purchase-requests/new/",
+            {
+                "company": self.company.pk,
+                "number": "PR-INLINE-001",
+                "requestor": self.user.pk,
+                "request_date": today,
+                "required_date": today,
+                "justification": "Integration coverage",
+                "rejection_reason": "",
+                "notes": "",
+                "document_lines-TOTAL_FORMS": "1",
+                "document_lines-INITIAL_FORMS": "0",
+                "document_lines-MIN_NUM_FORMS": "0",
+                "document_lines-MAX_NUM_FORMS": "1000",
+                "document_lines-0-product": self.product.pk,
+                "document_lines-0-description": "Procurement line",
+                "document_lines-0-specification": "Detailed specification",
+                "document_lines-0-quantity": "2.000",
+                "document_lines-0-approved_quantity": "0.000",
+                "document_lines-0-ordered_quantity": "0.000",
+                "document_lines-0-estimated_unit_price": "125.00",
+            },
+        )
+
+        request = PurchaseRequest.objects.get(number="PR-INLINE-001")
+        line = PurchaseRequestLine.objects.get(request=request)
+        pdf_response = self.client.get(f"/app/purchase-requests/{request.pk}/print.pdf")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(line.quantity, Decimal("2.000"))
+        self.assertEqual(line.estimated_total, Decimal("250.00000"))
+        self.assertEqual(pdf_response.status_code, 200)
+        self.assertTrue(pdf_response.content.startswith(b"%PDF-"))
+
+    def test_hr_workflow_writes_audit_history(self):
+        operation = LeaveBulkOperation.objects.create(
+            company=self.company,
+            operation=LeaveBulkOperation.Operation.ADJUST,
+            period_start=timezone.localdate(),
+            period_end=timezone.localdate(),
+            requested_by=self.user,
+        )
+        self.client.force_login(self.user)
+
+        response = self.client.post(f"/app/leave-bulk-operations/{operation.pk}/action/submit/")
+
+        operation.refresh_from_db()
+        audit = HRWorkflowAudit.objects.get(entity="leave-bulk-operations", record_id=operation.pk)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(operation.status, "submitted")
+        self.assertEqual(audit.previous_status, "draft")
+        self.assertEqual(audit.new_status, "submitted")
+
+    def test_budget_movement_approval_updates_locked_budget_balance(self):
+        group = ProductBudgetGroup.objects.create(company=self.company, code="OPS", name="Operations")
+        budget = ProductBudget.objects.create(
+            company=self.company,
+            group=group,
+            product=self.product,
+            planned_amount=Decimal("1000"),
+        )
+        movement = ProductBudgetMovement.objects.create(
+            budget=budget,
+            movement_type=ProductBudgetMovement.MovementType.RESERVE,
+            reference="RES-001",
+            amount=Decimal("250"),
+            status="submitted",
+            requested_by=self.user,
+        )
+
+        approve_budget_movement(movement.pk, self.user)
+
+        budget.refresh_from_db()
+        movement.refresh_from_db()
+        self.assertEqual(budget.reserved_amount, Decimal("250"))
+        self.assertEqual(movement.status, "approved")
+        self.assertEqual(movement.approved_by, self.user)
+
+    def test_tender_workflow_writes_audit_history(self):
+        call_command("sync_apps", verbosity=0)
+        strategy = AwardStrategy.objects.create(company=self.company, name="Lowest compliant offer")
+        tender = PurchaseTender.objects.create(
+            company=self.company,
+            number="TND-001",
+            title="Warehouse supplies",
+            category=PurchaseTender.Category.OPEX,
+            tender_type=PurchaseTender.TenderType.OPEN,
+            award_strategy=strategy,
+            close_date=timezone.localdate(),
+        )
+        self.client.force_login(self.user)
+
+        response = self.client.post(f"/app/purchase-tenders/{tender.pk}/action/publish/")
+
+        tender.refresh_from_db()
+        audit = TenderAuditLog.objects.get(tender=tender)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(tender.status, PurchaseTender.Status.PUBLISHED)
+        self.assertEqual(audit.previous_status, PurchaseTender.Status.DRAFT)
+        self.assertEqual(audit.new_status, PurchaseTender.Status.PUBLISHED)
+
     def test_purchase_manager_permissions_do_not_include_sales_orders(self):
         ensure_purchase_roles()
         permissions = Group.objects.get(name=PURCHASE_MANAGER).permissions.values_list(
@@ -367,6 +490,26 @@ class ERPIntegrityTests(TestCase):
         )
         self.assertIn(("core", "purchaseorder"), permissions)
         self.assertNotIn(("core", "saleorder"), permissions)
+
+    def test_purchase_analytics_respects_user_company_scope(self):
+        ensure_purchase_roles()
+        scoped_user = get_user_model().objects.create_user(username="purchase-scoped", password="test-password-123")
+        scoped_user.groups.add(Group.objects.get(name=PURCHASE_MANAGER))
+        Employee.objects.create(
+            company=self.company,
+            employee_id="PUR-SCOPED",
+            name="Purchase Scoped",
+            user=scoped_user,
+        )
+        PurchaseOrder.objects.create(company=self.company, number="PO-SCOPED", vendor=self.customer)
+        other_company = Company.objects.create(code="OTH", name="Other Company")
+        other_vendor = Contact.objects.create(company=other_company, code="OTH-V", name="Other Vendor")
+        PurchaseOrder.objects.create(company=other_company, number="PO-OTHER", vendor=other_vendor)
+
+        analytics = build_purchase_analytics("overview", scoped_user)
+
+        purchase_orders = next(metric for metric in analytics["metrics"] if metric["label"] == "Purchase Orders")
+        self.assertEqual(purchase_orders["value"], 1)
 
     def test_employee_loan_list_query_count_does_not_grow(self):
         self.client.force_login(self.user)
@@ -493,9 +636,55 @@ class ERPIntegrityTests(TestCase):
         self.assertEqual(payslip_response.context["active_app_slug"], "hr")
         self.assertContains(payslip_response, "Human Resources")
         self.assertContains(payslip_response, "Payroll Run")
+        purchase_response = self.client.get("/apps/purchase/")
+        self.assertContains(purchase_response, 'href="/apps/purchase/feature/overview/"')
+        self.assertContains(purchase_response, "Purchase Order Analysis")
         for definition in discover_app_catalog():
             with self.subTest(app=definition["slug"]):
                 self.assertEqual(self.client.get(f"/apps/{definition['slug']}/").status_code, 200)
+
+    @patch("modules.apphub.views.execute_upgrade")
+    @patch("modules.apphub.views.pending_migration_plan")
+    def test_app_manager_upgrade_requires_preview_and_exact_confirmation(self, migration_plan, execute_upgrade):
+        call_command("sync_apps", verbosity=0)
+        self.client.force_login(self.user)
+        migration_plan.return_value = [{"label": "gsshop_pos", "name": "0004_lifecycle", "backwards": False}]
+
+        preview = self.client.post(
+            "/apps/pos/upgrade/",
+            {"mode": "upgrade-no-deps", "next": "/apps/"},
+        )
+        self.assertEqual(preview.status_code, 200)
+        self.assertContains(preview, "Upgrade No-Deps")
+        self.assertContains(preview, "UPGRADE NO-DEPS pos")
+        self.assertContains(preview, "gsshop_pos.0004_lifecycle")
+        execute_upgrade.assert_not_called()
+
+        confirmed = self.client.post(
+            "/apps/pos/upgrade/",
+            {
+                "mode": "upgrade-no-deps",
+                "next": "/apps/",
+                "confirmation": "UPGRADE NO-DEPS pos",
+            },
+        )
+        self.assertRedirects(confirmed, "/apps/")
+        execute_upgrade.assert_called_once_with(["gsshop_pos"])
+
+    def test_regular_app_upgrade_includes_transitive_installed_dependants_only(self):
+        apps = [
+            SimpleNamespace(slug="foundation", name="Foundation", sequence=1, dependencies=[]),
+            SimpleNamespace(slug="sales", name="Sales", sequence=2, dependencies=["foundation"]),
+            SimpleNamespace(slug="pos", name="Point of Sale", sequence=3, dependencies=["sales"]),
+            SimpleNamespace(slug="pos-fnb", name="POS F&B", sequence=4, dependencies=["pos"]),
+            SimpleNamespace(slug="hr", name="Human Resources", sequence=5, dependencies=["foundation"]),
+        ]
+
+        targets = upgrade_target_apps(apps[1], apps, include_dependants=True)
+        no_deps = upgrade_target_apps(apps[1], apps, include_dependants=False)
+
+        self.assertEqual([app.slug for app in targets], ["sales", "pos", "pos-fnb"])
+        self.assertEqual([app.slug for app in no_deps], ["sales"])
 
     def test_all_hr_analytics_pages_render(self):
         call_command("sync_apps", verbosity=0)
@@ -522,6 +711,29 @@ class ERPIntegrityTests(TestCase):
         for feature in analytic_features:
             with self.subTest(feature=feature):
                 response = self.client.get(f"/apps/hr/feature/{feature}/")
+                self.assertEqual(response.status_code, 200)
+                self.assertNotContains(response, "Navigation is ready")
+
+    def test_all_purchase_analytics_pages_render(self):
+        call_command("sync_apps", verbosity=0)
+        self.client.force_login(self.user)
+        features = {
+            "overview",
+            "insight-feed",
+            "spend-analysis",
+            "supplier-performance",
+            "demand-analysis",
+            "savings-opportunities",
+            "contract-intelligence",
+            "risk-center",
+            "purchase-performance",
+            "order-analysis",
+            "request-analysis",
+            "budget-report",
+        }
+        for feature in features:
+            with self.subTest(feature=feature):
+                response = self.client.get(f"/apps/purchase/feature/{feature}/")
                 self.assertEqual(response.status_code, 200)
                 self.assertNotContains(response, "Navigation is ready")
 

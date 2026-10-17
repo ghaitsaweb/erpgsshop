@@ -1,8 +1,9 @@
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
 from django.db import transaction
-from django.db.models import Count, F, Prefetch, Q, Sum
+from django.db.models import Count, F, Max, Prefetch, Q, Sum
 from django.forms import inlineformset_factory, modelform_factory
 from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -41,9 +42,45 @@ from .models import (
     Warehouse,
 )
 from modules.ai_workspace.models import AIAgent, AIConversation, AIMessage, AITask, AIWorkspace
+from modules.apphub.workflow_hooks import run_before_workflow_hooks
 from modules.crm.models import Lead, Opportunity
+from modules.construction.access import (
+    can_construction_entity_action,
+    can_construction_workflow_action,
+    scope_construction_form,
+    scope_construction_queryset,
+)
+from modules.construction import models as construction_models
+from modules.construction.entity_config import (
+    BOQ_WORKFLOW,
+    CLAIM_WORKFLOW,
+    CONSTRUCTION_ENTITY_CONFIG,
+    CONTRACT_WORKFLOW,
+    EXECUTION_WORKFLOW,
+)
+from modules.construction.services import handle_document_action as handle_construction_document_action
+from modules.construction.services import handle_document_save as handle_construction_document_save
 from modules.education.models import BookLoan, Course, Enrollment, Lesson, LibraryBook, School, Student
+from modules.finance.access import (
+    can_accounting_entity_action,
+    can_accounting_workflow_action,
+    scope_accounting_form,
+    scope_accounting_queryset,
+)
+from modules.finance.entity_config import ACCOUNTING_DOCUMENT_CONFIG, ACCOUNTING_ENTITY_CONFIG
+from modules.finance.ecosystem_config import ECOSYSTEM_DOCUMENT_CONFIG, ECOSYSTEM_ENTITY_CONFIG
+from modules.finance.core_parity_config import CORE_PARITY_DOCUMENT_CONFIG, CORE_PARITY_ENTITY_CONFIG
+from modules.finance.localization_config import LOCALIZATION_ENTITY_CONFIG
+from modules.finance.parity_config import PARITY_DOCUMENT_CONFIG, PARITY_ENTITY_CONFIG
 from modules.finance.models import Account, Budget, ExpenseClaim, JournalEntry, JournalLine, Loan
+from modules.finance.services import (
+    cancel_invoice,
+    handle_accounting_workflow,
+    handle_external_accounting_workflow,
+    post_invoice,
+    post_journal_entry,
+    reverse_journal_entry,
+)
 from modules.hr.models import (
     AdvanceCycle,
     AdvanceLimitConsumption,
@@ -80,6 +117,7 @@ from modules.hr.models import (
     ExpenseLimitConsumption,
     ExpenseProduct,
     HRSetting,
+    HRWorkflowAudit,
     HRYear,
     JobClassification,
     JobExperienceLevel,
@@ -138,9 +176,12 @@ from modules.operations.models import (
     WorkPackage,
 )
 from modules.pos.models import KitchenTicket, POSOrder, POSOrderLine, POSRegister, POSSession, RestaurantTable
+from modules.pos.entity_config import POS_DOCUMENT_CONFIG, POS_ENTITY_CONFIG
+from modules.pos.access import can_pos_entity_action, can_pos_workflow_action, scope_pos_form, scope_pos_queryset
 from modules.apphub.models import ERPApp
 from modules.apphub.workspaces import ENTITY_APP_MAP
 from modules.hr.access import can_hr_entity_action, can_hr_workflow_action, scope_hr_form, scope_hr_queryset
+from modules.hr.detail_config import HR_DETAIL_ENTITY_CONFIG
 from modules.hr.training_views import training_conduct_form, training_conduct_list
 from modules.purchase.access import (
     can_purchase_entity_action,
@@ -149,6 +190,30 @@ from modules.purchase.access import (
     scope_purchase_queryset,
 )
 from modules.purchase.entity_config import PURCHASE_ENTITY_CONFIG
+from modules.purchase.models import (
+    BlanketOrder,
+    BlanketOrderLine,
+    DirectPurchase,
+    DirectPurchaseLine,
+    GoodsReceipt,
+    GoodsReceiptLine,
+    PurchaseAccountingDocument,
+    PurchaseAccountingLine,
+    PurchaseInventoryTransfer,
+    PurchaseInventoryTransferLine,
+    PurchaseOrderRevision,
+    PurchasePeppolEvent,
+    PurchaseQuotation,
+    PurchaseQuotationLine,
+    PurchaseRequest,
+    PurchaseRequestLine,
+    PurchaseTender,
+    PurchaseTenderLine,
+    ServiceWorkOrder,
+    ServiceWorkOrderLine,
+    TenderAuditLog,
+)
+from modules.purchase.services import approve_budget_movement
 from .rental_views import rental_detail_list
 from .document_pdf import REPORT_CONFIG, render_document_pdf
 
@@ -555,7 +620,12 @@ ENTITY_CONFIG = {
         "search": ["number", "employee__employee_id", "employee__name", "purpose"],
         "form_fields": ["employee", "number", "request_date", "amount", "purpose", "settlement_due_date", "approver"],
         "select_related": ["employee", "approver"],
-        "workflow": APPROVAL_WORKFLOW,
+        "workflow": {
+            "submit": {"label": "Submit", "from": ["draft"], "to": "submitted", "primary": True},
+            "approve": {"label": "Approve & Disburse", "from": ["submitted"], "to": "approved", "primary": True, "service_controls_state": True},
+            "reject": {"label": "Reject", "from": ["submitted"], "to": "rejected"},
+            "cancel": {"label": "Cancel", "from": ["draft", "submitted"], "to": "cancelled"},
+        },
     },
     "hr-years": {
         "model": HRYear,
@@ -731,7 +801,7 @@ ENTITY_CONFIG = {
         "singular": "Account",
         "columns": [("code", "Code"), ("name", "Account"), ("account_type", "Type"), ("company", "Company"), ("active", "Active")],
         "search": ["code", "name"],
-        "form_fields": ["company", "code", "name", "account_type", "parent", "active"],
+        "form_fields": ["company", "code", "name", "account_type", "parent", "currency", "allow_reconciliation", "deprecated", "active"],
         "select_related": ["company", "parent"],
     },
     "journal-entries": {
@@ -740,8 +810,8 @@ ENTITY_CONFIG = {
         "singular": "Journal Entry",
         "columns": [("number", "Number"), ("entry_date", "Date"), ("company", "Company"), ("reference", "Reference"), ("status", "Status"), ("total_debit", "Debit"), ("total_credit", "Credit")],
         "search": ["number", "reference", "description"],
-        "form_fields": ["company", "number", "entry_date", "reference", "description", "status"],
-        "select_related": ["company"],
+        "form_fields": ["company", "journal", "number", "entry_date", "reference", "description", "currency", "exchange_rate", "source_type", "source_reference", "auto_post"],
+        "select_related": ["company", "journal", "posted_by", "reversal_of"],
         "admin_detail": True,
     },
     "budgets": {
@@ -759,8 +829,16 @@ ENTITY_CONFIG = {
         "singular": "Expense Claim",
         "columns": [("reference", "Reference"), ("claim_date", "Date"), ("employee", "Employee"), ("category", "Category"), ("amount", "Amount"), ("status", "Status")],
         "search": ["reference", "employee__employee_id", "employee__name", "category"],
-        "form_fields": ["company", "employee", "reference", "claim_date", "category", "amount", "description", "status"],
-        "select_related": ["company", "employee"],
+        "form_fields": ["company", "employee", "product", "cash_advance", "reference", "claim_date", "category", "amount", "description", "status"],
+        "select_related": ["company", "employee", "product", "cash_advance"],
+        "workflow": {
+            "submit": {"label": "Submit", "from": ["draft"], "to": "submitted", "primary": True},
+            "approve": {"label": "Approve & Recognize", "from": ["submitted"], "to": "approved", "primary": True, "service_controls_state": True},
+            "pay": {"label": "Reimburse", "from": ["approved"], "to": "closed", "primary": True, "service_controls_state": True},
+            "return": {"label": "Record Advance Return", "from": ["return_due"], "to": "closed", "primary": True, "service_controls_state": True},
+            "reverse": {"label": "Reverse Accounting", "from": ["approved", "return_due", "paid", "closed"], "to": "reversed", "service_controls_state": True},
+            "reject": {"label": "Reject", "from": ["submitted"], "to": "rejected"},
+        },
     },
     "loans": {
         "model": Loan,
@@ -1358,6 +1436,14 @@ ENTITY_CONFIG.update(
 )
 
 ENTITY_CONFIG.update(PURCHASE_ENTITY_CONFIG)
+ENTITY_CONFIG.update(HR_DETAIL_ENTITY_CONFIG)
+ENTITY_CONFIG.update(CONSTRUCTION_ENTITY_CONFIG)
+ENTITY_CONFIG.update(POS_ENTITY_CONFIG)
+ENTITY_CONFIG.update(ACCOUNTING_ENTITY_CONFIG)
+ENTITY_CONFIG.update(PARITY_ENTITY_CONFIG)
+ENTITY_CONFIG.update(ECOSYSTEM_ENTITY_CONFIG)
+ENTITY_CONFIG.update(CORE_PARITY_ENTITY_CONFIG)
+ENTITY_CONFIG.update(LOCALIZATION_ENTITY_CONFIG)
 
 
 DOCUMENT_CONFIG = {
@@ -1371,7 +1457,7 @@ DOCUMENT_CONFIG = {
         "editable_statuses": [SaleOrder.Status.DRAFT],
         "actions": {
             "confirm": {"label": "Confirm", "from": [SaleOrder.Status.DRAFT], "to": SaleOrder.Status.CONFIRMED, "primary": True},
-            "complete": {"label": "Complete", "from": [SaleOrder.Status.CONFIRMED], "to": SaleOrder.Status.COMPLETED, "primary": True},
+            "complete": {"label": "Complete & Post Accounting", "from": [SaleOrder.Status.CONFIRMED], "to": SaleOrder.Status.COMPLETED, "primary": True, "service_controls_state": True},
             "cancel": {"label": "Cancel", "from": [SaleOrder.Status.DRAFT, SaleOrder.Status.CONFIRMED], "to": SaleOrder.Status.CANCELLED},
         },
     },
@@ -1454,8 +1540,8 @@ DOCUMENT_CONFIG = {
     "journal-entries": {
         "line_model": JournalLine,
         "line_relation": "lines",
-        "header_fields": ["company", "number", "entry_date", "reference", "description"],
-        "line_fields": ["account", "description", "debit", "credit"],
+        "header_fields": ["company", "journal", "number", "entry_date", "reference", "description", "currency", "exchange_rate", "source_type", "source_reference", "auto_post"],
+        "line_fields": ["account", "partner", "cost_center", "description", "debit", "credit", "currency", "amount_currency", "due_date"],
         "line_title": "Journal Items",
         "total_fields": [("Debit", "total_debit"), ("Credit", "total_credit")],
         "editable_statuses": [JournalEntry.Status.DRAFT],
@@ -1541,6 +1627,373 @@ DOCUMENT_CONFIG = {
     },
 }
 
+DOCUMENT_CONFIG.update(ACCOUNTING_DOCUMENT_CONFIG)
+DOCUMENT_CONFIG.update(PARITY_DOCUMENT_CONFIG)
+DOCUMENT_CONFIG.update(ECOSYSTEM_DOCUMENT_CONFIG)
+DOCUMENT_CONFIG.update(CORE_PARITY_DOCUMENT_CONFIG)
+
+DOCUMENT_CONFIG.update(POS_DOCUMENT_CONFIG)
+
+DOCUMENT_CONFIG.update(
+    {
+        "purchase-requests": {
+            "line_model": PurchaseRequestLine,
+            "line_relation": "lines",
+            "header_fields": [
+                "company",
+                "number",
+                "requestor",
+                "request_date",
+                "required_date",
+                "justification",
+                "rejection_reason",
+                "notes",
+            ],
+            "line_fields": [
+                "product",
+                "description",
+                "specification",
+                "quantity",
+                "approved_quantity",
+                "ordered_quantity",
+                "estimated_unit_price",
+            ],
+            "line_title": "Requested Products and Services",
+            "total_fields": [],
+            "editable_statuses": [PurchaseRequest.Status.DRAFT, PurchaseRequest.Status.REJECTED],
+            "actions": {
+                "submit": {"label": "Submit", "from": [PurchaseRequest.Status.DRAFT], "to": PurchaseRequest.Status.PENDING, "primary": True},
+                "approve": {"label": "Approve", "from": [PurchaseRequest.Status.PENDING, PurchaseRequest.Status.PARTIALLY_APPROVED], "to": PurchaseRequest.Status.APPROVED, "primary": True},
+                "reject": {"label": "Reject", "from": [PurchaseRequest.Status.PENDING, PurchaseRequest.Status.PARTIALLY_APPROVED], "to": PurchaseRequest.Status.REJECTED},
+                "reset": {"label": "Reset to Draft", "from": [PurchaseRequest.Status.REJECTED], "to": PurchaseRequest.Status.DRAFT},
+                "create-rfq": {"label": "Create RFQ", "from": [PurchaseRequest.Status.APPROVED, PurchaseRequest.Status.PARTIALLY_RFQ], "to": PurchaseRequest.Status.RFQ, "primary": True},
+                "mark-ordered": {"label": "Mark Fully Ordered", "from": [PurchaseRequest.Status.RFQ, PurchaseRequest.Status.PARTIALLY_ORDERED], "to": PurchaseRequest.Status.FULLY_ORDERED, "primary": True},
+                "start": {"label": "Start Fulfilment", "from": [PurchaseRequest.Status.FULLY_ORDERED], "to": PurchaseRequest.Status.IN_PROGRESS, "primary": True},
+                "close": {"label": "Close", "from": [PurchaseRequest.Status.IN_PROGRESS], "to": PurchaseRequest.Status.CLOSED, "primary": True},
+            },
+        },
+        "purchase-quotations": {
+            "line_model": PurchaseQuotationLine,
+            "line_relation": "lines",
+            "header_fields": ["company", "number", "request", "vendor", "issue_date", "response_deadline", "currency", "quoted_amount", "notes"],
+            "line_fields": ["request_line", "product", "description", "specification", "quantity", "unit_price", "tax_percent", "discount_percent", "promised_date"],
+            "line_title": "Quotation Lines",
+            "total_fields": [("Quoted Amount", "quoted_amount")],
+            "editable_statuses": [PurchaseQuotation.Status.DRAFT, PurchaseQuotation.Status.RECEIVED],
+            "actions": {
+                "send": {"label": "Send to Vendor", "from": [PurchaseQuotation.Status.DRAFT], "to": PurchaseQuotation.Status.SENT, "primary": True},
+                "receive": {"label": "Record Response", "from": [PurchaseQuotation.Status.SENT], "to": PurchaseQuotation.Status.RECEIVED, "primary": True},
+                "select": {"label": "Select Quote", "from": [PurchaseQuotation.Status.RECEIVED], "to": PurchaseQuotation.Status.SELECTED, "primary": True},
+                "cancel": {"label": "Cancel", "from": [PurchaseQuotation.Status.DRAFT, PurchaseQuotation.Status.SENT, PurchaseQuotation.Status.RECEIVED], "to": PurchaseQuotation.Status.CANCELLED},
+            },
+        },
+        "direct-purchases": {
+            "line_model": DirectPurchaseLine,
+            "line_relation": "lines",
+            "header_fields": ["company", "number", "vendor", "purchase_date", "description", "amount", "justification"],
+            "line_fields": ["product", "description", "quantity", "unit_price", "tax_percent", "cost_center"],
+            "line_title": "Direct Purchase Lines",
+            "total_fields": [("Total", "amount")],
+            "editable_statuses": ["draft", "rejected"],
+            "actions": APPROVAL_WORKFLOW,
+        },
+        "service-work-orders": {
+            "line_model": ServiceWorkOrderLine,
+            "line_relation": "lines",
+            "header_fields": ["company", "number", "vendor", "service_description", "date_start", "date_end", "contract_amount", "notes"],
+            "line_fields": ["description", "unit", "quantity", "unit_rate", "tax_percent", "cost_center", "milestone_name"],
+            "line_title": "Service Scope Lines",
+            "total_fields": [("Contract Value", "contract_amount")],
+            "editable_statuses": ["draft", "rejected"],
+            "actions": APPROVAL_WORKFLOW,
+        },
+        "purchase-tenders": {
+            "line_model": PurchaseTenderLine,
+            "line_relation": "lines",
+            "header_fields": ["company", "number", "title", "category", "tender_type", "award_strategy", "publish_date", "close_date", "budget_amount", "description"],
+            "line_fields": ["request_line", "product", "description", "specification", "quantity", "target_unit_price", "delivery_date"],
+            "line_title": "Tender Scope Lines",
+            "total_fields": [("Budget", "budget_amount")],
+            "editable_statuses": [PurchaseTender.Status.DRAFT],
+            "actions": {
+                "publish": {"label": "Publish", "from": [PurchaseTender.Status.DRAFT], "to": PurchaseTender.Status.PUBLISHED, "primary": True},
+                "open-submission": {"label": "Open Submission", "from": [PurchaseTender.Status.PUBLISHED], "to": PurchaseTender.Status.SUBMISSION, "primary": True},
+                "evaluate": {"label": "Start Evaluation", "from": [PurchaseTender.Status.SUBMISSION], "to": PurchaseTender.Status.EVALUATION, "primary": True},
+                "award": {"label": "Award", "from": [PurchaseTender.Status.EVALUATION], "to": PurchaseTender.Status.AWARDED, "primary": True},
+                "close": {"label": "Close", "from": [PurchaseTender.Status.AWARDED], "to": PurchaseTender.Status.CLOSED, "primary": True},
+                "cancel": {"label": "Cancel", "from": [PurchaseTender.Status.DRAFT, PurchaseTender.Status.PUBLISHED, PurchaseTender.Status.SUBMISSION, PurchaseTender.Status.EVALUATION], "to": PurchaseTender.Status.CANCELLED},
+            },
+        },
+        "blanket-orders": {
+            "line_model": BlanketOrderLine,
+            "line_relation": "lines",
+            "header_fields": ["company", "number", "vendor", "date_start", "date_end", "agreement_value", "consumed_value", "terms"],
+            "line_fields": ["product", "description", "agreed_quantity", "released_quantity", "unit_price", "minimum_release_quantity"],
+            "line_title": "Agreement Lines",
+            "total_fields": [("Agreement Value", "agreement_value"), ("Consumed", "consumed_value")],
+            "editable_statuses": [BlanketOrder.Status.DRAFT],
+            "actions": {
+                "activate": {"label": "Activate", "from": [BlanketOrder.Status.DRAFT], "to": BlanketOrder.Status.ACTIVE, "primary": True},
+                "exhaust": {"label": "Mark Exhausted", "from": [BlanketOrder.Status.ACTIVE], "to": BlanketOrder.Status.EXHAUSTED},
+                "expire": {"label": "Mark Expired", "from": [BlanketOrder.Status.ACTIVE], "to": BlanketOrder.Status.EXPIRED},
+                "cancel": {"label": "Cancel", "from": [BlanketOrder.Status.DRAFT, BlanketOrder.Status.ACTIVE], "to": BlanketOrder.Status.CANCELLED},
+            },
+        },
+        "goods-receipts": {
+            "line_model": GoodsReceiptLine,
+            "line_relation": "lines",
+            "header_fields": ["company", "number", "order", "warehouse", "receipt_date", "receiving_mode", "delivery_status", "notes"],
+            "line_fields": ["order_line", "received_quantity", "accepted_quantity", "rejected_quantity", "rejection_reason"],
+            "line_title": "Received Lines and Inspection",
+            "total_fields": [],
+            "editable_statuses": [GoodsReceipt.Status.DRAFT, GoodsReceipt.Status.INSPECTING],
+            "actions": {
+                "inspect": {"label": "Start Inspection", "from": [GoodsReceipt.Status.DRAFT], "to": GoodsReceipt.Status.INSPECTING, "primary": True},
+                "receive": {"label": "Accept Receipt", "from": [GoodsReceipt.Status.INSPECTING], "to": GoodsReceipt.Status.RECEIVED, "primary": True},
+                "reject": {"label": "Reject Receipt", "from": [GoodsReceipt.Status.INSPECTING], "to": GoodsReceipt.Status.REJECTED},
+                "cancel": {"label": "Cancel", "from": [GoodsReceipt.Status.DRAFT], "to": GoodsReceipt.Status.CANCELLED},
+            },
+        },
+        "purchase-accounting-documents": {
+            "line_model": PurchaseAccountingLine,
+            "line_relation": "lines",
+            "header_fields": ["order", "invoice", "number", "document_type", "document_date", "total_amount", "journal_reference"],
+            "line_fields": ["account_code", "description", "debit", "credit", "cost_center", "tax_code"],
+            "line_title": "Accounting Lines",
+            "total_fields": [("Total", "total_amount")],
+            "editable_statuses": ["draft", "rejected"],
+            "actions": {
+                **APPROVAL_WORKFLOW,
+                "approve": {**APPROVAL_WORKFLOW["approve"], "requires_balance": True},
+            },
+        },
+        "purchase-inventory-transfers": {
+            "line_model": PurchaseInventoryTransferLine,
+            "line_relation": "lines",
+            "header_fields": ["receipt", "reference", "source_warehouse", "destination_warehouse", "transfer_date", "notes"],
+            "line_fields": ["receipt_line", "product", "quantity"],
+            "line_title": "Transfer Lines",
+            "total_fields": [],
+            "editable_statuses": [PurchaseInventoryTransfer.Status.DRAFT, PurchaseInventoryTransfer.Status.READY],
+            "actions": {
+                "ready": {"label": "Mark Ready", "from": [PurchaseInventoryTransfer.Status.DRAFT], "to": PurchaseInventoryTransfer.Status.READY, "primary": True},
+                "dispatch": {"label": "Dispatch", "from": [PurchaseInventoryTransfer.Status.READY], "to": PurchaseInventoryTransfer.Status.IN_TRANSIT, "primary": True},
+                "complete": {"label": "Complete", "from": [PurchaseInventoryTransfer.Status.IN_TRANSIT], "to": PurchaseInventoryTransfer.Status.DONE, "primary": True},
+                "cancel": {"label": "Cancel", "from": [PurchaseInventoryTransfer.Status.DRAFT, PurchaseInventoryTransfer.Status.READY], "to": PurchaseInventoryTransfer.Status.CANCELLED},
+            },
+        },
+    }
+)
+
+DOCUMENT_CONFIG.update(
+    {
+        "construction-boq-templates": {
+            "line_model": construction_models.ConstructionBOQTemplateItem,
+            "line_relation": "items",
+            "header_fields": CONSTRUCTION_ENTITY_CONFIG["construction-boq-templates"]["form_fields"],
+            "line_fields": ["sequence", "parent_item", "code", "name", "description", "level", "is_leaf_node", "is_direct_amount", "direct_amount_info", "product_group", "product", "unit", "quantity", "unit_cost"],
+            "line_title": "WBS Template Lines",
+            "total_fields": [], "editable_statuses": None, "actions": {},
+        },
+        "construction-boq-template-items": {
+            "line_model": construction_models.ConstructionBOQTemplateCostLine,
+            "line_relation": "cost_lines",
+            "header_fields": CONSTRUCTION_ENTITY_CONFIG["construction-boq-template-items"]["form_fields"],
+            "line_fields": ["sequence", "input_type", "cost_category", "product", "job_position", "vendor", "work_package", "description", "ownership", "quantity", "unit", "unit_rate", "notes"],
+            "line_title": "Template Resource Lines",
+            "total_fields": [], "editable_statuses": None, "actions": {},
+        },
+        "construction-contracts": {
+            "line_model": construction_models.ConstructionContractDPLine,
+            "line_relation": "down_payment_lines",
+            "header_fields": CONSTRUCTION_ENTITY_CONFIG["construction-contracts"]["form_fields"],
+            "line_fields": ["sequence", "invoice", "invoice_date", "portion_percent", "invoice_amount", "payment_status"],
+            "line_title": "Down Payment Schedule",
+            "line_sections": [
+                {"line_model": construction_models.ConstructionContractDPLine, "line_relation": "down_payment_lines", "line_title": "Down Payment Schedule", "line_fields": ["sequence", "invoice", "invoice_date", "portion_percent", "invoice_amount", "payment_status"], "line_select_related": ("invoice",)},
+                {"line_model": construction_models.ConstructionContractMilestone, "line_relation": "milestones", "line_title": "Contract Milestones", "line_fields": ["sequence", "name", "description", "due_date", "percentage", "amount", "based_on_work_item", "linked_boq_items", "status", "achieved", "achieved_date"]},
+            ],
+            "total_fields": [("Contract Value", "contract_value"), ("Down Payment", "down_payment_amount")],
+            "editable_statuses": ["draft", "active", "on_hold"], "actions": CONTRACT_WORKFLOW,
+        },
+        "construction-boqs": {
+            "line_model": construction_models.ConstructionBOQItem,
+            "line_relation": "items",
+            "header_fields": CONSTRUCTION_ENTITY_CONFIG["construction-boqs"]["form_fields"],
+            "line_fields": ["sequence", "parent_item", "wbs_code", "level", "is_leaf_node", "is_direct_amount", "work_package", "product_group", "product", "description", "unit", "quantity", "unit_price", "budget_cost", "procurement_method", "commercial_markup_type", "commercial_markup_value", "commercial_discount_type", "commercial_discount_value", "commercial_tax_percent"],
+            "line_title": "WBS / BOQ Lines",
+            "total_fields": [("Cost", "total_cost"), ("Revenue Before Tax", "total_revenue_before_tax"), ("Tax", "total_tax_amount"), ("Revenue Including Tax", "total_revenue_including_tax"), ("Margin", "total_margin")],
+            "editable_statuses": ["draft", "review", "revised"], "actions": BOQ_WORKFLOW,
+        },
+        "construction-boq-items": {
+            "line_model": construction_models.ConstructionBOQCostLine,
+            "line_relation": "cost_lines",
+            "header_fields": CONSTRUCTION_ENTITY_CONFIG["construction-boq-items"]["form_fields"],
+            "line_fields": ["sequence", "input_type", "cost_category", "product", "job_position", "vendor", "work_package", "description", "ownership", "quantity", "unit", "unit_rate", "markup_type", "markup_value", "discount_type", "discount_value", "tax_percent", "notes"],
+            "line_title": "Resource Cost Lines",
+            "total_fields": [("Sales Amount", "sales_amount"), ("Budget Amount", "budget_amount")],
+            "editable_statuses": None, "actions": {},
+        },
+        "construction-cost-sheets": {
+            "line_model": construction_models.ConstructionCostSheetItem,
+            "line_relation": "items",
+            "header_fields": CONSTRUCTION_ENTITY_CONFIG["construction-cost-sheets"]["form_fields"],
+            "line_fields": ["sequence", "boq_item", "parent_item", "wbs_code", "level", "is_leaf_node", "is_cost_sheet_only", "description", "product", "quantity", "unit_cost", "revenue_adjustment", "budget_cost_adjustment", "quantity_adjustment", "unit_rate_adjustment", "utilised_budget", "planned_start", "planned_end"],
+            "line_title": "Cost Sheet WBS Lines",
+            "total_fields": [("Revised Revenue", "revised_revenue"), ("Revised Cost", "revised_cost"), ("Utilised", "utilised_amount"), ("Estimated Margin", "estimated_margin")],
+            "editable_statuses": ["draft", "submitted", "rejected"], "actions": APPROVAL_WORKFLOW,
+        },
+        "construction-cost-sheet-items": {
+            "line_model": construction_models.ConstructionCostSheetResource,
+            "line_relation": "resources",
+            "header_fields": CONSTRUCTION_ENTITY_CONFIG["construction-cost-sheet-items"]["form_fields"],
+            "line_fields": ["sequence", "boq_resource", "cost_category", "input_type", "product", "job_position", "vendor", "work_package", "description", "unit", "quantity", "unit_rate", "budget_cost_adjustment", "revised_cost", "ownership", "reserved_quantity", "delivered_quantity", "utilised_quantity", "utilised_budget", "onsite_stock_quantity", "notes"],
+            "line_title": "Cost Resources",
+            "total_fields": [("Planned Amount", "planned_amount")], "editable_statuses": None, "actions": {},
+        },
+        "construction-budget-changes": {
+            "line_model": construction_models.ConstructionBudgetChangeLine,
+            "line_relation": "lines",
+            "header_fields": CONSTRUCTION_ENTITY_CONFIG["construction-budget-changes"]["form_fields"],
+            "line_fields": ["sequence", "line_type", "change_type", "cost_sheet_item", "cost_sheet_resource", "description", "previous_amount", "proposed_amount", "current_quantity", "revised_quantity", "current_unit_rate", "revised_unit_rate", "new_wbs_code", "new_wbs_name", "new_description", "new_plan_start", "new_plan_end", "cost_category", "product", "job_position", "vendor", "work_package", "zeroed"],
+            "line_title": "Budget Change Lines",
+            "total_fields": [("Increase", "total_increase"), ("Decrease", "total_decrease"), ("Net Impact", "amount"), ("Revised Cost", "revised_total_cost")],
+            "editable_statuses": ["draft", "rejected"], "actions": APPROVAL_WORKFLOW,
+        },
+        "construction-job-orders": {
+            "line_model": construction_models.ConstructionProgressLog,
+            "line_relation": "progress_logs",
+            "header_fields": CONSTRUCTION_ENTITY_CONFIG["construction-job-orders"]["form_fields"],
+            "line_fields": ["log_date", "progress", "completed_quantity", "cumulative_quantity", "weather", "notes", "evidence", "recorded_by"],
+            "line_title": "Progress Logs",
+            "line_sections": [
+                {"line_model": construction_models.ConstructionProgressLog, "line_relation": "progress_logs", "line_title": "Progress Logs", "line_fields": ["log_date", "progress", "completed_quantity", "cumulative_quantity", "weather", "notes", "evidence", "recorded_by"]},
+                {"line_model": construction_models.ConstructionTaskWorker, "line_relation": "workers", "line_title": "Task Workers", "line_fields": ["employee", "role", "assigned_date", "released_date", "planned_hours", "actual_hours"]},
+                {"line_model": construction_models.ConstructionEquipmentFacility, "line_relation": "equipment_facilities", "line_title": "Equipment & Facilities", "line_fields": ["asset", "category", "start_date", "end_date", "planned_hours", "actual_hours", "notes"]},
+            ],
+            "total_fields": [("Progress", "progress"), ("Completed Quantity", "completed_quantity")],
+            "editable_statuses": ["draft", "planned", "in_progress", "on_hold"], "actions": EXECUTION_WORKFLOW,
+        },
+        "construction-quantity-surveys": {
+            "line_model": construction_models.ConstructionQuantitySurveyLine,
+            "line_relation": "lines",
+            "header_fields": CONSTRUCTION_ENTITY_CONFIG["construction-quantity-surveys"]["form_fields"],
+            "line_fields": ["sequence", "boq_item", "previous_quantity", "measured_quantity", "accepted_quantity", "contract_quantity", "unit_rate", "location", "remarks"],
+            "line_title": "Quantity Survey Lines", "total_fields": [],
+            "editable_statuses": ["draft", "rejected"], "actions": APPROVAL_WORKFLOW,
+        },
+        "construction-quantity-survey-lines": {
+            "line_model": construction_models.ConstructionQuantitySurveyJOSource,
+            "line_relation": "job_order_sources",
+            "header_fields": CONSTRUCTION_ENTITY_CONFIG["construction-quantity-survey-lines"]["form_fields"],
+            "line_fields": ["progress_log", "previous_approved_quantity", "approved_quantity", "notes"],
+            "line_title": "Job Order Progress Sources", "total_fields": [("Amount", "amount"), ("Progress", "progress_percent")],
+            "editable_statuses": None, "actions": {},
+        },
+        "construction-resource-actualizations": {
+            "line_model": construction_models.ConstructionResourceActualizationLine,
+            "line_relation": "lines",
+            "header_fields": CONSTRUCTION_ENTITY_CONFIG["construction-resource-actualizations"]["form_fields"],
+            "line_fields": ["sequence", "cost_sheet_resource", "job_order", "resource_type", "product", "employee", "asset", "description", "quantity", "unit_cost", "revised_quantity_snapshot", "revised_cost_snapshot", "remaining_quantity", "remaining_budget", "source_warehouse", "reference_document", "remarks"],
+            "line_title": "Actualized Resources",
+            "total_fields": [("Budget", "budget_cost"), ("Actual", "total_actual_amount"), ("Variance", "variance_amount")],
+            "editable_statuses": ["draft", "rejected"], "actions": APPROVAL_WORKFLOW,
+        },
+        "construction-timesheets": {
+            "line_model": construction_models.ConstructionTimesheetLine,
+            "line_relation": "lines",
+            "header_fields": CONSTRUCTION_ENTITY_CONFIG["construction-timesheets"]["form_fields"],
+            "line_fields": ["employee", "job_order", "work_date", "hours", "description"],
+            "line_title": "Construction Time Logs", "total_fields": [],
+            "editable_statuses": ["draft", "rejected"], "actions": APPROVAL_WORKFLOW,
+        },
+        "construction-progressive-claims": {
+            "line_model": construction_models.ConstructionProgressiveClaimLine,
+            "line_relation": "lines",
+            "header_fields": CONSTRUCTION_ENTITY_CONFIG["construction-progressive-claims"]["form_fields"],
+            "line_fields": ["sequence", "boq_item", "quantity_survey_line", "job_orders", "previous_quantity", "current_quantity", "certified_quantity", "contract_quantity", "unit_price", "source"],
+            "line_title": "Claim Lines",
+            "line_sections": [
+                {"line_model": construction_models.ConstructionProgressiveClaimLine, "line_relation": "lines", "line_title": "Claim Lines", "line_fields": ["sequence", "boq_item", "quantity_survey_line", "job_orders", "previous_quantity", "current_quantity", "certified_quantity", "contract_quantity", "unit_price", "source"]},
+                {"line_model": construction_models.ConstructionProgressiveClaimAttachment, "line_relation": "attachments", "line_title": "Supporting Attachments", "line_fields": ["sequence", "document_name", "document_type", "document_date", "uploaded_by", "file"]},
+            ],
+            "total_fields": [("Gross", "gross_amount"), ("Retention", "retention_amount"), ("Advance Recovery", "advance_recovery"), ("Net", "net_amount")],
+            "editable_statuses": ["draft", "rejected"], "actions": CLAIM_WORKFLOW,
+        },
+        "construction-material-demands": {
+            "line_model": construction_models.ConstructionMaterialDemandLine,
+            "line_relation": "lines",
+            "header_fields": CONSTRUCTION_ENTITY_CONFIG["construction-material-demands"]["form_fields"],
+            "line_fields": ["product", "description", "requested_quantity", "allocated_quantity", "delivered_quantity"],
+            "line_title": "Material Demand Lines", "total_fields": [],
+            "editable_statuses": ["draft", "rejected"], "actions": APPROVAL_WORKFLOW,
+        },
+        "construction-account-settings": {
+            "line_model": construction_models.ConstructionProjectAccountSettingsLine,
+            "line_relation": "cip_lines",
+            "header_fields": CONSTRUCTION_ENTITY_CONFIG["construction-account-settings"]["form_fields"],
+            "line_fields": ["resource_category", "account", "usage_help"],
+            "line_title": "CIP Accounts by Resource Category", "total_fields": [],
+            "editable_statuses": None, "actions": {},
+        },
+        "construction-subcontract-job-orders": {
+            "line_model": construction_models.ConstructionSubcontractProgressLine,
+            "line_relation": "progress_lines",
+            "header_fields": CONSTRUCTION_ENTITY_CONFIG["construction-subcontract-job-orders"]["form_fields"],
+            "line_fields": ["progress_date", "quantity", "cumulative_quantity", "progress_percent", "amount", "evidence", "notes"],
+            "line_title": "Subcontract Progress",
+            "line_sections": [
+                {"line_model": construction_models.ConstructionSubcontractProgressLine, "line_relation": "progress_lines", "line_title": "Subcontract Progress", "line_fields": ["progress_date", "quantity", "cumulative_quantity", "progress_percent", "amount", "evidence", "notes"]},
+                {"line_model": construction_models.ConstructionSubcontractMilestone, "line_relation": "milestones", "line_title": "Payment Milestones", "line_fields": ["sequence", "name", "percentage", "amount", "due_date", "achieved", "achieved_date", "invoice"]},
+            ],
+            "total_fields": [("Contract Amount", "contract_amount"), ("Progress", "progress")],
+            "editable_statuses": ["draft", "planned", "in_progress", "on_hold"], "actions": EXECUTION_WORKFLOW,
+        },
+        "construction-inventory-transfers": {
+            "line_model": construction_models.ConstructionInventoryTransferLine,
+            "line_relation": "lines",
+            "header_fields": CONSTRUCTION_ENTITY_CONFIG["construction-inventory-transfers"]["form_fields"],
+            "line_fields": ["material_demand_line", "cost_sheet_resource", "product", "quantity", "notes"],
+            "line_title": "Transfer Lines", "total_fields": [],
+            "editable_statuses": ["draft", "ready"],
+            "actions": {
+                "ready": {"label": "Mark Ready", "from": ["draft"], "to": "ready", "primary": True},
+                "dispatch": {"label": "Dispatch", "from": ["ready"], "to": "in_transit", "primary": True},
+                "complete": {"label": "Complete", "from": ["in_transit"], "to": "done", "primary": True},
+                "cancel": {"label": "Cancel", "from": ["draft", "ready"], "to": "cancelled"},
+            },
+        },
+    }
+)
+
+DOCUMENT_CONFIG["construction-contracts"]["actions"]["create-dp-invoices"] = {
+    "label": "Create DP Invoices", "from": ["draft"], "to": "draft", "preserve_status": True,
+}
+DOCUMENT_CONFIG["construction-contracts"]["actions"]["release-retention-1"] = {
+    "label": "Release Retention 1", "from": ["active", "completed"], "to": "active", "preserve_status": True,
+}
+DOCUMENT_CONFIG["construction-contracts"]["actions"]["release-retention-2"] = {
+    "label": "Release Retention 2", "from": ["active", "completed"], "to": "active", "preserve_status": True,
+}
+DOCUMENT_CONFIG["construction-boqs"]["actions"]["recompute"] = {
+    "label": "Recompute Commercials", "from": ["draft", "review", "revised"], "to": "draft", "preserve_status": True,
+}
+DOCUMENT_CONFIG["construction-cost-sheets"]["actions"].update(
+    {
+        "load-boq": {"label": "Load BOQ", "from": ["draft"], "to": "draft", "primary": True, "preserve_status": True},
+        "recompute": {"label": "Recompute", "from": ["draft", "rejected"], "to": "draft", "preserve_status": True},
+    }
+)
+DOCUMENT_CONFIG["construction-quantity-surveys"]["actions"]["refresh"] = {
+    "label": "Refresh from Job Orders", "from": ["draft", "rejected"], "to": "draft", "preserve_status": True,
+}
+DOCUMENT_CONFIG["construction-progressive-claims"]["actions"]["recompute"] = {
+    "label": "Recompute Claim", "from": ["draft", "rejected"], "to": "draft", "preserve_status": True,
+}
+DOCUMENT_CONFIG["construction-material-demands"]["actions"]["create-purchase-request"] = {
+    "label": "Create Purchase Request", "from": ["approved"], "to": "approved", "primary": True, "preserve_status": True,
+}
+
 
 def health(request):
     return JsonResponse({"status": "ok", "service": "erp-gsshop"})
@@ -1558,25 +2011,58 @@ def _can(user, action, model, entity=None):
         user.has_perm(f"{model._meta.app_label}.{action}_{model._meta.model_name}")
         and can_hr_entity_action(user, entity, action)
         and can_purchase_entity_action(user, entity, action)
+        and can_construction_entity_action(user, entity, action)
+        and can_pos_entity_action(user, entity, action)
+        and can_accounting_entity_action(user, entity, action)
     )
 
 
 def _scope_queryset(user, entity, queryset):
     queryset = scope_hr_queryset(user, entity, queryset)
-    return scope_purchase_queryset(user, entity, queryset)
+    queryset = scope_purchase_queryset(user, entity, queryset)
+    queryset = scope_construction_queryset(user, entity, queryset)
+    queryset = scope_pos_queryset(user, entity, queryset)
+    return scope_accounting_queryset(user, entity, queryset)
 
 
 def _scope_form(form, user, entity):
     scope_hr_form(form, user, entity)
-    return scope_purchase_form(form, user, entity)
+    scope_purchase_form(form, user, entity)
+    scope_construction_form(form, user, entity)
+    scope_pos_form(form, user, entity)
+    return scope_accounting_form(form, user, entity)
 
 
 def _can_workflow(user, entity, action, instance):
-    return can_hr_workflow_action(user, entity, action, instance) and can_purchase_workflow_action(
-        user,
-        entity,
-        action,
+    return (
+        can_hr_workflow_action(user, entity, action, instance)
+        and can_purchase_workflow_action(user, entity, action)
+        and can_construction_workflow_action(user, entity, action)
+        and can_pos_workflow_action(user, entity, action)
+        and can_accounting_workflow_action(user, entity, action)
     )
+
+
+def _hr_audit_company_id(instance):
+    """Resolve the company for one HR workflow record without recordset loops."""
+    if getattr(instance, "company_id", None):
+        return instance.company_id
+    relation_paths = (
+        "employee.company_id",
+        "contract.employee.company_id",
+        "payroll_run.company_id",
+        "request.employee.company_id",
+        "document.employee.company_id",
+    )
+    for path in relation_paths:
+        value = instance
+        for part in path.split("."):
+            value = getattr(value, part, None)
+            if value is None:
+                break
+        if value:
+            return value
+    return None
 
 
 def _unavailable_application(request, entity):
@@ -1614,29 +2100,49 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
         if entity == "sales"
         else modelform_factory(model, form=StyledModelForm, fields=document["header_fields"])
     )
-    line_form_class = SaleOrderLineForm if entity == "sales" else StyledModelForm
-    formset_class = inlineformset_factory(
-        model,
-        document["line_model"],
-        form=line_form_class,
-        fields=document["line_fields"],
-        extra=1,
-        can_delete=True,
-    )
-    form = header_form_class(request.POST or None, instance=instance)
-    line_queryset = document["line_model"].objects.all()
-    if entity == "sales":
-        line_queryset = line_queryset.select_related("product")
-    formset = formset_class(
-        request.POST or None,
-        instance=instance,
-        prefix="document_lines",
-        queryset=line_queryset,
-    )
+    form = header_form_class(request.POST or None, request.FILES or None, instance=instance)
+    section_definitions = document.get("line_sections") or [{
+        "line_model": document["line_model"],
+        "line_relation": document["line_relation"],
+        "line_fields": document["line_fields"],
+        "line_title": document["line_title"],
+        "line_select_related": document.get("line_select_related", ()),
+        "fk_name": document.get("fk_name"),
+    }]
+    line_sections = []
+    for index, section in enumerate(section_definitions):
+        prefix = f"document_lines_{index}" if document.get("line_sections") else "document_lines"
+        line_form_class = SaleOrderLineForm if entity == "sales" and index == 0 else StyledModelForm
+        formset_class = inlineformset_factory(
+            model,
+            section["line_model"],
+            form=line_form_class,
+            fields=section["line_fields"],
+            extra=section.get("extra", 1),
+            can_delete=True,
+            fk_name=section.get("fk_name"),
+        )
+        line_queryset = section["line_model"].objects.all()
+        related = section.get("line_select_related", ())
+        if entity == "sales" and index == 0:
+            related = ("product",)
+        if related:
+            line_queryset = line_queryset.select_related(*related)
+        formset = formset_class(
+            request.POST or None,
+            request.FILES or None,
+            instance=instance,
+            prefix=prefix,
+            queryset=line_queryset,
+        )
+        line_sections.append({**section, "index": index, "prefix": prefix, "formset": formset})
+    formset = line_sections[0]["formset"]
     _scope_form(form, request.user, entity)
-    for line_form in formset.forms:
-        _scope_form(line_form, request.user, entity)
-    current_status = getattr(instance, "status", None) if instance else None
+    for section in line_sections:
+        for line_form in section["formset"].forms:
+            _scope_form(line_form, request.user, entity)
+    workflow_field = config.get("workflow_field", "status")
+    current_status = getattr(instance, workflow_field, None) if instance else None
     editable_statuses = document.get("editable_statuses")
     editable = instance is None or editable_statuses is None or current_status in editable_statuses
 
@@ -1644,11 +2150,15 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
         messages.error(request, "This document is locked by its workflow status.")
         return None, redirect("entity_edit", entity=entity, pk=instance.pk)
 
-    if editable and form.is_valid() and formset.is_valid():
+    formsets_valid = all(section["formset"].is_valid() for section in line_sections)
+    if editable and form.is_valid() and formsets_valid:
         with transaction.atomic():
             saved = form.save()
-            formset.instance = saved
-            formset.save()
+            for section in line_sections:
+                section["formset"].instance = saved
+                section["formset"].save()
+            if model._meta.app_label == "gsshop_construction":
+                handle_construction_document_save(entity, saved, request.user)
         saved.refresh_from_db()
         messages.success(request, f"{config['singular']} saved with its detail lines.")
         return None, redirect("entity_edit", entity=entity, pk=saved.pk)
@@ -1656,13 +2166,12 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
     if not editable:
         for field in form.fields.values():
             field.disabled = True
-        for line_form in formset.forms:
-            for field in line_form.fields.values():
-                field.disabled = True
+        for section in line_sections:
+            for line_form in section["formset"].forms:
+                for field in line_form.fields.values():
+                    field.disabled = True
 
-    status_choices = []
-    if hasattr(model, "Status"):
-        status_choices = list(model.Status.choices)
+    status_choices = list(model._meta.get_field(workflow_field).choices or ()) if hasattr(model, workflow_field) else []
     available_actions = [
         {"key": key, **definition}
         for key, definition in document.get("actions", {}).items()
@@ -1680,6 +2189,7 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
         "object": instance,
         "form": form,
         "formset": formset,
+        "line_sections": line_sections,
         "mode": mode,
         "editable": editable,
         "current_status": current_status,
@@ -1796,6 +2306,8 @@ def entity_list(request, entity):
         for field in config["search"]:
             filters |= Q(**{f"{field}__icontains": query})
         queryset = queryset.filter(filters)
+    if not queryset.ordered:
+        queryset = queryset.order_by("pk")
     page = Paginator(queryset, 25).get_page(request.GET.get("page"))
     rows = [{"object": obj, "values": [_display_value(obj, field) for field, _ in config["columns"]]} for obj in page.object_list]
     context = {
@@ -1805,7 +2317,7 @@ def entity_list(request, entity):
         "rows": rows,
         "page": page,
         "query": query,
-        "can_add": _can(request.user, "add", model, entity),
+        "can_add": config.get("creatable", True) and _can(request.user, "add", model, entity),
         "can_change": config.get("editable", True) and _can(request.user, "change", model, entity),
         "can_delete": config.get("deletable", True) and _can(request.user, "delete", model, entity),
     }
@@ -1821,6 +2333,9 @@ def entity_create(request, entity):
     model = config["model"]
     if entity == "rental-details":
         return entity_create(request, "sales")
+    if not config.get("creatable", True):
+        messages.error(request, "This history or audit record is generated by the system and is read-only.")
+        return redirect("entity_list", entity=entity)
     if not _can(request.user, "add", model, entity):
         messages.error(request, "You do not have permission to add this record.")
         return redirect("entity_list", entity=entity)
@@ -1829,7 +2344,7 @@ def entity_create(request, entity):
     if entity in DOCUMENT_CONFIG:
         context, response = _document_context(request, entity, config)
         return response or render(request, "core/document_form.html", context)
-    form = _form_class(config)(request.POST or None)
+    form = _form_class(config)(request.POST or None, request.FILES or None)
     _scope_form(form, request.user, entity)
     if form.is_valid():
         instance = form.save(commit=False)
@@ -1871,13 +2386,13 @@ def entity_edit(request, entity, pk):
     if entity in DOCUMENT_CONFIG:
         context, response = _document_context(request, entity, config, instance=instance, mode="Edit")
         return response or render(request, "core/document_form.html", context)
-    current_status = getattr(instance, "status", None)
+    current_status = getattr(instance, config.get("workflow_field", "status"), None)
     locked_statuses = set(config.get("workflow_locked_statuses", {"approved", "cancelled"}))
     workflow_locked = bool(config.get("workflow")) and current_status in locked_statuses
     if request.method == "POST" and workflow_locked:
         messages.error(request, "This record is locked by its workflow status.")
         return redirect("entity_edit", entity=entity, pk=pk)
-    form = _form_class(config)(request.POST or None, instance=instance)
+    form = _form_class(config)(request.POST or None, request.FILES or None, instance=instance)
     _scope_form(form, request.user, entity)
     if workflow_locked:
         for field in form.fields.values():
@@ -2027,39 +2542,179 @@ def document_action(request, entity, pk, action):
         if not _can_workflow(request.user, entity, action, instance):
             messages.error(request, "Your role cannot perform that workflow approval action.")
             return redirect("entity_edit", entity=entity, pk=pk)
-        current_status = getattr(instance, "status", None)
+        workflow_field = config.get("workflow_field", "status")
+        current_status = getattr(instance, workflow_field, None)
         if current_status not in definition["from"]:
             messages.error(request, "That workflow action is not available for the current status.")
             return redirect("entity_edit", entity=entity, pk=pk)
-        update_values = {"status": definition["to"], "updated_at": timezone.now()}
+        if entity == "product-budget-movements" and action == "approve":
+            try:
+                approve_budget_movement(pk, request.user)
+            except ValidationError as exc:
+                messages.error(request, "; ".join(exc.messages))
+            else:
+                messages.success(request, f"{config['singular']} moved to Approved.")
+            return redirect("entity_edit", entity=entity, pk=pk)
+        update_values = {workflow_field: definition["to"], "updated_at": timezone.now()}
         if action in {"approve", "reject"} and hasattr(instance, "approver_id"):
             update_values["approver_id"] = request.user.pk
-        updated = scoped_queryset.filter(pk=pk, status=current_status).update(**update_values)
+        actual_status = definition["to"]
+        with transaction.atomic():
+            if definition.get("service_controls_state") and model._meta.app_label in {
+                "gsshop_construction", "gsshop_finance", "gsshop_pos", "gsshop_hr", "gsshop_purchase"
+            }:
+                locked = get_object_or_404(scoped_queryset.select_for_update(), pk=pk)
+                if getattr(locked, workflow_field) != current_status:
+                    updated = 0
+                else:
+                    try:
+                        if model._meta.app_label == "gsshop_finance":
+                            handled = handle_accounting_workflow(entity, locked, action, request.user)
+                        elif model._meta.app_label == "gsshop_construction":
+                            handled = handle_construction_document_action(entity, locked, action, request.user)
+                        else:
+                            handled = handle_external_accounting_workflow(entity, locked, action, request.user)
+                    except ValidationError as exc:
+                        messages.error(request, "; ".join(exc.messages))
+                        return redirect("entity_edit", entity=entity, pk=pk)
+                    actual_status = getattr(handled, workflow_field, definition["to"])
+                    updated = 1
+            else:
+                updated = scoped_queryset.filter(pk=pk, **{workflow_field: current_status}).update(**update_values)
+            if updated == 1 and model._meta.app_label == "gsshop_hr":
+                company_id = _hr_audit_company_id(instance)
+                if company_id:
+                    HRWorkflowAudit.objects.create(
+                        company_id=company_id,
+                        entity=entity,
+                        record_id=instance.pk,
+                        action=action,
+                        previous_status=current_status or "",
+                        new_status=definition["to"],
+                        actor=request.user,
+                    )
+            if updated == 1 and entity == "purchase-peppol-submissions":
+                PurchasePeppolEvent.objects.create(
+                    submission=instance,
+                    status=definition["to"],
+                    message=f"Workflow action: {action}",
+                )
         if updated != 1:
             messages.error(request, "The record changed while this action was running. Please review it again.")
+        elif actual_status is None and definition["to"] is None:
+            messages.success(request, f"{config['singular']} action {definition['label']} completed.")
+        elif actual_status != definition["to"]:
+            messages.error(request, f"{config['singular']} finished in {str(actual_status).replace('_', ' ').title()}; review the validation details.")
         else:
-            messages.success(request, f"{config['singular']} moved to {definition['to'].replace('_', ' ').title()}.")
+            messages.success(request, f"{config['singular']} moved to {str(actual_status).replace('_', ' ').title()}.")
         return redirect("entity_edit", entity=entity, pk=pk)
     model = config["model"]
     if not _can(request.user, "change", model, entity):
         messages.error(request, "You do not have permission to update this document.")
         return redirect("entity_list", entity=entity)
     instance = get_object_or_404(_scope_queryset(request.user, entity, model.objects.all()), pk=pk)
+    workflow_field = config.get("workflow_field", "status")
+    current_status = getattr(instance, workflow_field, None)
     definition = document.get("actions", {}).get(action)
-    if definition is None or instance.status not in definition["from"]:
+    if definition is None or current_status not in definition["from"]:
         messages.error(request, "That workflow action is not available for the current status.")
         return redirect("entity_edit", entity=entity, pk=pk)
     if not _can_workflow(request.user, entity, action, instance):
         messages.error(request, "Your role cannot perform that workflow approval action.")
         return redirect("entity_edit", entity=entity, pk=pk)
     if definition.get("requires_balance") and not instance.balanced:
-        messages.error(request, "A journal entry must have equal non-zero debit and credit totals before posting.")
+        messages.error(request, "Accounting lines must have equal non-zero debit and credit totals before approval.")
         return redirect("entity_edit", entity=entity, pk=pk)
-    update_fields = ["status", "updated_at"]
-    instance.status = definition["to"]
-    if definition.get("set_paid"):
-        instance.paid_amount = instance.total
-        update_fields.append("paid_amount")
-    instance.save(update_fields=update_fields)
-    messages.success(request, f"{config['singular']} moved to {instance.get_status_display()}.")
+    with transaction.atomic():
+        instance = get_object_or_404(
+            _scope_queryset(request.user, entity, model.objects.select_for_update()),
+            pk=pk,
+        )
+        current_status = getattr(instance, workflow_field, None)
+        if current_status not in definition["from"]:
+            messages.error(request, "The document changed while this action was running. Please review it again.")
+            return redirect("entity_edit", entity=entity, pk=pk)
+        if definition.get("requires_balance") and not instance.balanced:
+            messages.error(request, "Accounting lines changed and are no longer balanced. Please review them again.")
+            return redirect("entity_edit", entity=entity, pk=pk)
+        previous_status = current_status
+        update_fields = [workflow_field, "updated_at"]
+        target_status = previous_status if definition.get("preserve_status") else definition["to"]
+        setattr(instance, workflow_field, target_status)
+        if definition.get("set_paid"):
+            instance.paid_amount = instance.total
+            update_fields.append("paid_amount")
+        if action in {"approve", "reject"} and hasattr(instance, "approver_id"):
+            instance.approver_id = request.user.pk
+            update_fields.append("approver")
+        try:
+            run_before_workflow_hooks(instance, action, request.user)
+        except ValidationError as exc:
+            messages.error(request, "; ".join(exc.messages))
+            transaction.set_rollback(True)
+            return redirect("entity_edit", entity=entity, pk=pk)
+        if entity == "invoices" and action in {"post", "cancel"}:
+            try:
+                instance = post_invoice(instance, request.user) if action == "post" else cancel_invoice(instance, request.user)
+            except ValidationError as exc:
+                messages.error(request, "; ".join(exc.messages))
+                return redirect("entity_edit", entity=entity, pk=pk)
+            target_status = getattr(instance, workflow_field)
+        elif entity == "journal-entries" and action in {"post", "reverse"}:
+            try:
+                if action == "post":
+                    instance = post_journal_entry(instance, request.user)
+                else:
+                    reverse_journal_entry(instance, request.user)
+                    instance.refresh_from_db(fields=[workflow_field, "updated_at"])
+            except ValidationError as exc:
+                messages.error(request, "; ".join(exc.messages))
+                return redirect("entity_edit", entity=entity, pk=pk)
+            target_status = getattr(instance, workflow_field)
+        elif model._meta.app_label == "gsshop_finance" and definition.get("service_controls_state"):
+            try:
+                instance = handle_accounting_workflow(entity, instance, action, request.user)
+            except ValidationError as exc:
+                messages.error(request, "; ".join(exc.messages))
+                return redirect("entity_edit", entity=entity, pk=pk)
+            target_status = getattr(instance, workflow_field)
+        elif definition.get("service_controls_state"):
+            try:
+                instance = handle_external_accounting_workflow(entity, instance, action, request.user)
+            except ValidationError as exc:
+                messages.error(request, "; ".join(exc.messages))
+                return redirect("entity_edit", entity=entity, pk=pk)
+            target_status = getattr(instance, workflow_field)
+        elif model._meta.app_label == "gsshop_construction":
+            handled = handle_construction_document_action(entity, instance, action, request.user)
+            instance = handled
+            setattr(instance, workflow_field, target_status)
+            instance.save(update_fields=[workflow_field, "updated_at"])
+        else:
+            instance.save(update_fields=update_fields)
+        if entity == "purchase-tenders":
+            TenderAuditLog.objects.create(
+                tender=instance,
+                action=action,
+                previous_status=previous_status,
+                new_status=instance.status,
+                actor=request.user,
+            )
+        if entity == "purchases" and action == "revise":
+            last_revision = instance.revisions.aggregate(value=Max("revision_number"))["value"] or 0
+            PurchaseOrderRevision.objects.create(
+                order=instance,
+                revision_number=last_revision + 1,
+                reason="Workflow revision requested",
+                snapshot={
+                    "previous_status": previous_status,
+                    "total": str(instance.total),
+                    "order_date": instance.order_date.isoformat(),
+                    "line_count": instance.lines.count(),
+                },
+                changed_by=request.user,
+            )
+    display_method = getattr(instance, f"get_{workflow_field}_display", None)
+    display_status = display_method() if display_method else str(getattr(instance, workflow_field, target_status)).replace("_", " ").title()
+    messages.success(request, f"{config['singular']} moved to {display_status}.")
     return redirect("entity_edit", entity=entity, pk=pk)

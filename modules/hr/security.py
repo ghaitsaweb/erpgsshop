@@ -54,6 +54,11 @@ SELF_SERVICE_VIEW_MODELS = {
     "loanrepayment",
     "trainingrequest",
     "trainingprogress",
+    "employeeidcard",
+    "multiplejobassignment",
+    "employeedocumenthistory",
+    "employeeloanoffer",
+    "facerecognitionprofile",
 }
 SELF_SERVICE_REQUEST_MODELS = {
     "leaverequest",
@@ -84,6 +89,9 @@ PAYROLL_MODELS = {
     "payrollreporttemplate",
     "payrollrun",
     "compensationbenefit",
+    "contractallowancehistory",
+    "payrolldisbursement",
+    "payrollaccountingevent",
 }
 FINANCE_MODELS = {
     "employee",
@@ -101,8 +109,16 @@ FINANCE_MODELS = {
     "expensecycle",
     "advancelimitconsumption",
     "expenselimitconsumption",
+    "employeeloanoffer",
+    "expenseproductcategory",
 }
-CAREER_MODELS = {"employee", "careertransitionrequest", "careertransitiontype", "careertransitionletter"}
+CAREER_MODELS = {
+    "employee",
+    "careertransitionrequest",
+    "careertransitiontype",
+    "careertransitionletter",
+    "careertransitionchangehistory",
+}
 
 
 def _permissions(models, actions):

@@ -943,3 +943,506 @@ class PurchaseInsight(TimeStampedModel):
 
     def __str__(self):
         return self.title
+
+
+# Detailed procurement records for line-level sourcing, tender evidence,
+# accounting, budget movements, inventory hand-off, and communication history.
+
+
+class PurchaseQuotationLine(TimeStampedModel):
+    quotation = models.ForeignKey(PurchaseQuotation, on_delete=models.CASCADE, related_name="lines")
+    request_line = models.ForeignKey(PurchaseRequestLine, on_delete=models.SET_NULL, blank=True, null=True, related_name="quotation_lines")
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, blank=True, null=True, related_name="purchase_quotation_lines")
+    description = models.CharField(max_length=240)
+    specification = models.TextField(blank=True)
+    quantity = models.DecimalField(max_digits=18, decimal_places=3, default=1, validators=[MinValueValidator(Decimal("0.001"))])
+    unit_price = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    tax_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0, validators=[MaxValueValidator(100)])
+    discount_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0, validators=[MaxValueValidator(100)])
+    promised_date = models.DateField(blank=True, null=True)
+
+    class Meta:
+        ordering = ["id"]
+
+    @property
+    def subtotal(self):
+        discounted = self.quantity * self.unit_price * (Decimal("1") - self.discount_percent / Decimal("100"))
+        return discounted * (Decimal("1") + self.tax_percent / Decimal("100"))
+
+    def clean(self):
+        if self.request_line_id and self.quotation.request_id and self.request_line.request_id != self.quotation.request_id:
+            raise ValidationError({"request_line": "The request line must belong to the quotation's purchase request."})
+
+    def __str__(self):
+        return f"{self.quotation} - {self.description}"
+
+
+class DirectPurchaseLine(TimeStampedModel):
+    direct_purchase = models.ForeignKey(DirectPurchase, on_delete=models.CASCADE, related_name="lines")
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, blank=True, null=True, related_name="direct_purchase_lines")
+    description = models.CharField(max_length=240)
+    quantity = models.DecimalField(max_digits=18, decimal_places=3, default=1, validators=[MinValueValidator(Decimal("0.001"))])
+    unit_price = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    tax_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0, validators=[MaxValueValidator(100)])
+    cost_center = models.CharField(max_length=80, blank=True)
+
+    class Meta:
+        ordering = ["id"]
+
+    @property
+    def subtotal(self):
+        return self.quantity * self.unit_price * (Decimal("1") + self.tax_percent / Decimal("100"))
+
+    def __str__(self):
+        return f"{self.direct_purchase} - {self.description}"
+
+
+class ServiceWorkOrderLine(TimeStampedModel):
+    work_order = models.ForeignKey(ServiceWorkOrder, on_delete=models.CASCADE, related_name="lines")
+    description = models.CharField(max_length=240)
+    unit = models.CharField(max_length=40, default="service")
+    quantity = models.DecimalField(max_digits=18, decimal_places=3, default=1)
+    unit_rate = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    tax_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0, validators=[MaxValueValidator(100)])
+    cost_center = models.CharField(max_length=80, blank=True)
+    milestone_name = models.CharField(max_length=120, blank=True)
+
+    class Meta:
+        ordering = ["id"]
+
+    @property
+    def subtotal(self):
+        return self.quantity * self.unit_rate * (Decimal("1") + self.tax_percent / Decimal("100"))
+
+    def __str__(self):
+        return f"{self.work_order} - {self.description}"
+
+
+class PurchaseTenderLine(TimeStampedModel):
+    tender = models.ForeignKey(PurchaseTender, on_delete=models.CASCADE, related_name="lines")
+    request_line = models.ForeignKey(PurchaseRequestLine, on_delete=models.SET_NULL, blank=True, null=True, related_name="tender_lines")
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, blank=True, null=True, related_name="purchase_tender_lines")
+    description = models.CharField(max_length=240)
+    specification = models.TextField(blank=True)
+    quantity = models.DecimalField(max_digits=18, decimal_places=3, default=1)
+    target_unit_price = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    delivery_date = models.DateField(blank=True, null=True)
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self):
+        return f"{self.tender} - {self.description}"
+
+
+class TenderInvitation(TimeStampedModel):
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        SENT = "sent", "Sent"
+        ACCEPTED = "accepted", "Accepted"
+        DECLINED = "declined", "Declined"
+        EXPIRED = "expired", "Expired"
+
+    tender = models.ForeignKey(PurchaseTender, on_delete=models.CASCADE, related_name="invitations")
+    vendor = models.ForeignKey(Contact, on_delete=models.PROTECT, related_name="tender_invitations")
+    invited_at = models.DateTimeField(blank=True, null=True)
+    response_at = models.DateTimeField(blank=True, null=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+    message = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["vendor__name"]
+        constraints = [models.UniqueConstraint(fields=["tender", "vendor"], name="unique_tender_invited_vendor")]
+
+    def __str__(self):
+        return f"{self.tender} - {self.vendor}"
+
+
+class TenderDocument(TimeStampedModel):
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        SUBMITTED = "submitted", "Submitted"
+        ACCEPTED = "accepted", "Accepted"
+        REJECTED = "rejected", "Rejected"
+        REVISION = "revision", "Revision Required"
+
+    tender = models.ForeignKey(PurchaseTender, on_delete=models.CASCADE, related_name="documents")
+    bid = models.ForeignKey(TenderBid, on_delete=models.CASCADE, blank=True, null=True, related_name="documents")
+    vendor = models.ForeignKey(Contact, on_delete=models.PROTECT, blank=True, null=True, related_name="tender_documents")
+    document_type = models.CharField(max_length=100)
+    title = models.CharField(max_length=180)
+    attachment_url = models.URLField()
+    mandatory = models.BooleanField(default=False)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+    review_note = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["tender", "document_type", "title"]
+
+    def clean(self):
+        if self.bid_id and self.bid.tender_id != self.tender_id:
+            raise ValidationError({"bid": "The bid must belong to this tender."})
+        if self.bid_id and self.vendor_id and self.bid.vendor_id != self.vendor_id:
+            raise ValidationError({"vendor": "The vendor must match the selected bid."})
+
+    def __str__(self):
+        return f"{self.tender} - {self.title}"
+
+
+class TenderAuditLog(TimeStampedModel):
+    tender = models.ForeignKey(PurchaseTender, on_delete=models.CASCADE, related_name="audit_logs")
+    action = models.CharField(max_length=80)
+    previous_status = models.CharField(max_length=20, blank=True)
+    new_status = models.CharField(max_length=20, blank=True)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="purchase_tender_audits")
+    occurred_at = models.DateTimeField(default=timezone.now)
+    details = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-occurred_at"]
+
+    def __str__(self):
+        return f"{self.tender} - {self.action}"
+
+
+class BlanketOrderLine(TimeStampedModel):
+    blanket_order = models.ForeignKey(BlanketOrder, on_delete=models.CASCADE, related_name="lines")
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name="blanket_order_lines")
+    description = models.CharField(max_length=240, blank=True)
+    agreed_quantity = models.DecimalField(max_digits=18, decimal_places=3, default=0)
+    released_quantity = models.DecimalField(max_digits=18, decimal_places=3, default=0)
+    unit_price = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    minimum_release_quantity = models.DecimalField(max_digits=18, decimal_places=3, default=0)
+
+    class Meta:
+        ordering = ["product__name"]
+        constraints = [models.UniqueConstraint(fields=["blanket_order", "product"], name="unique_blanket_order_product")]
+
+    def clean(self):
+        if self.released_quantity > self.agreed_quantity:
+            raise ValidationError({"released_quantity": "Released quantity cannot exceed agreed quantity."})
+
+    def __str__(self):
+        return f"{self.blanket_order} - {self.product}"
+
+
+class PurchaseProductCategory(TimeStampedModel):
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="purchase_product_categories")
+    parent = models.ForeignKey("self", on_delete=models.SET_NULL, blank=True, null=True, related_name="children")
+    code = models.CharField(max_length=30)
+    name = models.CharField(max_length=120)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["name"]
+        constraints = [models.UniqueConstraint(fields=["company", "code"], name="unique_purchase_product_category")]
+
+    def __str__(self):
+        return f"{self.code} - {self.name}"
+
+
+class PurchaseProductVariant(TimeStampedModel):
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="purchase_variants")
+    category = models.ForeignKey(PurchaseProductCategory, on_delete=models.SET_NULL, blank=True, null=True, related_name="variants")
+    variant_code = models.CharField(max_length=60)
+    vendor_reference = models.CharField(max_length=100, blank=True)
+    attributes = models.JSONField(default=dict, blank=True)
+    purchase_price = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["product__name", "variant_code"]
+        constraints = [models.UniqueConstraint(fields=["product", "variant_code"], name="unique_purchase_product_variant")]
+
+    def clean(self):
+        if self.category_id and self.category.company_id != self.product.company_id:
+            raise ValidationError({"category": "The category and product must belong to the same company."})
+
+    def __str__(self):
+        return f"{self.product} - {self.variant_code}"
+
+
+class VendorCommunication(TimeStampedModel):
+    class Channel(models.TextChoices):
+        EMAIL = "email", "Email"
+        PHONE = "phone", "Phone"
+        MEETING = "meeting", "Meeting"
+        PORTAL = "portal", "Vendor Portal"
+
+    vendor = models.ForeignKey(VendorProfile, on_delete=models.PROTECT, related_name="communications")
+    channel = models.CharField(max_length=16, choices=Channel.choices)
+    subject = models.CharField(max_length=180)
+    message = models.TextField()
+    communicated_at = models.DateTimeField(default=timezone.now)
+    contact_person = models.CharField(max_length=120, blank=True)
+    recorded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="vendor_communications")
+
+    class Meta:
+        ordering = ["-communicated_at"]
+
+    def __str__(self):
+        return f"{self.vendor} - {self.subject}"
+
+
+class VendorTransactionHistory(TimeStampedModel):
+    vendor = models.ForeignKey(VendorProfile, on_delete=models.PROTECT, related_name="transaction_history")
+    order = models.ForeignKey(PurchaseOrder, on_delete=models.SET_NULL, blank=True, null=True, related_name="vendor_history_entries")
+    transaction_type = models.CharField(max_length=40)
+    reference = models.CharField(max_length=80)
+    transaction_date = models.DateField(default=timezone.localdate)
+    amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    status = models.CharField(max_length=40, blank=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-transaction_date", "-id"]
+        constraints = [models.UniqueConstraint(fields=["vendor", "transaction_type", "reference"], name="unique_vendor_transaction_reference")]
+
+    def __str__(self):
+        return self.reference
+
+
+class PurchaseOrderCommunication(TimeStampedModel):
+    class Direction(models.TextChoices):
+        OUTBOUND = "outbound", "Outbound"
+        INBOUND = "inbound", "Inbound"
+        INTERNAL = "internal", "Internal Note"
+
+    order = models.ForeignKey(PurchaseOrder, on_delete=models.CASCADE, related_name="communications")
+    direction = models.CharField(max_length=16, choices=Direction.choices)
+    subject = models.CharField(max_length=180)
+    message = models.TextField()
+    communicated_at = models.DateTimeField(default=timezone.now)
+    sender = models.CharField(max_length=120, blank=True)
+    recipient = models.CharField(max_length=120, blank=True)
+    delivery_status = models.CharField(max_length=40, blank=True)
+
+    class Meta:
+        ordering = ["-communicated_at"]
+
+    def __str__(self):
+        return f"{self.order} - {self.subject}"
+
+
+class ProductBudgetMovement(TimeStampedModel):
+    class MovementType(models.TextChoices):
+        RESERVE = "reserve", "Reserve"
+        RELEASE = "release", "Release"
+        CONSUME = "consume", "Consume"
+        REVERSE = "reverse", "Reverse Consume"
+        ADJUST = "adjust", "Adjustment"
+
+    budget = models.ForeignKey(ProductBudget, on_delete=models.PROTECT, related_name="movements")
+    movement_type = models.CharField(max_length=16, choices=MovementType.choices)
+    reference = models.CharField(max_length=80)
+    movement_date = models.DateField(default=timezone.localdate)
+    amount = models.DecimalField(max_digits=18, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
+    status = models.CharField(max_length=16, choices=ApprovalStatus.choices, default=ApprovalStatus.DRAFT)
+    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="purchase_budget_movements")
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="approved_purchase_budget_movements",
+    )
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-movement_date", "-id"]
+        constraints = [models.UniqueConstraint(fields=["budget", "movement_type", "reference"], name="unique_budget_movement_reference")]
+
+    def __str__(self):
+        return self.reference
+
+
+class PurchaseAccountingDocument(TimeStampedModel):
+    class DocumentType(models.TextChoices):
+        ACCRUAL = "accrual", "Purchase Accrual"
+        VENDOR_BILL = "vendor_bill", "Vendor Bill"
+        PAYMENT = "payment", "Vendor Payment"
+        REVERSAL = "reversal", "Reversal"
+
+    order = models.ForeignKey(PurchaseOrder, on_delete=models.PROTECT, related_name="accounting_documents")
+    invoice = models.ForeignKey("core.Invoice", on_delete=models.SET_NULL, blank=True, null=True, related_name="purchase_accounting_documents")
+    number = models.CharField(max_length=60, unique=True)
+    document_type = models.CharField(max_length=16, choices=DocumentType.choices)
+    document_date = models.DateField(default=timezone.localdate)
+    total_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    journal_reference = models.CharField(max_length=80, blank=True)
+    status = models.CharField(max_length=16, choices=ApprovalStatus.choices, default=ApprovalStatus.DRAFT)
+
+    class Meta:
+        ordering = ["-document_date", "-id"]
+
+    @property
+    def balanced(self):
+        totals = self.lines.aggregate(debit=models.Sum("debit"), credit=models.Sum("credit"))
+        debit = totals["debit"] or Decimal("0")
+        credit = totals["credit"] or Decimal("0")
+        return debit > 0 and debit == credit == self.total_amount
+
+    def __str__(self):
+        return self.number
+
+
+class PurchaseAccountingLine(TimeStampedModel):
+    document = models.ForeignKey(PurchaseAccountingDocument, on_delete=models.CASCADE, related_name="lines")
+    account_code = models.CharField(max_length=40)
+    description = models.CharField(max_length=240)
+    debit = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    credit = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    cost_center = models.CharField(max_length=80, blank=True)
+    tax_code = models.CharField(max_length=40, blank=True)
+
+    class Meta:
+        ordering = ["id"]
+
+    def clean(self):
+        if self.debit < 0 or self.credit < 0:
+            raise ValidationError("Debit and credit cannot be negative.")
+        if self.debit and self.credit:
+            raise ValidationError("An accounting line cannot have both debit and credit values.")
+
+    def __str__(self):
+        return f"{self.document} - {self.account_code}"
+
+
+class PurchaseStockDemand(TimeStampedModel):
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        PLANNED = "planned", "Planned"
+        PARTIAL = "partial", "Partially Fulfilled"
+        FULFILLED = "fulfilled", "Fulfilled"
+        CANCELLED = "cancelled", "Cancelled"
+
+    request_line = models.ForeignKey(PurchaseRequestLine, on_delete=models.PROTECT, related_name="stock_demands")
+    warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="purchase_stock_demands")
+    required_date = models.DateField()
+    demanded_quantity = models.DecimalField(max_digits=18, decimal_places=3)
+    fulfilled_quantity = models.DecimalField(max_digits=18, decimal_places=3, default=0)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+
+    class Meta:
+        ordering = ["required_date", "id"]
+
+    def clean(self):
+        if self.fulfilled_quantity > self.demanded_quantity:
+            raise ValidationError({"fulfilled_quantity": "Fulfilled quantity cannot exceed demanded quantity."})
+
+    def __str__(self):
+        return f"{self.request_line} - {self.warehouse}"
+
+
+class PurchaseInventoryTransfer(TimeStampedModel):
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        READY = "ready", "Ready"
+        IN_TRANSIT = "in_transit", "In Transit"
+        DONE = "done", "Done"
+        CANCELLED = "cancelled", "Cancelled"
+
+    receipt = models.ForeignKey(GoodsReceipt, on_delete=models.PROTECT, blank=True, null=True, related_name="inventory_transfers")
+    reference = models.CharField(max_length=60, unique=True)
+    source_warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="outgoing_purchase_transfers")
+    destination_warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="incoming_purchase_transfers")
+    transfer_date = models.DateField(default=timezone.localdate)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-transfer_date"]
+
+    def clean(self):
+        if self.source_warehouse_id and self.source_warehouse_id == self.destination_warehouse_id:
+            raise ValidationError({"destination_warehouse": "Destination warehouse must differ from source warehouse."})
+        if (
+            self.source_warehouse_id
+            and self.destination_warehouse_id
+            and self.source_warehouse.company_id != self.destination_warehouse.company_id
+        ):
+            raise ValidationError({"destination_warehouse": "Both warehouses must belong to the same company."})
+        if self.receipt_id and self.source_warehouse_id and self.receipt.company_id != self.source_warehouse.company_id:
+            raise ValidationError({"receipt": "The receipt and warehouses must belong to the same company."})
+
+    def __str__(self):
+        return self.reference
+
+
+class PurchaseInventoryTransferLine(TimeStampedModel):
+    transfer = models.ForeignKey(PurchaseInventoryTransfer, on_delete=models.CASCADE, related_name="lines")
+    receipt_line = models.ForeignKey(GoodsReceiptLine, on_delete=models.SET_NULL, blank=True, null=True, related_name="transfer_lines")
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name="purchase_inventory_transfer_lines")
+    quantity = models.DecimalField(max_digits=18, decimal_places=3, validators=[MinValueValidator(Decimal("0.001"))])
+
+    class Meta:
+        ordering = ["id"]
+
+    def clean(self):
+        if self.product_id and self.transfer_id and self.product.company_id != self.transfer.source_warehouse.company_id:
+            raise ValidationError({"product": "The product must belong to the transfer company."})
+        if (
+            self.receipt_line_id
+            and self.transfer.receipt_id
+            and self.receipt_line.receipt_id != self.transfer.receipt_id
+        ):
+            raise ValidationError({"receipt_line": "The receipt line must belong to the transfer receipt."})
+
+    def __str__(self):
+        return f"{self.transfer} - {self.product}"
+
+
+class PurchasePeppolEvent(TimeStampedModel):
+    submission = models.ForeignKey(PurchasePeppolSubmission, on_delete=models.CASCADE, related_name="events")
+    status = models.CharField(max_length=16, choices=PurchasePeppolSubmission.Status.choices)
+    occurred_at = models.DateTimeField(default=timezone.now)
+    response_code = models.CharField(max_length=60, blank=True)
+    message = models.TextField(blank=True)
+    payload = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["occurred_at", "id"]
+
+    def __str__(self):
+        return f"{self.submission} - {self.status}"
+
+
+class PurchaseContractTerm(TimeStampedModel):
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="purchase_contract_terms")
+    order_template = models.ForeignKey(PurchaseOrderTemplate, on_delete=models.CASCADE, blank=True, null=True, related_name="contract_terms")
+    order = models.ForeignKey(PurchaseOrder, on_delete=models.CASCADE, blank=True, null=True, related_name="contract_term_lines")
+    sequence = models.PositiveIntegerField(default=10)
+    term_type = models.CharField(max_length=60, default="general")
+    title = models.CharField(max_length=180)
+    body = models.TextField()
+    mandatory = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["sequence", "id"]
+
+    def clean(self):
+        if bool(self.order_template_id) == bool(self.order_id):
+            raise ValidationError("Select exactly one order template or purchase order.")
+        if self.order_template_id and self.order_template.company_id != self.company_id:
+            raise ValidationError({"order_template": "The order template must belong to the selected company."})
+        if self.order_id and self.order.company_id != self.company_id:
+            raise ValidationError({"order": "The purchase order must belong to the selected company."})
+
+    def __str__(self):
+        return self.title
+
+
+class PurchaseOrderRevision(TimeStampedModel):
+    order = models.ForeignKey(PurchaseOrder, on_delete=models.CASCADE, related_name="revisions")
+    revision_number = models.PositiveIntegerField()
+    reason = models.TextField()
+    snapshot = models.JSONField(default=dict)
+    changed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="purchase_order_revisions")
+    effective_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["order", "-revision_number"]
+        constraints = [models.UniqueConstraint(fields=["order", "revision_number"], name="unique_purchase_order_revision")]
+
+    def __str__(self):
+        return f"{self.order} rev.{self.revision_number}"

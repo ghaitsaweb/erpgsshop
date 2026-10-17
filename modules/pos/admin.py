@@ -1,4 +1,5 @@
 from django.contrib import admin
+from django.apps import apps
 
 from .models import KitchenTicket, POSOrder, POSOrderLine, POSRegister, POSSession, RestaurantTable
 
@@ -18,3 +19,9 @@ class POSOrderAdmin(admin.ModelAdmin):
 for model in [POSRegister, POSSession, RestaurantTable, KitchenTicket]:
     admin.site.register(model)
 
+
+for model in apps.get_app_config("gsshop_pos").get_models():
+    try:
+        admin.site.register(model)
+    except admin.sites.AlreadyRegistered:
+        pass

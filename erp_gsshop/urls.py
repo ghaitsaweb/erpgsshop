@@ -15,6 +15,8 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("login/", auth_views.LoginView.as_view(template_name="registration/login.html"), name="login"),
     path("logout/", auth_views.LogoutView.as_view(), name="logout"),
+    path("customer-portal/", include("modules.finance.portal_urls")),
+    path("accounting/tax/", include("modules.finance.tax_urls")),
     path("", include("modules.apphub.urls")),
     path("", include("core.urls")),
 ]

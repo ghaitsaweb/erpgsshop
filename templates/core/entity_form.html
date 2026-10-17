@@ -3,7 +3,7 @@
 {% block page_title %}{{ mode }} {{ config.singular }}{% endblock %}
 {% block content %}
   <div class="form-layout">
-    <form method="post" class="panel form-panel">
+    <form method="post" enctype="multipart/form-data" class="panel form-panel">
       {% csrf_token %}
       {% if form.non_field_errors %}<div class="message error">{{ form.non_field_errors }}</div>{% endif %}
       <div class="form-grid">

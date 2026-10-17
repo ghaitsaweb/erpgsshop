@@ -20,6 +20,8 @@ VENDOR_MODELS = {
     "vendorpricelistamendment",
     "vendorperformancetemplate",
     "vendorperformanceevaluation",
+    "vendorcommunication",
+    "vendortransactionhistory",
 }
 
 BUDGET_MODELS = {
@@ -28,6 +30,7 @@ BUDGET_MODELS = {
     "budgetproducttransfer",
     "budgetproductcarryover",
     "budgetproductchangerequest",
+    "productbudgetmovement",
 }
 
 PURCHASE_CORE_MODELS = {"purchaseorder", "purchaseorderline"}
@@ -58,6 +61,25 @@ PURCHASE_MODELS = VENDOR_MODELS | BUDGET_MODELS | {
     "purchaseaccountmapping",
     "purchasepeppolsubmission",
     "purchaseinsight",
+    "purchasequotationline",
+    "directpurchaseline",
+    "serviceworkorderline",
+    "purchasetenderline",
+    "tenderinvitation",
+    "tenderdocument",
+    "tenderauditlog",
+    "blanketorderline",
+    "purchaseproductcategory",
+    "purchaseproductvariant",
+    "purchaseordercommunication",
+    "purchaseaccountingdocument",
+    "purchaseaccountingline",
+    "purchasestockdemand",
+    "purchaseinventorytransfer",
+    "purchaseinventorytransferline",
+    "purchasepeppolevent",
+    "purchasecontractterm",
+    "purchaseorderrevision",
 }
 
 

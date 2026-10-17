@@ -20,7 +20,10 @@ Current working coverage includes:
 - HR, contracts, attendance, leave, overtime, payroll, recruitment, and appraisal.
 - Accounting foundation, journals, budgets, expenses, and loans.
 - Bills of material, manufacturing orders, and quality inspections.
-- Projects, tasks, assets, maintenance, and construction work packages.
+- Projects, tasks, assets, and maintenance.
+- Construction projects, contracts, BOQs/templates, cost sheets, budget changes, job orders, progress,
+  quantity surveys, resources, timesheets, progressive claims, risks/issues, material demand,
+  procurement/subcontract allocation, opening balances, account settings, and portfolio reporting.
 - POS retail and F&B registers, sessions, orders, tables, and kitchen tickets.
 - School, LMS enrollment/progress, and library lending.
 - Governed AI coworker workspaces, agents, conversations, and asynchronous tasks.

@@ -1682,3 +1682,401 @@ class ExpenseLimitConsumption(TimeStampedModel):
 
     def __str__(self):
         return self.transaction_reference
+
+
+# Detailed HR records required by the audited HMX menus, wizards, and history
+# surfaces. They stay additive so existing GS Shop records remain compatible.
+
+
+class EmployeeIDCardTemplate(TimeStampedModel):
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="employee_id_card_templates")
+    code = models.CharField(max_length=30)
+    name = models.CharField(max_length=120)
+    validity_months = models.PositiveIntegerField(default=12)
+    front_template_url = models.URLField(blank=True)
+    back_template_url = models.URLField(blank=True)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["name"]
+        constraints = [models.UniqueConstraint(fields=["company", "code"], name="unique_employee_id_card_template")]
+
+    def __str__(self):
+        return f"{self.code} - {self.name}"
+
+
+class EmployeeIDCard(TimeStampedModel):
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        ACTIVE = "active", "Active"
+        EXPIRED = "expired", "Expired"
+        REVOKED = "revoked", "Revoked"
+        REPLACED = "replaced", "Replaced"
+
+    employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="id_cards")
+    template = models.ForeignKey(EmployeeIDCardTemplate, on_delete=models.PROTECT, related_name="cards")
+    card_number = models.CharField(max_length=60, unique=True)
+    issued_date = models.DateField(default=timezone.localdate)
+    expiry_date = models.DateField(blank=True, null=True)
+    rendered_card_url = models.URLField(blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+
+    class Meta:
+        ordering = ["employee__name", "-issued_date"]
+
+    def clean(self):
+        if self.expiry_date and self.expiry_date < self.issued_date:
+            raise ValidationError({"expiry_date": "Expiry date must be on or after issued date."})
+        if self.template_id and self.employee_id and self.template.company_id != self.employee.company_id:
+            raise ValidationError({"template": "The ID card template must belong to the employee company."})
+
+    def __str__(self):
+        return f"{self.card_number} - {self.employee}"
+
+
+class MultipleJobAssignment(TimeStampedModel):
+    employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="multiple_job_assignments")
+    job_position = models.ForeignKey(JobPosition, on_delete=models.PROTECT, related_name="employee_assignments")
+    date_start = models.DateField(default=timezone.localdate)
+    date_end = models.DateField(blank=True, null=True)
+    allocation_percent = models.DecimalField(max_digits=5, decimal_places=2, default=100, validators=[MaxValueValidator(100)])
+    primary = models.BooleanField(default=False)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["employee__name", "-primary", "job_position__name"]
+        constraints = [models.UniqueConstraint(fields=["employee", "job_position", "date_start"], name="unique_multiple_job_period")]
+
+    def clean(self):
+        if self.date_end and self.date_end < self.date_start:
+            raise ValidationError({"date_end": "End date must be on or after start date."})
+        if self.employee_id and self.job_position_id and self.employee.company_id != self.job_position.company_id:
+            raise ValidationError({"job_position": "The job position must belong to the employee company."})
+
+    def __str__(self):
+        return f"{self.employee} - {self.job_position}"
+
+
+class OrganizationConfiguration(TimeStampedModel):
+    company = models.OneToOneField(Company, on_delete=models.PROTECT, related_name="hr_organization_configuration")
+    organization_chart_enabled = models.BooleanField(default=True)
+    allow_multiple_jobs = models.BooleanField(default=False)
+    require_branch_scope = models.BooleanField(default=False)
+    default_working_calendar = models.ForeignKey(
+        WorkingCalendar,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="default_for_companies",
+    )
+    announcement_notifications = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["company__name"]
+
+    def clean(self):
+        if (
+            self.default_working_calendar_id
+            and self.default_working_calendar.company_id != self.company_id
+        ):
+            raise ValidationError(
+                {"default_working_calendar": "The working calendar must belong to the selected company."}
+            )
+
+    def __str__(self):
+        return f"Organization Configuration - {self.company}"
+
+
+class HRAnnouncement(TimeStampedModel):
+    class Audience(models.TextChoices):
+        ALL = "all", "All Employees"
+        MANAGERS = "managers", "Managers"
+        DEPARTMENT = "department", "Department"
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="hr_announcements")
+    title = models.CharField(max_length=180)
+    body = models.TextField()
+    audience = models.CharField(max_length=16, choices=Audience.choices, default=Audience.ALL)
+    department = models.ForeignKey(Department, on_delete=models.SET_NULL, blank=True, null=True, related_name="announcements")
+    publish_at = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField(blank=True, null=True)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["-publish_at"]
+
+    def clean(self):
+        if self.expires_at and self.expires_at < self.publish_at:
+            raise ValidationError({"expires_at": "Expiry must be on or after publication."})
+        if self.audience == self.Audience.DEPARTMENT and not self.department_id:
+            raise ValidationError({"department": "A department is required for department announcements."})
+        if self.department_id and self.department.company_id != self.company_id:
+            raise ValidationError({"department": "The department must belong to the selected company."})
+
+    def __str__(self):
+        return self.title
+
+
+class ContractAllowanceHistory(TimeStampedModel):
+    contract = models.ForeignKey(EmploymentContract, on_delete=models.PROTECT, related_name="allowance_history")
+    allowance = models.ForeignKey(ContractAllowance, on_delete=models.PROTECT, related_name="history")
+    previous_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    new_amount = models.DecimalField(max_digits=18, decimal_places=2)
+    effective_date = models.DateField(default=timezone.localdate)
+    changed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="contract_allowance_changes")
+    reason = models.TextField()
+
+    class Meta:
+        ordering = ["-effective_date", "-id"]
+
+    def __str__(self):
+        return f"{self.contract} - {self.allowance}"
+
+
+class EmployeeDocumentBulkUpload(TimeStampedModel):
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        PROCESSING = "processing", "Processing"
+        COMPLETED = "completed", "Completed"
+        PARTIAL = "partial", "Partially Completed"
+        FAILED = "failed", "Failed"
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="employee_document_bulk_uploads")
+    document_type = models.ForeignKey(DocumentType, on_delete=models.PROTECT, related_name="bulk_uploads")
+    source_file_url = models.URLField()
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+    total_rows = models.PositiveIntegerField(default=0)
+    successful_rows = models.PositiveIntegerField(default=0)
+    failed_rows = models.PositiveIntegerField(default=0)
+    processed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="employee_document_bulk_uploads")
+    error_log = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.document_type} - {self.created_at:%Y-%m-%d}"
+
+
+class EmployeeDocumentHistory(TimeStampedModel):
+    document = models.ForeignKey(EmployeeDocument, on_delete=models.CASCADE, related_name="history")
+    action = models.CharField(max_length=40)
+    previous_status = models.CharField(max_length=16, blank=True)
+    new_status = models.CharField(max_length=16)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="employee_document_history")
+    note = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.document} - {self.action}"
+
+
+class AttendanceRecomputeTransaction(TimeStampedModel):
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        APPLIED = "applied", "Applied"
+        REJECTED = "rejected", "Rejected"
+        FAILED = "failed", "Failed"
+
+    recompute = models.ForeignKey(AttendanceRecompute, on_delete=models.CASCADE, related_name="transactions")
+    employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="attendance_recompute_transactions")
+    attendance_date = models.DateField()
+    previous_values = models.JSONField(default=dict, blank=True)
+    proposed_values = models.JSONField(default=dict, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    error_message = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["attendance_date", "employee__name"]
+        constraints = [models.UniqueConstraint(fields=["recompute", "employee", "attendance_date"], name="unique_recompute_employee_date")]
+
+    def __str__(self):
+        return f"{self.employee} - {self.attendance_date}"
+
+
+class LeaveBulkOperation(TimeStampedModel):
+    class Operation(models.TextChoices):
+        ALLOCATE = "allocate", "Generate Allocation"
+        IMPORT = "import", "Bulk Import"
+        ADJUST = "adjust", "Balance Adjustment"
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="leave_bulk_operations")
+    operation = models.CharField(max_length=16, choices=Operation.choices)
+    leave_type = models.ForeignKey(LeaveType, on_delete=models.PROTECT, blank=True, null=True, related_name="bulk_operations")
+    period_start = models.DateField()
+    period_end = models.DateField()
+    employee_count = models.PositiveIntegerField(default=0)
+    status = models.CharField(max_length=16, choices=ApprovalStatus.choices, default=ApprovalStatus.DRAFT)
+    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="leave_bulk_operations")
+    source_file_url = models.URLField(blank=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def clean(self):
+        if self.period_end < self.period_start:
+            raise ValidationError({"period_end": "Period end must be on or after period start."})
+
+    def __str__(self):
+        return f"{self.get_operation_display()} - {self.period_start}"
+
+
+class PayrollDisbursement(TimeStampedModel):
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        GENERATED = "generated", "Bank File Generated"
+        SUBMITTED = "submitted", "Submitted"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+        CANCELLED = "cancelled", "Cancelled"
+
+    payroll_run = models.ForeignKey(PayrollRun, on_delete=models.PROTECT, related_name="disbursements")
+    reference = models.CharField(max_length=80, unique=True)
+    disbursement_date = models.DateField(default=timezone.localdate)
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+    bank_file_url = models.URLField(blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+    response_message = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-disbursement_date"]
+
+    def __str__(self):
+        return self.reference
+
+
+class PayrollAccountingEvent(TimeStampedModel):
+    class EventType(models.TextChoices):
+        ACCRUAL = "accrual", "Payroll Accrual"
+        PAYMENT = "payment", "Payroll Payment"
+        REVERSAL = "reversal", "Reversal"
+
+    payroll_run = models.ForeignKey(PayrollRun, on_delete=models.PROTECT, related_name="accounting_events")
+    event_type = models.CharField(max_length=16, choices=EventType.choices)
+    reference = models.CharField(max_length=80)
+    event_date = models.DateField(default=timezone.localdate)
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+    journal_reference = models.CharField(max_length=80, blank=True)
+    status = models.CharField(max_length=16, default="pending")
+    payload = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-event_date", "-id"]
+        constraints = [models.UniqueConstraint(fields=["payroll_run", "event_type", "reference"], name="unique_payroll_accounting_event")]
+
+    def __str__(self):
+        return self.reference
+
+
+class EmployeeLoanOffer(TimeStampedModel):
+    employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="loan_offers")
+    loan_type = models.ForeignKey(LoanType, on_delete=models.PROTECT, related_name="offers")
+    offered_amount = models.DecimalField(max_digits=18, decimal_places=2)
+    interest_rate = models.DecimalField(max_digits=6, decimal_places=3, default=0)
+    term_months = models.PositiveIntegerField(default=12)
+    offered_date = models.DateField(default=timezone.localdate)
+    expiry_date = models.DateField()
+    accepted = models.BooleanField(default=False)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["-offered_date"]
+
+    def clean(self):
+        if self.expiry_date < self.offered_date:
+            raise ValidationError({"expiry_date": "Expiry date must be on or after offered date."})
+
+    def __str__(self):
+        return f"{self.employee} - {self.loan_type}"
+
+
+class CareerTransitionChangeHistory(TimeStampedModel):
+    request = models.ForeignKey(CareerTransitionRequest, on_delete=models.CASCADE, related_name="change_history")
+    field_name = models.CharField(max_length=80)
+    previous_value = models.TextField(blank=True)
+    new_value = models.TextField(blank=True)
+    effective_date = models.DateField(default=timezone.localdate)
+    changed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="career_transition_changes")
+    note = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-effective_date", "-id"]
+
+    def __str__(self):
+        return f"{self.request} - {self.field_name}"
+
+
+class TrainingCategory(TimeStampedModel):
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="training_categories")
+    code = models.CharField(max_length=30)
+    name = models.CharField(max_length=120)
+    description = models.TextField(blank=True)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["name"]
+        constraints = [models.UniqueConstraint(fields=["company", "code"], name="unique_training_category_code")]
+
+    def __str__(self):
+        return f"{self.code} - {self.name}"
+
+
+class FaceRecognitionProfile(TimeStampedModel):
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        ENROLLED = "enrolled", "Enrolled"
+        SUSPENDED = "suspended", "Suspended"
+        REVOKED = "revoked", "Revoked"
+
+    employee = models.OneToOneField(Employee, on_delete=models.PROTECT, related_name="face_recognition_profile")
+    provider = models.CharField(max_length=80, blank=True)
+    external_reference = models.CharField(max_length=120, blank=True)
+    consent_at = models.DateTimeField(blank=True, null=True)
+    enrolled_at = models.DateTimeField(blank=True, null=True)
+    last_verified_at = models.DateTimeField(blank=True, null=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["employee__name"]
+
+    def __str__(self):
+        return str(self.employee)
+
+
+class ExpenseProductCategory(TimeStampedModel):
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="expense_product_categories")
+    code = models.CharField(max_length=30)
+    name = models.CharField(max_length=120)
+    default_limit = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    receipt_required = models.BooleanField(default=True)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["name"]
+        constraints = [models.UniqueConstraint(fields=["company", "code"], name="unique_expense_product_category")]
+
+    def __str__(self):
+        return f"{self.code} - {self.name}"
+
+
+class HRWorkflowAudit(TimeStampedModel):
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="hr_workflow_audits")
+    entity = models.CharField(max_length=80)
+    record_id = models.PositiveBigIntegerField()
+    action = models.CharField(max_length=60)
+    previous_status = models.CharField(max_length=40, blank=True)
+    new_status = models.CharField(max_length=40, blank=True)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="hr_workflow_audits")
+    occurred_at = models.DateTimeField(default=timezone.now)
+    details = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-occurred_at"]
+        indexes = [models.Index(fields=["company", "entity", "record_id"], name="hr_audit_record_idx")]
+
+    def __str__(self):
+        return f"{self.entity}#{self.record_id} - {self.action}"

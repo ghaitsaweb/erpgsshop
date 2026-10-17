@@ -139,6 +139,28 @@ ENTITY_MODELS = {
     "purchase-account-mappings": purchase_models.PurchaseAccountMapping,
     "purchase-peppol-submissions": purchase_models.PurchasePeppolSubmission,
     "purchase-insights": purchase_models.PurchaseInsight,
+    "purchase-quotation-lines": purchase_models.PurchaseQuotationLine,
+    "direct-purchase-lines": purchase_models.DirectPurchaseLine,
+    "service-work-order-lines": purchase_models.ServiceWorkOrderLine,
+    "purchase-tender-lines": purchase_models.PurchaseTenderLine,
+    "tender-invitations": purchase_models.TenderInvitation,
+    "tender-documents": purchase_models.TenderDocument,
+    "tender-audit-logs": purchase_models.TenderAuditLog,
+    "blanket-order-lines": purchase_models.BlanketOrderLine,
+    "purchase-product-categories": purchase_models.PurchaseProductCategory,
+    "purchase-product-variants": purchase_models.PurchaseProductVariant,
+    "vendor-communications": purchase_models.VendorCommunication,
+    "vendor-transaction-history": purchase_models.VendorTransactionHistory,
+    "purchase-order-communications": purchase_models.PurchaseOrderCommunication,
+    "product-budget-movements": purchase_models.ProductBudgetMovement,
+    "purchase-accounting-documents": purchase_models.PurchaseAccountingDocument,
+    "purchase-accounting-lines": purchase_models.PurchaseAccountingLine,
+    "purchase-stock-demands": purchase_models.PurchaseStockDemand,
+    "purchase-inventory-transfers": purchase_models.PurchaseInventoryTransfer,
+    "purchase-inventory-transfer-lines": purchase_models.PurchaseInventoryTransferLine,
+    "purchase-peppol-events": purchase_models.PurchasePeppolEvent,
+    "purchase-contract-terms": purchase_models.PurchaseContractTerm,
+    "purchase-order-revisions": purchase_models.PurchaseOrderRevision,
 }
 
 
@@ -182,8 +204,24 @@ def _build_config(entity, model):
         if {"draft", "submitted", "approved", "rejected", "cancelled"}.issubset(status_values):
             config["workflow"] = APPROVAL_WORKFLOW
     if config.get("workflow"):
-        config["form_fields"] = [field for field in config["form_fields"] if field not in {"status", "approver"}]
+        config["form_fields"] = [
+            field
+            for field in config["form_fields"]
+            if field not in {"status", "approver", "approved_by"}
+        ]
+    if entity in {
+        "tender-audit-logs",
+        "vendor-transaction-history",
+        "purchase-peppol-events",
+        "purchase-order-revisions",
+    }:
+        config.update({"creatable": False, "editable": False, "deletable": False})
     return config
 
 
 PURCHASE_ENTITY_CONFIG = {entity: _build_config(entity, model) for entity, model in ENTITY_MODELS.items()}
+
+if "purchase-accounting-documents" in PURCHASE_ENTITY_CONFIG:
+    approval = PURCHASE_ENTITY_CONFIG["purchase-accounting-documents"].get("workflow", {}).get("approve")
+    if approval:
+        approval["service_controls_state"] = True

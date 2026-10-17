@@ -19,6 +19,16 @@
     </div>
     <div class="module-hero-actions">
       {% if app.enabled and custom_launch_url %}<a class="btn btn-primary" href="{{ custom_launch_url }}">Open module</a>{% endif %}
+      {% if request.user.is_superuser and app.enabled and app.status != 'planned' %}
+        <form method="post" action="{% url 'app_upgrade' app.slug %}">
+          {% csrf_token %}<input type="hidden" name="mode" value="upgrade"><input type="hidden" name="next" value="{% url 'app_workspace' app.slug %}">
+          <button class="btn btn-primary" type="submit">Upgrade</button>
+        </form>
+        <form method="post" action="{% url 'app_upgrade' app.slug %}">
+          {% csrf_token %}<input type="hidden" name="mode" value="upgrade-no-deps"><input type="hidden" name="next" value="{% url 'app_workspace' app.slug %}">
+          <button class="btn btn-secondary" type="submit">Upgrade No-Deps</button>
+        </form>
+      {% endif %}
       {% if request.user.is_superuser and not app.is_core and app.status != 'planned' %}
         <form method="post" action="{% url 'app_installation' app.slug %}">
           {% csrf_token %}
@@ -49,17 +59,7 @@
             <article class="module-navigation-card">
               <header><span>{{ group.icon }}</span><div><h3>{{ group.label }}</h3><small>{{ group.items|length }} menus</small></div></header>
               <div class="module-navigation-links">
-                {% for item in group.items %}
-                  {% if item.entity %}
-                    <a href="{% url 'entity_list' item.entity %}">{{ item.label }}<i>›</i></a>
-                  {% elif item.feature %}
-                    <a href="{% url 'hr_feature' item.feature %}">{{ item.label }}<i>›</i></a>
-                  {% elif item.app_slug %}
-                    <a href="{% url 'app_workspace' item.app_slug %}">{{ item.label }}<i>›</i></a>
-                  {% elif item.url %}
-                    <a href="{{ item.url }}">{{ item.label }}<i>›</i></a>
-                  {% endif %}
-                {% endfor %}
+                {% include "apphub/_workspace_menu_items.html" with menu_items=group.items %}
               </div>
             </article>
           {% endfor %}

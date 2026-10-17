@@ -30,7 +30,7 @@
     </div>
   </div>
 
-  <div class="info-strip">Install adds an application and its dependencies to your workspace. Uninstall removes access but preserves all business data. Planned applications are visible roadmap items and cannot be installed yet.</div>
+  <div class="info-strip">Install enables an application and its dependencies. Upgrade applies already-deployed code to the app plus installed downstream dependants; Upgrade No-Deps excludes those downstream apps. Neither upgrade action pulls code, rebuilds containers, or restarts services. Uninstall removes access but preserves business data.</div>
 
   {% for category, apps in app_groups %}
     <section class="app-section">
@@ -51,6 +51,16 @@
               <small>v{{ app.version }}</small>
               <div class="app-actions">
                 <a class="app-open" href="{{ app.launch_url }}">{% if app.enabled %}Open{% else %}Details{% endif %}</a>
+                {% if request.user.is_superuser and app.enabled and app.status != 'planned' %}
+                  <form method="post" action="{% url 'app_upgrade' app.slug %}">
+                    {% csrf_token %}<input type="hidden" name="mode" value="upgrade"><input type="hidden" name="next" value="{% url 'app_manager' %}">
+                    <button class="app-toggle" type="submit">Upgrade</button>
+                  </form>
+                  <form method="post" action="{% url 'app_upgrade' app.slug %}">
+                    {% csrf_token %}<input type="hidden" name="mode" value="upgrade-no-deps"><input type="hidden" name="next" value="{% url 'app_manager' %}">
+                    <button class="app-toggle" type="submit">Upgrade No-Deps</button>
+                  </form>
+                {% endif %}
                 {% if request.user.is_superuser and not app.is_core and app.status != 'planned' %}
                   <form method="post" action="{% url 'app_installation' app.slug %}">
                     {% csrf_token %}

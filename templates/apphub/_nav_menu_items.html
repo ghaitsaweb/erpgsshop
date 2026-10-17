@@ -1,0 +1,18 @@
+{% for item in menu_items %}
+  {% if item.children %}
+    <details class="nav-subgroup" open>
+      <summary data-group-search="{{ item.label|lower }}"><span>{{ item.label }}</span><i>⌄</i></summary>
+      <div class="nav-subchildren">
+        {% include "apphub/_nav_menu_items.html" with menu_items=item.children section_label=item.label request=request active_app_slug=active_app_slug only %}
+      </div>
+    </details>
+  {% elif item.app_slug %}
+    <a data-menu-item data-search="{{ item.label|lower }} {{ section_label|lower }}" class="nav-item nav-child {% if request.resolver_match.url_name == 'app_workspace' and active_app_slug == item.app_slug %}active{% endif %}" href="{% url 'app_workspace' item.app_slug %}"><span class="nav-dot"></span>{{ item.label }}</a>
+  {% elif item.entity %}
+    <a data-menu-item data-search="{{ item.label|lower }} {{ section_label|lower }}" class="nav-item nav-child {% if request.resolver_match.kwargs.entity == item.entity %}active{% endif %}" href="{% url 'entity_list' item.entity %}"><span class="nav-dot"></span>{{ item.label }}</a>
+  {% elif item.feature %}
+    <a data-menu-item data-search="{{ item.label|lower }} {{ section_label|lower }}" class="nav-item nav-child {% if request.resolver_match.url_name == item.feature_url_name and request.resolver_match.kwargs.feature == item.feature %}active{% endif %}" href="{% url item.feature_url_name item.feature %}"><span class="nav-dot"></span>{{ item.label }}</a>
+  {% elif item.url %}
+    <a data-menu-item data-search="{{ item.label|lower }} {{ section_label|lower }}" class="nav-item nav-child" href="{{ item.url }}"><span class="nav-dot"></span>{{ item.label }}</a>
+  {% endif %}
+{% endfor %}

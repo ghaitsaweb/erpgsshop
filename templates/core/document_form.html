@@ -23,11 +23,11 @@
       {% endif %}
     </header>
 
-    <form method="post" class="document-form">
+    <form method="post" enctype="multipart/form-data" class="document-form">
       {% csrf_token %}
-      {{ formset.management_form }}
+      {% for section in line_sections %}{{ section.formset.management_form }}{% endfor %}
       {% if form.non_field_errors %}<div class="message error">{{ form.non_field_errors }}</div>{% endif %}
-      {% if formset.non_form_errors %}<div class="message error">{{ formset.non_form_errors }}</div>{% endif %}
+      {% for section in line_sections %}{% if section.formset.non_form_errors %}<div class="message error">{{ section.line_title }}: {{ section.formset.non_form_errors }}</div>{% endif %}{% endfor %}
 
       <section class="document-paper">
         <div class="document-title-row">
@@ -48,18 +48,19 @@
           {% endfor %}
         </div>
 
-        <section class="document-lines">
-          <div class="document-tabbar"><span class="active">{{ document.line_title }}</span><span>Other Information</span></div>
+        {% for section in line_sections %}
+        <section class="document-lines" data-line-section="{{ section.index }}" data-line-prefix="{{ section.prefix }}">
+          <div class="document-tabbar"><span class="active">{{ section.line_title }}</span>{% if forloop.first %}<span>Other Information</span>{% endif %}</div>
           <div class="line-table-wrap">
             <table class="line-table">
               <thead>
                 <tr>
-                  {% for field in formset.empty_form.visible_fields %}<th>{{ field.label }}</th>{% endfor %}
+                  {% for field in section.formset.empty_form.visible_fields %}<th>{{ field.label }}</th>{% endfor %}
                   {% if editable %}<th class="line-action-column">Action</th>{% endif %}
                 </tr>
               </thead>
-              <tbody id="document-line-body">
-                {% for line_form in formset.forms %}
+              <tbody data-document-line-body>
+                {% for line_form in section.formset.forms %}
                   <tr class="document-line-row">
                     {% for hidden in line_form.hidden_fields %}{{ hidden }}{% endfor %}
                     {% for field in line_form.visible_fields %}
@@ -74,8 +75,9 @@
               </tbody>
             </table>
           </div>
-          {% if editable %}<button class="add-line-button" id="add-document-line" type="button">+ Add a line</button>{% endif %}
+          {% if editable %}<button class="add-line-button" data-add-document-line type="button">+ Add a line</button>{% endif %}
         </section>
+        {% endfor %}
 
         {% if totals %}
           <div class="document-totals">
@@ -92,21 +94,16 @@
   </div>
 
   {% if editable %}
-    <template id="empty-document-line">
+    {% for section in line_sections %}<template data-empty-document-line="{{ section.index }}">
       <tr class="document-line-row">
-        {% for hidden in formset.empty_form.hidden_fields %}{{ hidden }}{% endfor %}
-        {% for field in formset.empty_form.visible_fields %}<td class="{% if field.name == 'DELETE' %}delete-field{% endif %}">{{ field }}</td>{% endfor %}
+        {% for hidden in section.formset.empty_form.hidden_fields %}{{ hidden }}{% endfor %}
+        {% for field in section.formset.empty_form.visible_fields %}<td class="{% if field.name == 'DELETE' %}delete-field{% endif %}">{{ field }}</td>{% endfor %}
         <td class="line-action-column"><button class="line-remove" type="button" aria-label="Hapus line">Hapus</button></td>
       </tr>
-    </template>
+    </template>{% endfor %}
   {% endif %}
   <script>
     (() => {
-      const body = document.getElementById('document-line-body');
-      const addButton = document.getElementById('add-document-line');
-      const totalForms = document.getElementById('id_document_lines-TOTAL_FORMS');
-      const template = document.getElementById('empty-document-line');
-
       const enhanceMasterSearch = (container) => {
         container.querySelectorAll('input[data-master-search-url]').forEach((hiddenInput) => {
           if (hiddenInput.dataset.searchReady === 'true') return;
@@ -189,8 +186,14 @@
       });
 
       enhanceMasterSearch(document);
-      body.querySelectorAll('.line-remove').forEach(bindRemove);
-      if (addButton && totalForms && template) {
+      document.querySelectorAll('[data-line-section]').forEach((section) => {
+        const body = section.querySelector('[data-document-line-body]');
+        const addButton = section.querySelector('[data-add-document-line]');
+        const index = section.dataset.lineSection;
+        const totalForms = document.getElementById(`id_${section.dataset.linePrefix}-TOTAL_FORMS`);
+        const template = document.querySelector(`[data-empty-document-line="${index}"]`);
+        body.querySelectorAll('.line-remove').forEach(bindRemove);
+        if (!addButton || !totalForms || !template) return;
         addButton.addEventListener('click', () => {
           const index = Number(totalForms.value);
           const html = template.innerHTML.replaceAll('__prefix__', index);
@@ -200,7 +203,7 @@
           bindRemove(row.querySelector('.line-remove'));
           enhanceMasterSearch(row);
         });
-      }
+      });
     })();
   </script>
 {% endblock %}

@@ -8,7 +8,10 @@ from modules.apphub.workspaces import (
     ENTITY_APP_MAP,
     app_menu_groups,
     app_navigation_contains,
+    filter_menu_items,
+    find_menu_feature,
     hr_feature_definition,
+    iter_menu_items,
 )
 
 
@@ -17,13 +20,20 @@ def navigation(request):
     url_name = resolver.url_name if resolver else ""
     kwargs = resolver.kwargs if resolver else {}
     entity = kwargs.get("entity")
-    feature = kwargs.get("feature") if url_name == "hr_feature" else None
+    feature = kwargs.get("feature") if url_name in {"hr_feature", "purchase_feature", "construction_feature", "pos_feature", "pos_fnb_feature"} else None
+    feature_app_slug = {
+        "hr_feature": "hr",
+        "purchase_feature": "purchase",
+        "construction_feature": "construction",
+        "pos_feature": "pos",
+        "pos_fnb_feature": "pos-fnb",
+    }.get(url_name)
     route_app_slug = kwargs.get("slug") if url_name == "app_workspace" else None
     session_app_slug = request.session.get("active_erp_app") if hasattr(request, "session") else None
     contextual_app_slug = None
     if entity and session_app_slug and app_navigation_contains(session_app_slug, entity=entity):
         contextual_app_slug = session_app_slug
-    active_app_slug = route_app_slug or ("hr" if feature else None) or contextual_app_slug or ENTITY_APP_MAP.get(entity)
+    active_app_slug = route_app_slug or feature_app_slug or contextual_app_slug or ENTITY_APP_MAP.get(entity)
 
     sections = []
     apps_by_slug = {}
@@ -39,20 +49,16 @@ def navigation(request):
         menu_groups = app_menu_groups(current_nav_app.slug)
         from core.views import ENTITY_CONFIG, _can
 
+        def can_open_menu_item(item):
+            return not item.get("entity") or (
+                item["entity"] in ENTITY_CONFIG
+                and _can(request.user, "view", ENTITY_CONFIG[item["entity"]]["model"], item["entity"])
+            )
+
         menu_groups = [
             {**group, "items": permitted_items}
             for group in menu_groups
-            if (
-                permitted_items := [
-                    item
-                    for item in group["items"]
-                    if not item.get("entity")
-                    or (
-                        item["entity"] in ENTITY_CONFIG
-                        and _can(request.user, "view", ENTITY_CONFIG[item["entity"]]["model"], item["entity"])
-                    )
-                ]
-            )
+            if (permitted_items := filter_menu_items(group["items"], can_open_menu_item))
         ]
         if not any(group["label"] == "Dashboard" for group in menu_groups):
             overview_items = [
@@ -85,7 +91,7 @@ def navigation(request):
                 (entity and item.get("entity") == entity)
                 or (feature and item.get("feature") == feature)
                 or (route_app_slug and item.get("app_slug") == route_app_slug)
-                for item in group["items"]
+                for item in iter_menu_items(group["items"])
             )
             sections.append(
                 {
@@ -147,7 +153,7 @@ def navigation(request):
                 }
             )
             for group in app_menu_groups(app.slug):
-                for item in group["items"]:
+                for item in iter_menu_items(group["items"]):
                     target_url = None
                     if item.get("entity"):
                         item_entity = item["entity"]
@@ -155,7 +161,7 @@ def navigation(request):
                         if config and _can(request.user, "view", config["model"], item_entity):
                             target_url = reverse("entity_list", args=[item_entity])
                     elif item.get("feature"):
-                        target_url = reverse("hr_feature", args=[item["feature"]])
+                        target_url = reverse(item["feature_url_name"], args=[item["feature"]])
                     elif item.get("app_slug"):
                         target_url = reverse("app_workspace", args=[item["app_slug"]])
                     elif item.get("url"):
@@ -234,6 +240,34 @@ def navigation(request):
         if definition:
             breadcrumbs.append({"label": definition["group"]})
             breadcrumbs.append({"label": definition["title"]})
+    elif url_name == "accounting_feature" and feature:
+        breadcrumbs.append({"label": "Accounting", "url": reverse("app_workspace", args=["accounting"])})
+        group, item = find_menu_feature("accounting", feature)
+        if item:
+            breadcrumbs.append({"label": group["label"]})
+            breadcrumbs.append({"label": item["label"]})
+    elif url_name == "purchase_feature" and feature:
+        breadcrumbs.append({"label": "Purchase", "url": reverse("app_workspace", args=["purchase"])})
+        for group in app_menu_groups("purchase"):
+            item = next((item for item in group["items"] if item.get("feature") == feature), None)
+            if item:
+                breadcrumbs.append({"label": group["label"]})
+                breadcrumbs.append({"label": item["label"]})
+                break
+    elif url_name == "construction_feature" and feature:
+        breadcrumbs.append({"label": "Construction", "url": reverse("app_workspace", args=["construction"])})
+        group, item = find_menu_feature("construction", feature)
+        if item:
+            breadcrumbs.append({"label": group["label"]})
+            breadcrumbs.append({"label": item["label"]})
+    elif url_name in {"pos_feature", "pos_fnb_feature"} and feature:
+        app_slug = "pos" if url_name == "pos_feature" else "pos-fnb"
+        app_label = "Point of Sale" if app_slug == "pos" else "POS F&B"
+        breadcrumbs.append({"label": app_label, "url": reverse("app_workspace", args=[app_slug])})
+        group, item = find_menu_feature(app_slug, feature)
+        if item:
+            breadcrumbs.append({"label": group["label"]})
+            breadcrumbs.append({"label": item["label"]})
     elif entity:
         app_slug = active_app_slug or ENTITY_APP_MAP.get(entity)
         app = apps_by_slug.get(app_slug)

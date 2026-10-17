@@ -1,11 +1,12 @@
 from collections import OrderedDict
+import csv
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.core.management import call_command
-from django.db import transaction
+from django.core.management import CommandError, call_command
+from django.db import DatabaseError, transaction
 from django.db.models import Count, Q
-from django.http import Http404
+from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -14,8 +15,20 @@ from django.views.decorators.http import require_POST
 
 from .discovery import AddonManifestError
 from .models import ERPApp
-from .workspaces import APP_WORKSPACES, app_menu_groups, hr_feature_definition
+from .upgrade import django_labels_for, execute_upgrade, pending_migration_plan, upgrade_target_apps
+from .workspaces import (
+    APP_WORKSPACES,
+    app_menu_groups,
+    filter_menu_items,
+    find_menu_feature,
+    hr_feature_definition,
+)
+from modules.construction.dashboard import build_construction_analytics
+from modules.finance.dashboard import build_accounting_analytics
+from modules.finance.report_exports import render_analytics_excel, render_analytics_pdf
 from modules.hr.dashboard import build_hr_analytics
+from modules.pos.dashboard import build_fnb_analytics, build_pos_analytics
+from modules.purchase.dashboard import build_purchase_analytics
 
 
 def _workspace_url(app):
@@ -74,6 +87,75 @@ def refresh_app_catalog(request):
     return redirect("app_manager")
 
 
+@require_POST
+@login_required
+def upgrade_application(request, slug):
+    destination = _return_url(request)
+    if not request.user.is_superuser:
+        messages.error(request, "Only an administrator can upgrade applications.")
+        return redirect(destination)
+
+    app = get_object_or_404(ERPApp, slug=slug)
+    if not app.enabled:
+        messages.error(request, f"Install {app.name} before upgrading it.")
+        return redirect(destination)
+    if app.status == ERPApp.Status.PLANNED:
+        messages.error(request, f"{app.name} is still planned and cannot be upgraded.")
+        return redirect(destination)
+
+    mode = request.POST.get("mode", "upgrade")
+    if mode not in {"upgrade", "upgrade-no-deps"}:
+        messages.error(request, "Unknown application upgrade mode.")
+        return redirect(destination)
+    include_dependants = mode == "upgrade"
+    mode_label = "Upgrade" if include_dependants else "Upgrade No-Deps"
+    confirmation_phrase = f"{mode_label.upper()} {app.slug}"
+
+    try:
+        installed_apps = list(ERPApp.objects.filter(enabled=True))
+        targets = upgrade_target_apps(app, installed_apps, include_dependants=include_dependants)
+        django_labels = django_labels_for(targets)
+        migration_plan = pending_migration_plan(django_labels)
+    except (DatabaseError, ValueError) as exc:
+        messages.error(request, f"Upgrade plan could not be prepared: {exc}")
+        return redirect(destination)
+
+    if request.POST.get("confirmation", "").strip() != confirmation_phrase:
+        if request.POST.get("confirmation"):
+            messages.error(request, f"Confirmation did not match {confirmation_phrase}.")
+        return render(
+            request,
+            "apphub/upgrade_confirm.html",
+            {
+                "app": app,
+                "mode": mode,
+                "mode_label": mode_label,
+                "mode_description": (
+                    "Upgrade this application and every installed downstream application that depends on it."
+                    if include_dependants
+                    else "Upgrade only this logical application; installed downstream applications are not included."
+                ),
+                "targets": targets,
+                "django_labels": django_labels,
+                "migration_plan": migration_plan,
+                "confirmation_phrase": confirmation_phrase,
+                "destination": destination,
+            },
+        )
+
+    try:
+        execute_upgrade(django_labels)
+    except (AddonManifestError, CommandError, DatabaseError, RuntimeError, ValueError) as exc:
+        messages.error(request, f"{mode_label} failed: {exc}")
+    else:
+        target_names = ", ".join(target.name for target in targets)
+        messages.success(
+            request,
+            f"{mode_label} completed for {target_names}. Deployed-code migrations and the app catalog are current.",
+        )
+    return redirect(destination)
+
+
 @login_required
 def app_workspace(request, slug):
     app = get_object_or_404(ERPApp, slug=slug)
@@ -86,23 +168,18 @@ def app_workspace(request, slug):
     workspace_menu_groups = app_menu_groups(slug)
 
     if app.enabled:
-        from core.views import ENTITY_CONFIG, _can
-        from modules.hr.access import scope_hr_queryset
+        from core.views import ENTITY_CONFIG, _can, _scope_queryset
+
+        def can_open_menu_item(item):
+            return not item.get("entity") or (
+                item["entity"] in ENTITY_CONFIG
+                and _can(request.user, "view", ENTITY_CONFIG[item["entity"]]["model"], item["entity"])
+            )
 
         workspace_menu_groups = [
             {**group, "items": permitted_items}
             for group in workspace_menu_groups
-            if (
-                permitted_items := [
-                    item
-                    for item in group["items"]
-                    if not item.get("entity")
-                    or (
-                        item["entity"] in ENTITY_CONFIG
-                        and _can(request.user, "view", ENTITY_CONFIG[item["entity"]]["model"], item["entity"])
-                    )
-                ]
-            )
+            if (permitted_items := filter_menu_items(group["items"], can_open_menu_item))
         ]
 
         for entity in workspace.get("entities", []):
@@ -117,17 +194,18 @@ def app_workspace(request, slug):
                     "slug": entity,
                     "title": config["title"],
                     "singular": config["singular"],
-                    "count": scope_hr_queryset(request.user, entity, model.objects.all()).count(),
+                    "count": _scope_queryset(request.user, entity, model.objects.all()).count(),
                     "list_url": reverse("entity_list", args=[entity]),
                     "create_url": reverse("entity_create", args=[entity]),
-                    "can_add": request.user.has_perm(f"{model._meta.app_label}.add_{model._meta.model_name}"),
+                    "can_add": config.get("creatable", True)
+                    and request.user.has_perm(f"{model._meta.app_label}.add_{model._meta.model_name}"),
                 }
             )
         if entity_cards:
             primary_config = ENTITY_CONFIG[entity_cards[0]["slug"]]
             primary_slug = entity_cards[0]["slug"]
             recent_items = list(
-                scope_hr_queryset(
+                _scope_queryset(
                     request.user,
                     primary_slug,
                     primary_config["model"].objects.all(),
@@ -169,6 +247,176 @@ def hr_feature(request, feature):
     analytics = build_hr_analytics(feature, request.user)
     template = "apphub/hr_analytics.html" if analytics is not None else "apphub/hr_feature.html"
     return render(request, template, {"app": app, "feature": definition, "analytics": analytics})
+
+
+@login_required
+def accounting_feature(request, feature):
+    group, item = find_menu_feature("accounting", feature)
+    definition = None if item is None else {
+        "slug": feature,
+        "title": item["label"],
+        "group": group["label"],
+        "description": f"Review {item['label'].lower()} across the accounting records in your company scope.",
+    }
+    if definition is None:
+        raise Http404("Accounting feature not found.")
+    app = get_object_or_404(ERPApp, slug="accounting")
+    request.session["active_erp_app"] = "accounting"
+    if not app.enabled:
+        messages.info(request, "Install Accounting to open this feature.")
+        return redirect("app_workspace", slug="accounting")
+    analytics = build_accounting_analytics(feature, request.user)
+    if analytics is None:
+        raise Http404("Accounting analytics not found.")
+    return render(request, "apphub/hr_analytics.html", {
+        "app": app,
+        "feature": definition,
+        "analytics": analytics,
+        "export_url": reverse("accounting_feature_export", args=[feature]),
+        "export_pdf_url": reverse("accounting_feature_export_pdf", args=[feature]),
+        "export_excel_url": reverse("accounting_feature_export_excel", args=[feature]),
+    })
+
+
+@login_required
+def accounting_feature_export(request, feature):
+    group, item = find_menu_feature("accounting", feature)
+    if item is None:
+        raise Http404("Accounting feature not found.")
+    app = get_object_or_404(ERPApp, slug="accounting", enabled=True)
+    analytics = build_accounting_analytics(feature, request.user)
+    if analytics is None:
+        raise Http404("Accounting analytics not found.")
+    response = HttpResponse(content_type="text/csv; charset=utf-8")
+    response["Content-Disposition"] = f'attachment; filename="accounting-{feature}.csv"'
+    response.write("\ufeff")
+    writer = csv.writer(response)
+    writer.writerow([app.name, item["label"]])
+    writer.writerow([])
+    writer.writerow(["Metric", "Value", "Description"])
+    for metric in analytics["metrics"]:
+        writer.writerow([metric["label"], metric["value"], metric["detail"]])
+    writer.writerow([])
+    writer.writerow([analytics["breakdown_title"], "Total"])
+    for row in analytics["breakdown"]:
+        writer.writerow([row["label"], row["total"]])
+    return response
+
+
+def _accounting_export_data(request, feature):
+    _group, item = find_menu_feature("accounting", feature)
+    if item is None:
+        raise Http404("Accounting feature not found.")
+    get_object_or_404(ERPApp, slug="accounting", enabled=True)
+    analytics = build_accounting_analytics(feature, request.user)
+    if analytics is None:
+        raise Http404("Accounting analytics not found.")
+    return item["label"], analytics
+
+
+@login_required
+def accounting_feature_export_pdf(request, feature):
+    title, analytics = _accounting_export_data(request, feature)
+    response = HttpResponse(render_analytics_pdf(title, analytics), content_type="application/pdf")
+    response["Content-Disposition"] = f'attachment; filename="accounting-{feature}.pdf"'
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@login_required
+def accounting_feature_export_excel(request, feature):
+    title, analytics = _accounting_export_data(request, feature)
+    response = HttpResponse(
+        render_analytics_excel(title, analytics),
+        content_type="application/vnd.ms-excel; charset=utf-8",
+    )
+    response["Content-Disposition"] = f'attachment; filename="accounting-{feature}.xls"'
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@login_required
+def purchase_feature(request, feature):
+    definition = None
+    for group in app_menu_groups("purchase"):
+        for item in group["items"]:
+            if item.get("feature") == feature:
+                definition = {
+                    "slug": feature,
+                    "title": item["label"],
+                    "group": group["label"],
+                    "description": f"Review {item['label'].lower()} within the Purchase workspace.",
+                }
+                break
+        if definition:
+            break
+    if definition is None:
+        raise Http404("Purchase feature not found.")
+
+    app = get_object_or_404(ERPApp, slug="purchase")
+    request.session["active_erp_app"] = "purchase"
+    if not app.enabled:
+        messages.info(request, "Install Purchase to open this feature.")
+        return redirect("app_workspace", slug="purchase")
+    analytics = build_purchase_analytics(feature, request.user)
+    if analytics is None:
+        raise Http404("Purchase analytics not found.")
+    return render(request, "apphub/hr_analytics.html", {"app": app, "feature": definition, "analytics": analytics})
+
+
+@login_required
+def construction_feature(request, feature):
+    group, item = find_menu_feature("construction", feature)
+    definition = None if item is None else {
+        "slug": feature,
+        "title": item["label"],
+        "group": group["label"],
+        "description": f"Review {item['label'].lower()} within the Construction workspace.",
+    }
+    if definition is None:
+        raise Http404("Construction feature not found.")
+
+    app = get_object_or_404(ERPApp, slug="construction")
+    request.session["active_erp_app"] = "construction"
+    if not app.enabled:
+        messages.info(request, "Install Construction to open this feature.")
+        return redirect("app_workspace", slug="construction")
+    analytics = build_construction_analytics(feature, request.user)
+    if analytics is None:
+        raise Http404("Construction analytics not found.")
+    return render(request, "apphub/hr_analytics.html", {"app": app, "feature": definition, "analytics": analytics})
+
+
+def _pos_feature(request, feature, app_slug, analytics_builder):
+    group, item = find_menu_feature(app_slug, feature)
+    definition = None if item is None else {
+        "slug": feature,
+        "title": item["label"],
+        "group": group["label"],
+        "description": f"Review {item['label'].lower()} within the {app_slug.upper()} workspace.",
+    }
+    if definition is None:
+        raise Http404("Retail/F&B feature not found.")
+
+    app = get_object_or_404(ERPApp, slug=app_slug)
+    request.session["active_erp_app"] = app_slug
+    if not app.enabled:
+        messages.info(request, f"Install {app.name} to open this feature.")
+        return redirect("app_workspace", slug=app_slug)
+    analytics = analytics_builder(feature, request.user)
+    if analytics is None:
+        raise Http404("Retail/F&B analytics not found.")
+    return render(request, "apphub/hr_analytics.html", {"app": app, "feature": definition, "analytics": analytics})
+
+
+@login_required
+def pos_feature(request, feature):
+    return _pos_feature(request, feature, "pos", build_pos_analytics)
+
+
+@login_required
+def pos_fnb_feature(request, feature):
+    return _pos_feature(request, feature, "pos-fnb", build_fnb_analytics)
 
 
 def _required_installations(target, apps_by_slug):

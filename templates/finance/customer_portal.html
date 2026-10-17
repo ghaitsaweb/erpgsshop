@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}{{ portal_title }} · ERP GSSHOP{% endblock %}
+{% block page_title %}{{ portal_title }}{% endblock %}
+{% block content %}
+  <section class="panel">
+    <div class="panel-head">
+      <div>
+        <p class="eyebrow">Read-only customer portal</p>
+        <h2>{% if portal_admin %}Administrator document view{% else %}{{ portal_customer.name }}{% endif %}</h2>
+      </div>
+      {% if portal_mode != "dashboard" %}<a class="btn btn-secondary" href="{% url 'customer_portal_dashboard' %}">All Documents</a>{% endif %}
+    </div>
+
+    {% if portal_mode == "dashboard" %}
+      <div class="workspace-cards">
+        {% for definition in definitions %}
+          <article class="workspace-card">
+            <div><span class="workspace-count">{{ definition.label|slice:":1" }}</span><p>document</p></div>
+            <h3>{{ definition.label }}</h3>
+            <p>{{ definition.description }}</p>
+            <div class="workspace-actions"><a href="{% url 'customer_portal_document_list' definition.key %}">Open</a></div>
+          </article>
+        {% empty %}
+          <p>No portal document extension is installed.</p>
+        {% endfor %}
+      </div>
+    {% elif portal_mode == "list" %}
+      <form method="get" class="toolbar-form">
+        <label>Search <input type="search" name="q" value="{{ search }}" placeholder="Number or customer"></label>
+        <button class="btn btn-primary" type="submit">Search</button>
+      </form>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Number</th><th>Date</th><th>Customer</th><th>Status</th><th>Amount</th><th></th></tr></thead>
+          <tbody>
+            {% for item in items %}
+              <tr>
+                <td>{{ item.number }}</td><td>{{ item.date }}</td><td>{{ item.customer }}</td>
+                <td><span class="status">{{ item.status }}</span></td><td>{{ item.amount }}</td>
+                <td><a href="{% url 'customer_portal_document_detail' definition.key item.uuid %}">View</a></td>
+              </tr>
+            {% empty %}<tr><td colspan="6">No documents are available.</td></tr>{% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <p>{{ total }} document{{ total|pluralize }} · page {{ page }} of {{ total_pages|default:1 }}</p>
+    {% elif portal_mode == "detail" %}
+      <dl class="detail-grid">
+        <div><dt>Number</dt><dd>{{ document.number }}</dd></div>
+        <div><dt>Date</dt><dd>{{ document.date }}</dd></div>
+        <div><dt>Customer</dt><dd>{{ document.customer }}</dd></div>
+        <div><dt>Company</dt><dd>{{ document.company }}</dd></div>
+        <div><dt>Status</dt><dd>{{ document.status }}</dd></div>
+        <div><dt>Total</dt><dd>{{ document.amount }}</dd></div>
+      </dl>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Description</th><th>Quantity</th><th>Unit Price</th><th>Subtotal</th></tr></thead>
+          <tbody>
+            {% for line in document.lines %}
+              <tr><td>{{ line.description }}</td><td>{{ line.quantity }}</td><td>{{ line.unit_price }}</td><td>{{ line.subtotal }}</td></tr>
+            {% empty %}<tr><td colspan="4">No lines.</td></tr>{% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
+  </section>
+{% endblock %}

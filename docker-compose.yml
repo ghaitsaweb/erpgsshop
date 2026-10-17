@@ -69,6 +69,26 @@ services:
     volumes:
       - ./addons:/app/addons:ro
 
+  beat:
+    build: .
+    restart: always
+    env_file:
+      - .env
+    environment:
+      DATABASE_HOST: db
+      DATABASE_PORT: 5432
+      RUN_BOOTSTRAP: "False"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    command: ["celery", "-A", "erp_gsshop", "beat", "--loglevel=INFO", "--schedule=/tmp/celerybeat-schedule"]
+    volumes:
+      - ./addons:/app/addons:ro
+
 volumes:
   gsshop_postgres_data:
   gsshop_redis_data:

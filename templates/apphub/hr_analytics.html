@@ -6,10 +6,17 @@
     <div class="module-hero-main">
       <span class="module-mark">{{ feature.title|slice:":1" }}</span>
       <div>
-        <p class="eyebrow light">Human Resources · {{ feature.group }}</p>
+        <p class="eyebrow light">{{ app.name }} · {{ feature.group }}</p>
         <h2>{{ feature.title }}</h2>
-        <p>{{ feature.description }} The figures below respect your role, employee scope, and company boundary.</p>
+        <p>{{ feature.description }} The figures below respect your role and company boundary.</p>
       </div>
+      {% if export_url %}
+        <div class="actions">
+          <a class="btn btn-secondary" href="{{ export_url }}">CSV</a>
+          <a class="btn btn-secondary" href="{{ export_excel_url }}">Excel</a>
+          <a class="btn btn-secondary" href="{{ export_pdf_url }}">PDF</a>
+        </div>
+      {% endif %}
     </div>
   </section>
 

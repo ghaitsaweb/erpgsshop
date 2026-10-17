@@ -52,6 +52,28 @@ PURCHASE_ENTITIES = {
     "purchase-account-mappings",
     "purchase-peppol-submissions",
     "purchase-insights",
+    "purchase-quotation-lines",
+    "direct-purchase-lines",
+    "service-work-order-lines",
+    "purchase-tender-lines",
+    "tender-invitations",
+    "tender-documents",
+    "tender-audit-logs",
+    "blanket-order-lines",
+    "purchase-product-categories",
+    "purchase-product-variants",
+    "vendor-communications",
+    "vendor-transaction-history",
+    "purchase-order-communications",
+    "product-budget-movements",
+    "purchase-accounting-documents",
+    "purchase-accounting-lines",
+    "purchase-stock-demands",
+    "purchase-inventory-transfers",
+    "purchase-inventory-transfer-lines",
+    "purchase-peppol-events",
+    "purchase-contract-terms",
+    "purchase-order-revisions",
 }
 
 VENDOR_ENTITIES = {
@@ -64,6 +86,8 @@ VENDOR_ENTITIES = {
     "vendor-pricelist-amendments",
     "vendor-performance-templates",
     "vendor-performance-evaluations",
+    "vendor-communications",
+    "vendor-transaction-history",
 }
 
 BUDGET_ENTITIES = {
@@ -72,6 +96,7 @@ BUDGET_ENTITIES = {
     "budget-product-transfers",
     "budget-product-carry-overs",
     "budget-product-change-requests",
+    "product-budget-movements",
 }
 
 
@@ -138,18 +163,45 @@ def _model_field_names(model):
     return {field.name for field in model._meta.get_fields()}
 
 
-RELATION_COMPANY_PATHS = {
-    "request": "request__company_id",
-    "tender": "tender__company_id",
-    "vendor": "vendor__company_id",
-    "prequalification": "prequalification__vendor__company_id",
-    "pricelist": "pricelist__company_id",
-    "team": "team__company_id",
-    "order_template": "order_template__company_id",
-    "order": "order__company_id",
-    "source_budget": "source_budget__company_id",
-    "budget": "budget__company_id",
-    "receipt": "receipt__company_id",
+MODEL_COMPANY_LOOKUPS = {
+    "purchaserequestline": "request__company_id",
+    "tenderbid": "tender__company_id",
+    "vendorlegaldocument": "vendor__company_id",
+    "vendorprequalification": "vendor__company_id",
+    "vendordocumentreview": "prequalification__vendor__company_id",
+    "vendorpricelistamendment": "pricelist__company_id",
+    "vendorperformanceevaluation": "vendor__company_id",
+    "purchaseteammember": "team__company_id",
+    "purchasekpitarget": "team__company_id",
+    "purchasemilestonetemplate": "order_template__company_id",
+    "purchaseordercontrol": "order__company_id",
+    "purchaseordermilestone": "order__company_id",
+    "budgetproducttransfer": "source_budget__company_id",
+    "budgetproductcarryover": "source_budget__company_id",
+    "budgetproductchangerequest": "budget__company_id",
+    "goodsreceiptline": "receipt__company_id",
+    "purchasepeppolsubmission": "order__company_id",
+    "purchasequotationline": "quotation__company_id",
+    "directpurchaseline": "direct_purchase__company_id",
+    "serviceworkorderline": "work_order__company_id",
+    "purchasetenderline": "tender__company_id",
+    "tenderinvitation": "tender__company_id",
+    "tenderdocument": "tender__company_id",
+    "tenderauditlog": "tender__company_id",
+    "blanketorderline": "blanket_order__company_id",
+    "purchaseproductvariant": "product__company_id",
+    "vendorcommunication": "vendor__company_id",
+    "vendortransactionhistory": "vendor__company_id",
+    "purchaseordercommunication": "order__company_id",
+    "productbudgetmovement": "budget__company_id",
+    "purchaseaccountingdocument": "order__company_id",
+    "purchaseaccountingline": "document__order__company_id",
+    "purchasestockdemand": "request_line__request__company_id",
+    "purchaseinventorytransfer": "source_warehouse__company_id",
+    "purchaseinventorytransferline": "transfer__source_warehouse__company_id",
+    "purchasepeppolevent": "submission__order__company_id",
+    "purchasecontractterm": "order_template__company_id",
+    "purchaseorderrevision": "order__company_id",
 }
 
 
@@ -161,9 +213,9 @@ def scope_purchase_queryset(user, entity, queryset):
     fields = _model_field_names(queryset.model)
     if "company" in fields:
         return queryset.filter(company_id__in=company_ids)
-    for relation, lookup in RELATION_COMPANY_PATHS.items():
-        if relation in fields:
-            return queryset.filter(**{f"{lookup}__in": company_ids})
+    lookup = MODEL_COMPANY_LOOKUPS.get(queryset.model._meta.model_name)
+    if lookup:
+        return queryset.filter(**{f"{lookup}__in": company_ids})
     return queryset.none()
 
 
@@ -193,8 +245,7 @@ def scope_purchase_form(form, user, entity):
         elif "company" in fields:
             field.queryset = queryset.filter(company_id__in=company_ids)
         else:
-            for relation, lookup in RELATION_COMPANY_PATHS.items():
-                if relation in fields:
-                    field.queryset = queryset.filter(**{f"{lookup}__in": company_ids})
-                    break
+            lookup = MODEL_COMPANY_LOOKUPS.get(model._meta.model_name)
+            if lookup:
+                field.queryset = queryset.filter(**{f"{lookup}__in": company_ids})
     return form

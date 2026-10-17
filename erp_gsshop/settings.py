@@ -27,6 +27,7 @@ INSTALLED_APPS = [
     "modules.apphub.apps.AppHubConfig",
     "modules.hr.apps.HRConfig",
     "modules.purchase.apps.PurchaseConfig",
+    "modules.construction.apps.ConstructionConfig",
     "modules.finance.apps.FinanceConfig",
     "modules.crm.apps.CRMConfig",
     "modules.operations.apps.OperationsConfig",
@@ -116,6 +117,16 @@ CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://redis:6379/0")
 CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://redis:6379/1")
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 300
+CELERY_BEAT_SCHEDULE = {
+    "finance-due-asset-disposals": {
+        "task": "finance.finalize_due_asset_disposals",
+        "schedule": 900.0,
+    },
+    "finance-due-recurring-journals": {
+        "task": "finance.run_due_recurring_journals",
+        "schedule": 3600.0,
+    },
+}
 
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = "DENY"

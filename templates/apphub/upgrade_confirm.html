@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Confirm {{ mode_label }} · ERP GSSHOP{% endblock %}
+{% block page_title %}Confirm {{ mode_label }}{% endblock %}
+{% block content %}
+  <section class="panel upgrade-confirm-panel">
+    <p class="eyebrow">Application maintenance</p>
+    <h2>{{ mode_label }} — {{ app.name }}</h2>
+    <p>{{ mode_description }}</p>
+    <div class="info-strip"><strong>Code boundary:</strong> this applies migrations and refreshes the app catalog from code already deployed on this server. It does not pull source code, rebuild an image, collect static files, or restart web/worker services.</div>
+
+    <h3>Logical applications in scope</h3>
+    <ul>{% for target in targets %}<li>{{ target.name }} <small>({{ target.slug }})</small></li>{% endfor %}</ul>
+
+    <h3>Django schema applications</h3>
+    <p>{% for label in django_labels %}<code>{{ label }}</code>{% if not forloop.last %}, {% endif %}{% empty %}No schema application is mapped; only the catalog refresh will run.{% endfor %}</p>
+
+    <h3>Pending migration plan</h3>
+    {% if migration_plan %}
+      <ol>{% for migration in migration_plan %}<li><code>{{ migration.label }}.{{ migration.name }}</code>{% if migration.backwards %} (reverse){% endif %}</li>{% endfor %}</ol>
+    {% else %}<p>No pending database migrations were detected. Post-migrate hooks and catalog synchronization will still run.</p>{% endif %}
+
+    <div class="info-strip"><strong>Recovery:</strong> verify a current database backup before continuing. Schema/data migrations can require restoring that backup if application-level reversal is unavailable.</div>
+    <form method="post" action="{% url 'app_upgrade' app.slug %}" class="upgrade-confirm-form">
+      {% csrf_token %}
+      <input type="hidden" name="mode" value="{{ mode }}">
+      <input type="hidden" name="next" value="{{ destination }}">
+      <label for="upgrade-confirmation">Type <code>{{ confirmation_phrase }}</code> to confirm</label>
+      <input id="upgrade-confirmation" name="confirmation" autocomplete="off" required>
+      <div class="form-actions">
+        <button class="btn btn-primary" type="submit">Run {{ mode_label }}</button>
+        <a class="btn btn-secondary" href="{{ destination }}">Cancel</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}

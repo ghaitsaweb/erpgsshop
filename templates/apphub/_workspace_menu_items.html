@@ -1,0 +1,18 @@
+{% for item in menu_items %}
+  {% if item.children %}
+    <details class="workspace-menu-subgroup" open>
+      <summary>{{ item.label }}<i>⌄</i></summary>
+      <div>
+        {% include "apphub/_workspace_menu_items.html" with menu_items=item.children only %}
+      </div>
+    </details>
+  {% elif item.entity %}
+    <a href="{% url 'entity_list' item.entity %}">{{ item.label }}<i>›</i></a>
+  {% elif item.feature %}
+    <a href="{% url item.feature_url_name item.feature %}">{{ item.label }}<i>›</i></a>
+  {% elif item.app_slug %}
+    <a href="{% url 'app_workspace' item.app_slug %}">{{ item.label }}<i>›</i></a>
+  {% elif item.url %}
+    <a href="{{ item.url }}">{{ item.label }}<i>›</i></a>
+  {% endif %}
+{% endfor %}

@@ -8,8 +8,8 @@ contain no HMX source code or assets.
 APP_WORKSPACES = {
     "foundation": {
         "tagline": "Shared business foundation",
-        "entities": ["companies", "contacts"],
-        "workflow": ["Configure companies", "Create customers and vendors", "Assign users and permissions"],
+        "entities": ["companies", "branches", "contacts"],
+        "workflow": ["Configure companies and branches", "Assign organization access from Users", "Create customers and vendors"],
     },
     "app-manager": {
         "tagline": "Control your ERP application suite",
@@ -468,6 +468,7 @@ for entity in (
 # available on both an application's landing page and its operational screens.
 ENTITY_MENU_LABELS = {
     "companies": "Companies",
+    "branches": "Branches",
     "contacts": "Partners",
     "products": "Products",
     "warehouses": "Warehouses",
@@ -928,7 +929,7 @@ ENTITY_MENU_LABELS.update(
 
 APP_MENU_GROUPS = {
     "foundation": [
-        {"label": "Organization", "icon": "O", "entities": ["companies"]},
+        {"label": "Organization", "icon": "O", "entities": ["companies", "branches"]},
         {"label": "Directory", "icon": "D", "entities": ["contacts"]},
     ],
     "inventory": [

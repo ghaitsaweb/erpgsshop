@@ -6,6 +6,7 @@ from . import views
 urlpatterns = [
     path("apps/", views.app_manager, name="app_manager"),
     path("apps/refresh/", views.refresh_app_catalog, name="app_catalog_refresh"),
+    path("apps/developer-mode/", views.set_developer_mode, name="developer_mode"),
     path("apps/hr/feature/<slug:feature>/", views.hr_feature, name="hr_feature"),
     path("apps/accounting/feature/<slug:feature>/", views.accounting_feature, name="accounting_feature"),
     path("apps/accounting/feature/<slug:feature>/export.csv", views.accounting_feature_export, name="accounting_feature_export"),

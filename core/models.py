@@ -84,6 +84,13 @@ class Product(TimeStampedModel):
 
 class Warehouse(TimeStampedModel):
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="warehouses")
+    branch = models.ForeignKey(
+        "organization.Branch",
+        on_delete=models.PROTECT,
+        related_name="warehouses",
+        blank=True,
+        null=True,
+    )
     code = models.CharField(max_length=30)
     name = models.CharField(max_length=120)
     address = models.TextField(blank=True)
@@ -92,6 +99,11 @@ class Warehouse(TimeStampedModel):
     class Meta:
         ordering = ["name"]
         constraints = [models.UniqueConstraint(fields=["company", "code"], name="unique_warehouse_code_per_company")]
+
+    def clean(self):
+        super().clean()
+        if self.branch_id and self.branch.company_id != self.company_id:
+            raise ValidationError({"branch": "Warehouse branch must belong to the selected company."})
 
     def __str__(self):
         return f"{self.code} - {self.name}"

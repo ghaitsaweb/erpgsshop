@@ -100,8 +100,8 @@ class ProductAdmin(admin.ModelAdmin):
 
 @admin.register(Warehouse)
 class WarehouseAdmin(admin.ModelAdmin):
-    list_display = ("code", "name", "company", "active")
-    list_filter = ("company", "active")
+    list_display = ("code", "name", "company", "branch", "active")
+    list_filter = ("company", "branch", "active")
     search_fields = ("code", "name")
 
 
@@ -117,4 +117,3 @@ class AttendanceAdmin(admin.ModelAdmin):
     list_display = ("attendance_date", "employee", "check_in", "check_out", "status")
     list_filter = ("status", "attendance_date", "employee__company")
     search_fields = ("employee__employee_id", "employee__name")
-

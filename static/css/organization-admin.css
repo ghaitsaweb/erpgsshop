@@ -1,0 +1,23 @@
+.inline-group .organization-access-options {
+  max-height: 260px;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid var(--border-color, #d7dbe0);
+  border-radius: 6px;
+  background: var(--body-bg, #fff);
+}
+
+.inline-group .organization-access-options > div + div,
+.inline-group .organization-access-options li + li {
+  margin-top: 6px;
+}
+
+.inline-group .organization-access-options label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: 5px;
+  background: var(--darkened-bg, #f8f8f8);
+}

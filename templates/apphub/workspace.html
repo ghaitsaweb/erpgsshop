@@ -18,6 +18,14 @@
       </div>
     </div>
     <div class="module-hero-actions">
+      {% if app.slug == 'foundation' and can_use_developer_mode %}
+        <form method="post" action="{% url 'developer_mode' %}" class="developer-mode-toggle">
+          {% csrf_token %}
+          <input type="hidden" name="enabled" value="{% if developer_mode %}0{% else %}1{% endif %}">
+          <input type="hidden" name="next" value="{% url 'app_workspace' app.slug %}">
+          <button class="btn {% if developer_mode %}btn-primary{% else %}btn-secondary{% endif %}" type="submit">Developer Mode · {% if developer_mode %}ON{% else %}OFF{% endif %}</button>
+        </form>
+      {% endif %}
       {% if app.enabled and custom_launch_url %}<a class="btn btn-primary" href="{{ custom_launch_url }}">Open module</a>{% endif %}
       {% if request.user.is_superuser and app.enabled and app.status != 'planned' %}
         <form method="post" action="{% url 'app_upgrade' app.slug %}">

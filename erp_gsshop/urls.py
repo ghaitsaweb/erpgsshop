@@ -4,6 +4,7 @@ from django.urls import include, path
 
 from core.views import health
 from modules.apphub.discovery import discover_urlconfs
+from modules.database_manager.views import index as database_manager_index
 
 
 admin.site.site_header = "ERP GSSHOP Administration"
@@ -11,6 +12,9 @@ admin.site.site_title = "ERP GSSHOP"
 admin.site.index_title = "Data & Configuration"
 
 urlpatterns = [
+    path("", database_manager_index, name="database_manager"),
+    path("database-manager/", include("modules.database_manager.urls")),
+    path("organization/context/", include("modules.organization.urls")),
     path("health/", health, name="health"),
     path("admin/", admin.site.urls),
     path("login/", auth_views.LoginView.as_view(template_name="registration/login.html"), name="login"),

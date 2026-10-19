@@ -67,7 +67,7 @@ class ProductForm(StyledModelForm):
 class WarehouseForm(StyledModelForm):
     class Meta:
         model = Warehouse
-        fields = ["company", "code", "name", "address", "active"]
+        fields = ["company", "branch", "code", "name", "address", "active"]
 
 
 class StockMoveForm(StyledModelForm):

@@ -236,7 +236,8 @@ def _group_names(user):
 
 
 def _company_ids(user):
-    return Employee.objects.filter(user=user).values("company_id")
+    cached = getattr(user, "_gsshop_allowed_company_ids", None)
+    return cached if cached is not None else Employee.objects.filter(user=user).values("company_id")
 
 
 def can_hr_entity_action(user, entity, action):

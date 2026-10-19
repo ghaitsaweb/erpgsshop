@@ -67,7 +67,8 @@ def _group_names(user):
 
 
 def _company_ids(user):
-    return user.employee_profiles.values("company_id")
+    cached = getattr(user, "_gsshop_allowed_company_ids", None)
+    return cached if cached is not None else user.employee_profiles.values("company_id")
 
 
 @lru_cache(maxsize=None)

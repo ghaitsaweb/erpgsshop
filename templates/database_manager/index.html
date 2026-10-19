@@ -1,0 +1,175 @@
+{% load static %}
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="ERP GSSHOP database command center">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <title>Database Command Center · ERP GSSHOP</title>
+  <link rel="icon" href="{% static 'img/logo.svg' %}" type="image/svg+xml">
+  <link rel="stylesheet" href="{% static 'css/database-manager.css' %}">
+</head>
+<body class="dbm-page" data-unlocked="{{ operator_unlocked|yesno:'true,false' }}" data-current-database="{{ current_database }}" data-database-prefix="{{ database_prefix }}">
+  <div class="dbm-orb dbm-orb-one"></div>
+  <div class="dbm-orb dbm-orb-two"></div>
+
+  <header class="dbm-topbar">
+    <a class="dbm-brand" href="{% url 'database_manager' %}">
+      <span class="dbm-brand-mark"><img src="{% static 'img/logo.svg' %}" alt=""></span>
+      <span><strong>ERP GSSHOP</strong><small>Database command center</small></span>
+    </a>
+    <div class="dbm-top-actions">
+      <span class="dbm-live"><i></i> PostgreSQL connected</span>
+      <button class="dbm-operator" id="operator-toggle" type="button">
+        <span class="dbm-lock-icon">⌁</span>
+        <span><strong id="operator-state">{% if operator_unlocked %}Operator unlocked{% else %}Operator locked{% endif %}</strong><small id="operator-hint">{% if operator_unlocked %}Protected controls available{% else %}Unlock management controls{% endif %}</small></span>
+      </button>
+    </div>
+  </header>
+
+  <main class="dbm-shell">
+    <section class="dbm-hero">
+      <div class="dbm-hero-copy">
+        <span class="dbm-kicker"><i></i> Secure workspace gateway</span>
+        <h1>Your business starts<br>with the right database.</h1>
+        <p>Select an operational workspace or manage its complete lifecycle. Every database is isolated, auditable, and ready for the full GSSHOP application suite.</p>
+        <div class="dbm-hero-actions">
+          <button class="dbm-btn dbm-btn-primary" type="button" data-dialog="create-dialog" data-requires-operator>Create database <span>＋</span></button>
+          <button class="dbm-btn dbm-btn-ghost" type="button" data-tab-target="backups">Open backup vault <span>↗</span></button>
+        </div>
+      </div>
+      <div class="dbm-signal-card" aria-label="System summary">
+        <div class="dbm-signal-rings"><span></span><span></span><b>DB</b></div>
+        <div class="dbm-signal-stats">
+          <article><strong id="database-count">{{ databases|length }}</strong><span>Managed databases</span></article>
+          <article><strong id="protected-count">0</strong><span>Protected workspaces</span></article>
+          <article><strong id="worker-label">Checking</strong><span>Automation worker</span></article>
+        </div>
+      </div>
+    </section>
+
+    <nav class="dbm-tabs" aria-label="Database manager sections">
+      <button class="active" type="button" data-tab="databases"><span>◫</span>Databases</button>
+      <button type="button" data-tab="backups"><span>⇩</span>Backup vault</button>
+      <button type="button" data-tab="tools"><span>◇</span>Operations</button>
+      <button type="button" data-tab="activity"><span>↻</span>Activity</button>
+    </nav>
+
+    <section class="dbm-tab-panel active" id="panel-databases" data-panel="databases">
+      <div class="dbm-section-head">
+        <div><span class="dbm-overline">Operational workspaces</span><h2>Choose a database</h2><p>Sign in to an isolated ERP environment with its own users, companies, and transactions.</p></div>
+        <label class="dbm-search"><span>⌕</span><input id="database-search" type="search" placeholder="Search databases…" autocomplete="off"></label>
+      </div>
+      {% if inventory_error %}<div class="dbm-alert danger">{{ inventory_error }}</div>{% endif %}
+      <div class="dbm-database-grid" id="database-grid">
+        {% for database in databases %}
+          <article class="dbm-database-card {% if database.name == current_database %}selected{% endif %} {% if database.status != 'ready' %}offline{% endif %}" data-database-card data-name="{{ database.name }}" data-label="{{ database.label|lower }}">
+            <header>
+              <span class="dbm-db-symbol">{% if database.is_primary %}G{% else %}{{ database.label|slice:':1'|upper }}{% endif %}</span>
+              <span class="dbm-status {{ database.status }}"><i></i>{{ database.status|title }}</span>
+              {% if database.is_protected %}<span class="dbm-protected" title="Protected database">◆</span>{% endif %}
+            </header>
+            <div class="dbm-card-title"><small>{% if database.is_primary %}Primary database{% else %}Managed database{% endif %}</small><h3>{{ database.label }}</h3><code>{{ database.name }}</code></div>
+            <dl><div><dt>Storage</dt><dd>{{ database.size }}</dd></div><div><dt>Connections</dt><dd>{{ database.connections }}</dd></div><div><dt>PostgreSQL</dt><dd>{{ database.version }}</dd></div></dl>
+            <footer>
+              {% if database.status == 'ready' %}<button class="dbm-open-db" type="button" data-choose-database="{{ database.name }}">Open workspace <span>→</span></button>{% else %}<span class="dbm-unavailable">Database unavailable</span>{% endif %}
+            </footer>
+          </article>
+        {% empty %}
+          <div class="dbm-empty"><span>!</span><h3>No database is available</h3><p>Check the PostgreSQL connection and refresh this page.</p></div>
+        {% endfor %}
+      </div>
+      <p class="dbm-no-results" id="database-no-results" hidden>No database matches your search.</p>
+    </section>
+
+    <section class="dbm-tab-panel" id="panel-backups" data-panel="backups" hidden>
+      <div class="dbm-section-head">
+        <div><span class="dbm-overline">Recovery & continuity</span><h2>Backup vault</h2><p>Create, retain, download, and restore compressed PostgreSQL backups.</p></div>
+        <div class="dbm-head-actions"><button class="dbm-btn dbm-btn-secondary" type="button" data-dialog="restore-dialog" data-requires-operator>Restore</button><button class="dbm-btn dbm-btn-primary" type="button" data-dialog="backup-dialog" data-requires-operator>New backup</button></div>
+      </div>
+      <div class="dbm-table-card">
+        <table><thead><tr><th>Backup file</th><th>Source</th><th>Created</th><th>Size</th><th></th></tr></thead><tbody id="backup-table"><tr><td colspan="5" class="dbm-table-message">Unlock operator controls to view the backup vault.</td></tr></tbody></table>
+      </div>
+    </section>
+
+    <section class="dbm-tab-panel" id="panel-tools" data-panel="tools" hidden>
+      <div class="dbm-section-head">
+        <div><span class="dbm-overline">Lifecycle operations</span><h2>Database operations</h2><p>Safe tools for copies, schema upgrades, protection, and controlled retirement.</p></div>
+      </div>
+      <div class="dbm-action-grid">
+        <button class="dbm-action-card blue" type="button" data-dialog="duplicate-dialog" data-requires-operator><span>⧉</span><strong>Duplicate</strong><small>Create a complete isolated copy.</small><i>Open tool →</i></button>
+        <button class="dbm-action-card violet" type="button" data-dialog="upgrade-dialog" data-requires-operator><span>↥</span><strong>Upgrade schema</strong><small>Apply migrations and sync catalogs.</small><i>Open tool →</i></button>
+        <button class="dbm-action-card amber" type="button" data-dialog="protection-dialog" data-requires-operator><span>◇</span><strong>Protection</strong><small>Prevent accidental drop or overwrite.</small><i>Open tool →</i></button>
+        <button class="dbm-action-card red" type="button" data-dialog="drop-dialog" data-requires-operator><span>×</span><strong>Retire database</strong><small>Permanently remove an unprotected database.</small><i>Open tool →</i></button>
+      </div>
+      <div class="dbm-protection-panel">
+        <header><div><span class="dbm-overline">Guard rails</span><h3>Protection center</h3></div><span id="protection-summary">Unlock to inspect</span></header>
+        <div id="protection-list" class="dbm-protection-list"><p class="dbm-muted">Protected database status will appear here.</p></div>
+      </div>
+    </section>
+
+    <section class="dbm-tab-panel" id="panel-activity" data-panel="activity" hidden>
+      <div class="dbm-section-head">
+        <div><span class="dbm-overline">Audit trail</span><h2>Database activity</h2><p>Review who requested an operation, its progress, and the final outcome.</p></div>
+        <button class="dbm-icon-btn" id="refresh-activity" type="button" aria-label="Refresh activity">↻</button>
+      </div>
+      <div class="dbm-table-card">
+        <table><thead><tr><th>Operation</th><th>Database</th><th>Requested by</th><th>Started</th><th>Status</th></tr></thead><tbody id="activity-table"><tr><td colspan="5" class="dbm-table-message">Unlock operator controls to view activity.</td></tr></tbody></table>
+      </div>
+    </section>
+  </main>
+
+  <footer class="dbm-footer"><span>ERP GSSHOP · Database lifecycle control</span><span>Encrypted transport recommended · Audited operations · Protected primary</span></footer>
+
+  <dialog class="dbm-dialog" id="unlock-dialog">
+    <form id="unlock-form" method="dialog">
+      <button class="dbm-dialog-close" type="button" data-close-dialog aria-label="Close">×</button>
+      <span class="dbm-dialog-icon">⌁</span><p class="dbm-overline">System administrator</p><h2>Unlock protected controls</h2><p class="dbm-dialog-copy">Use a superuser from the primary ERP GSSHOP database. The unlock expires automatically.</p>
+      <label>Username<input name="username" autocomplete="username" required></label>
+      <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+      <div class="dbm-form-error" data-form-error></div>
+      <button class="dbm-btn dbm-btn-primary dbm-btn-full" type="submit">Unlock command center</button>
+    </form>
+  </dialog>
+
+  <dialog class="dbm-dialog dbm-dialog-wide" id="create-dialog">
+    <form id="create-form" data-operation-form data-endpoint="create" method="dialog">
+      <button class="dbm-dialog-close" type="button" data-close-dialog>×</button><span class="dbm-dialog-icon blue">＋</span><p class="dbm-overline">New workspace</p><h2>Create ERP database</h2><p class="dbm-dialog-copy">Provisions an isolated PostgreSQL database, applies every module migration, and creates its first administrator.</p>
+      <div class="dbm-form-grid"><label>Display name<input name="label" placeholder="GSSHOP Jakarta" required></label><label>Database name<input name="name" placeholder="{{ database_prefix }}jakarta" pattern="[a-z][a-z0-9_]{2,62}" required><small>Must start with <code>{{ database_prefix }}</code></small></label></div>
+      <div class="dbm-form-grid"><label>Admin username<input name="admin_username" autocomplete="off" required></label><label>Admin email<input name="admin_email" type="email" autocomplete="off"></label></div>
+      <label>New database admin password<input name="admin_password" type="password" minlength="8" autocomplete="new-password" required></label>
+      <label>Confirm operator password<input name="operator_password" type="password" autocomplete="current-password" required></label>
+      <div class="dbm-form-error" data-form-error></div><button class="dbm-btn dbm-btn-primary dbm-btn-full" type="submit">Create and initialize</button>
+    </form>
+  </dialog>
+
+  <dialog class="dbm-dialog" id="backup-dialog">
+    <form id="backup-form" data-operation-form data-endpoint="backup" method="dialog"><button class="dbm-dialog-close" type="button" data-close-dialog>×</button><span class="dbm-dialog-icon green">⇩</span><p class="dbm-overline">Point-in-time safety</p><h2>Create backup</h2><p class="dbm-dialog-copy">Produces a compressed PostgreSQL custom-format backup in the persistent vault.</p><label>Database<select name="database" data-database-select required></select></label><label>Confirm operator password<input name="operator_password" type="password" required></label><div class="dbm-form-error" data-form-error></div><button class="dbm-btn dbm-btn-primary dbm-btn-full" type="submit">Start backup</button></form>
+  </dialog>
+
+  <dialog class="dbm-dialog" id="duplicate-dialog">
+    <form id="duplicate-form" data-operation-form data-endpoint="duplicate" method="dialog"><button class="dbm-dialog-close" type="button" data-close-dialog>×</button><span class="dbm-dialog-icon violet">⧉</span><p class="dbm-overline">Safe isolated copy</p><h2>Duplicate database</h2><label>Source database<select name="source" data-database-select required></select></label><label>Copy display name<input name="label" required></label><label>New database name<input name="target" placeholder="{{ database_prefix }}sandbox" required></label><label>Confirm operator password<input name="operator_password" type="password" required></label><div class="dbm-form-error" data-form-error></div><button class="dbm-btn dbm-btn-primary dbm-btn-full" type="submit">Create duplicate</button></form>
+  </dialog>
+
+  <dialog class="dbm-dialog" id="restore-dialog">
+    <form id="restore-form" data-operation-form data-endpoint="restore" method="dialog" enctype="multipart/form-data"><button class="dbm-dialog-close" type="button" data-close-dialog>×</button><span class="dbm-dialog-icon amber">↥</span><p class="dbm-overline">Recovery</p><h2>Restore as new database</h2><p class="dbm-dialog-copy">Restore never overwrites an existing database. A new isolated target is always created.</p><label>Display name<input name="label" required></label><label>New database name<input name="target" placeholder="{{ database_prefix }}restored" required></label><label>Existing vault backup<select name="existing_file" data-backup-select><option value="">Or upload a backup below</option></select></label><label>Upload .dump file<input name="backup_file" type="file" accept=".dump,application/octet-stream"></label><label>Confirm operator password<input name="operator_password" type="password" required></label><div class="dbm-form-error" data-form-error></div><button class="dbm-btn dbm-btn-primary dbm-btn-full" type="submit">Validate and restore</button></form>
+  </dialog>
+
+  <dialog class="dbm-dialog" id="upgrade-dialog">
+    <form id="upgrade-form" data-operation-form data-endpoint="upgrade" method="dialog"><button class="dbm-dialog-close" type="button" data-close-dialog>×</button><span class="dbm-dialog-icon violet">↥</span><p class="dbm-overline">Schema lifecycle</p><h2>Upgrade database</h2><p class="dbm-dialog-copy">Applies pending Django migrations and synchronizes the application and localization catalogs.</p><label>Database<select name="database" data-database-select required></select></label><label>Confirm operator password<input name="operator_password" type="password" required></label><div class="dbm-form-error" data-form-error></div><button class="dbm-btn dbm-btn-primary dbm-btn-full" type="submit">Run controlled upgrade</button></form>
+  </dialog>
+
+  <dialog class="dbm-dialog" id="protection-dialog">
+    <form id="protection-form" data-simple-form data-endpoint="protection" method="dialog"><button class="dbm-dialog-close" type="button" data-close-dialog>×</button><span class="dbm-dialog-icon amber">◇</span><p class="dbm-overline">Guard rail</p><h2>Change protection</h2><label>Database<select name="database" data-database-select required></select></label><label>Protection action<select name="protect"><option value="true">Enable protection</option><option value="false">Remove protection</option></select></label><label>Confirm operator password<input name="operator_password" type="password" required></label><div class="dbm-form-error" data-form-error></div><button class="dbm-btn dbm-btn-primary dbm-btn-full" type="submit">Apply protection</button></form>
+  </dialog>
+
+  <dialog class="dbm-dialog" id="drop-dialog">
+    <form id="drop-form" data-operation-form data-endpoint="drop" method="dialog"><button class="dbm-dialog-close" type="button" data-close-dialog>×</button><span class="dbm-dialog-icon red">×</span><p class="dbm-overline danger">Irreversible operation</p><h2>Retire database</h2><div class="dbm-alert danger">Back up the database first. Primary and protected databases cannot be removed.</div><label>Database<select name="database" data-database-select data-exclude-primary required></select></label><label>Type the complete database name<input name="confirmation" autocomplete="off" required></label><label>Confirm operator password<input name="operator_password" type="password" required></label><div class="dbm-form-error" data-form-error></div><button class="dbm-btn dbm-btn-danger dbm-btn-full" type="submit">Permanently drop database</button></form>
+  </dialog>
+
+  <aside class="dbm-progress" id="operation-progress" hidden><div><span class="dbm-progress-spinner"></span><p><strong id="progress-title">Database operation</strong><small id="progress-message">Queued…</small></p><b id="progress-percent">0%</b></div><span class="dbm-progress-track"><i id="progress-bar"></i></span></aside>
+  <div class="dbm-toast-stack" id="toast-stack" aria-live="polite"></div>
+  <script src="{% static 'js/database-manager.js' %}"></script>
+</body>
+</html>

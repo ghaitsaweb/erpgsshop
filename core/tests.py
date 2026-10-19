@@ -253,7 +253,7 @@ class ERPIntegrityTests(TestCase):
     def test_dashboard_and_module_pages_render(self):
         call_command("sync_apps", verbosity=0)
         self.client.force_login(self.user)
-        dashboard_response = self.client.get("/")
+        dashboard_response = self.client.get("/dashboard/")
         self.assertEqual(dashboard_response.status_code, 200)
         self.assertContains(dashboard_response, "Search all menus")
         self.assertContains(dashboard_response, 'data-search="training conduct training human resources people installed menu"')
@@ -561,7 +561,7 @@ class ERPIntegrityTests(TestCase):
         ERPApp.objects.filter(slug="pos").update(enabled=False)
         self.client.force_login(self.user)
 
-        response = self.client.get("/")
+        response = self.client.get("/dashboard/")
         items = response.context["global_menu_items"]
         users_item = next(item for item in items if item["label"] == "Users")
 
@@ -1250,7 +1250,7 @@ class HRRecordRuleTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'href="/app/leave-requests/"')
         self.assertNotContains(response, 'href="/app/hr-settings/"')
-        dashboard_response = self.client.get("/")
+        dashboard_response = self.client.get("/dashboard/")
         self.assertNotContains(dashboard_response, 'href="/app/hr-settings/"')
 
     def test_supervisor_query_count_does_not_grow_with_team_size(self):

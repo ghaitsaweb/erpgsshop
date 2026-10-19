@@ -24,6 +24,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "core.apps.CoreConfig",
+    "modules.organization.apps.OrganizationConfig",
     "modules.apphub.apps.AppHubConfig",
     "modules.hr.apps.HRConfig",
     "modules.purchase.apps.PurchaseConfig",
@@ -35,15 +36,18 @@ INSTALLED_APPS = [
     "modules.pos.apps.POSConfig",
     "modules.ai_workspace.apps.AIWorkspaceConfig",
     "modules.localization.apps.LocalizationConfig",
+    "modules.database_manager.apps.DatabaseManagerConfig",
 ] + discover_django_apps()
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
+    "modules.database_manager.middleware.DatabaseSelectionMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "modules.organization.middleware.OrganizationContextMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
@@ -61,6 +65,7 @@ TEMPLATES = [
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
                 "core.context_processors.navigation",
+                "modules.organization.context_processors.organization_context",
             ],
         },
     },
@@ -79,6 +84,12 @@ DATABASES = {
         "CONN_MAX_AGE": 60,
     }
 }
+DATABASE_ROUTERS = ["modules.database_manager.runtime.SelectedDatabaseRouter"]
+
+ERP_DATABASE_PREFIX = os.getenv("ERP_DATABASE_PREFIX", "erp_gsshop").strip().lower()
+ERP_DATABASE_COOKIE = os.getenv("ERP_DATABASE_COOKIE", "erp_gsshop_database")
+ERP_DATABASE_BACKUP_DIR = os.getenv("ERP_DATABASE_BACKUP_DIR", str(BASE_DIR / "backups"))
+ERP_DATABASE_MANAGER_SESSION_SECONDS = int(os.getenv("ERP_DATABASE_MANAGER_SESSION_SECONDS", "900"))
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
@@ -116,7 +127,7 @@ LOGOUT_REDIRECT_URL = "login"
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://redis:6379/0")
 CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://redis:6379/1")
 CELERY_TASK_TRACK_STARTED = True
-CELERY_TASK_TIME_LIMIT = 300
+CELERY_TASK_TIME_LIMIT = 1800
 CELERY_BEAT_SCHEDULE = {
     "finance-due-asset-disposals": {
         "task": "finance.finalize_due_asset_disposals",

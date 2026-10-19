@@ -9,7 +9,7 @@
   <link rel="icon" href="{% static 'img/logo.svg' %}" type="image/svg+xml">
   <link rel="stylesheet" href="{% static 'css/app.css' %}">
 </head>
-<body>
+<body data-developer-mode="{% if developer_mode %}true{% else %}false{% endif %}" data-current-route="{{ request.resolver_match.view_name|default:'' }}" data-current-app="{{ active_app_slug|default:'' }}">
   <div class="app-shell">
     <aside class="sidebar">
       <a class="brand" href="{% url 'dashboard' %}">
@@ -50,6 +50,16 @@
       </div>
 
       <nav class="main-nav" id="primary-navigation" data-nav-mode="{% if current_nav_app %}application{% else %}workspace{% endif %}" aria-label="Primary navigation">
+        {% if perms.core.view_company or perms.organization.view_branch or perms.auth.view_user %}
+          <details class="nav-section nav-group organization-quick-nav" open>
+            <summary data-group-search="company branch organization"><span class="nav-icon">O</span><span>Master Organization</span><i>⌄</i></summary>
+            <div class="nav-children">
+              {% if perms.core.view_company %}<a data-menu-item data-search="company master company" class="nav-item {% if request.resolver_match.kwargs.entity == 'companies' %}active{% endif %}" href="{% url 'entity_list' 'companies' %}"><span class="nav-icon">C</span>Master Company</a>{% endif %}
+              {% if perms.organization.view_branch %}<a data-menu-item data-search="branch master branch" class="nav-item {% if request.resolver_match.kwargs.entity == 'branches' %}active{% endif %}" href="{% url 'entity_list' 'branches' %}"><span class="nav-icon">B</span>Master Branch</a>{% endif %}
+              {% if perms.auth.view_user %}<a data-menu-item data-search="users access company branch" class="nav-item" href="{% url 'admin:auth_user_changelist' %}"><span class="nav-icon">U</span>Users & Access</a>{% endif %}
+            </div>
+          </details>
+        {% endif %}
         {% for section in nav_sections %}
           {% if section.collapsible %}
             <details class="nav-section nav-group" {% if section.open %}open{% endif %}>
@@ -87,6 +97,7 @@
       </nav>
 
       <div class="sidebar-foot">
+        <a class="nav-item" href="{% url 'database_manager' %}"><span class="nav-icon">D</span>Switch database</a>
         <a class="nav-item" href="{% url 'admin:index' %}"><span class="nav-icon">A</span>Administration</a>
         <form method="post" action="{% url 'logout' %}">
           {% csrf_token %}
@@ -107,9 +118,20 @@
           <p class="eyebrow">Business operations</p>
           <h1>{% block page_title %}ERP GSSHOP{% endblock %}</h1>
         </div>
-        <div class="user-chip">
-          <span class="avatar">{{ request.user.username|slice:":1"|upper }}</span>
-          <span><strong>{{ request.user.get_full_name|default:request.user.username }}</strong><small>{{ request.user.username }}{% if request.user.is_superuser %} · System Admin{% else %} · ERP Operator{% endif %}</small></span>
+        <div class="topbar-actions">
+          <button class="organization-chip" type="button" data-organization-open>
+            <span class="organization-chip-icon">⌘</span>
+            <span>
+              <small>Active organization</small>
+              <strong>{% if active_company %}{{ active_company.name }}{% if active_companies|length > 1 %} +{{ active_companies|length|add:"-1" }} selected{% endif %}{% else %}No company access{% endif %}</strong>
+              <em>{% if active_branch %}{{ active_branch.name }}{% if active_branches|length > 1 %} +{{ active_branches|length|add:"-1" }} selected{% endif %}{% else %}No active branch{% endif %}</em>
+            </span>
+            <i>⌄</i>
+          </button>
+          <div class="user-chip">
+            <span class="avatar">{{ request.user.username|slice:":1"|upper }}</span>
+            <span><strong>{{ request.user.get_full_name|default:request.user.username }}</strong><small>{{ request.user.username }}{% if request.user.is_superuser %} · System Admin{% else %} · ERP Operator{% endif %}</small></span>
+          </div>
         </div>
       </header>
 
@@ -123,6 +145,60 @@
         {% block content %}{% endblock %}
       </section>
     </main>
+  </div>
+
+  <div
+    class="organization-switcher"
+    id="organization-switcher"
+    data-options-url="{% url 'organization:options' %}"
+    data-select-url="{% url 'organization:select' %}"
+    hidden
+  >
+    <button class="organization-switcher-backdrop" type="button" data-organization-close aria-label="Close organization switcher"></button>
+    <section class="organization-switcher-dialog" role="dialog" aria-modal="true" aria-labelledby="organization-switcher-title">
+      <header class="organization-switcher-head">
+        <div class="organization-switcher-title">
+          <span>ORG</span>
+          <div><p class="eyebrow">Data scope</p><h2 id="organization-switcher-title">Company & branch</h2></div>
+        </div>
+        <button class="organization-switcher-close" type="button" data-organization-close aria-label="Close">×</button>
+      </header>
+      <div class="organization-switcher-body">
+        <aside class="organization-company-pane">
+          <label class="organization-search">
+            <span>⌕</span>
+            <input type="search" data-company-search placeholder="Search company…" autocomplete="off">
+          </label>
+          <div class="organization-company-list" data-company-list>
+            <div class="organization-empty">Loading company access…</div>
+          </div>
+        </aside>
+        <section class="organization-branch-pane">
+          <div class="organization-selection-head">
+            <p class="eyebrow">Operating context</p>
+            <h3 data-selection-title>Choose organization</h3>
+            <p data-selection-subtitle>Select multiple branches. The first branch inside the active company becomes the default.</p>
+          </div>
+          <div class="organization-branch-list" data-branch-list>
+            <div class="organization-empty">Select a company to see its branches.</div>
+          </div>
+          <div class="organization-scope-note">
+            <span>i</span>
+            <p><strong>Primary + selected scope</strong><small>One company remains active as the form default. Lists and form choices follow every selected company and branch.</small></p>
+          </div>
+        </section>
+      </div>
+      <footer class="organization-switcher-foot">
+        <div class="organization-switcher-meta">
+          <p class="organization-feedback" data-organization-feedback>Choose the context you want to work in.</p>
+          <nav aria-label="Organization master data">
+            <a href="{% url 'entity_list' 'companies' %}">Master Company</a>
+            <a href="{% url 'entity_list' 'branches' %}">Master Branch</a>
+          </nav>
+        </div>
+        <div><button class="btn btn-secondary" type="button" data-organization-close>Cancel</button><button class="btn btn-primary" type="button" data-organization-save disabled>Apply context</button></div>
+      </footer>
+    </section>
   </div>
 
   <div class="application-switcher" id="application-switcher" hidden>
@@ -239,5 +315,8 @@
       });
     })();
   </script>
+  <script src="{% static 'js/organization-context.js' %}"></script>
+  <script src="{% static 'js/organization-form-scope.js' %}"></script>
+  {% if can_use_developer_mode %}<script src="{% static 'js/developer-mode.js' %}"></script>{% endif %}
 </body>
 </html>

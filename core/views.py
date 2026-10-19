@@ -178,6 +178,10 @@ from modules.operations.models import (
 from modules.pos.models import KitchenTicket, POSOrder, POSOrderLine, POSRegister, POSSession, RestaurantTable
 from modules.pos.entity_config import POS_DOCUMENT_CONFIG, POS_ENTITY_CONFIG
 from modules.pos.access import can_pos_entity_action, can_pos_workflow_action, scope_pos_form, scope_pos_queryset
+from modules.organization.context import scope_form as scope_organization_form
+from modules.organization.context import scope_queryset as scope_organization_queryset
+from modules.organization.forms import BranchForm
+from modules.organization.models import Branch
 from modules.apphub.models import ERPApp
 from modules.apphub.workspaces import ENTITY_APP_MAP
 from modules.hr.access import can_hr_entity_action, can_hr_workflow_action, scope_hr_form, scope_hr_queryset
@@ -275,6 +279,21 @@ ENTITY_CONFIG = {
         "columns": [("code", "Code"), ("name", "Company"), ("currency", "Currency"), ("active", "Active")],
         "search": ["code", "name", "email"],
     },
+    "branches": {
+        "model": Branch,
+        "form": BranchForm,
+        "title": "Branches",
+        "singular": "Branch",
+        "columns": [
+            ("code", "Code"),
+            ("name", "Branch"),
+            ("company", "Company"),
+            ("parent", "Parent"),
+            ("is_main", "Main"),
+            ("active", "Active"),
+        ],
+        "search": ["code", "name", "company__name", "email", "phone"],
+    },
     "contacts": {
         "model": Contact,
         "form": ContactForm,
@@ -296,7 +315,7 @@ ENTITY_CONFIG = {
         "form": WarehouseForm,
         "title": "Warehouses",
         "singular": "Warehouse",
-        "columns": [("code", "Code"), ("name", "Warehouse"), ("company", "Company"), ("active", "Active")],
+        "columns": [("code", "Code"), ("name", "Warehouse"), ("company", "Company"), ("branch", "Branch"), ("active", "Active")],
         "search": ["code", "name"],
     },
     "stock-moves": {
@@ -2022,7 +2041,12 @@ def _scope_queryset(user, entity, queryset):
     queryset = scope_purchase_queryset(user, entity, queryset)
     queryset = scope_construction_queryset(user, entity, queryset)
     queryset = scope_pos_queryset(user, entity, queryset)
-    return scope_accounting_queryset(user, entity, queryset)
+    queryset = scope_accounting_queryset(user, entity, queryset)
+    return scope_organization_queryset(
+        queryset,
+        include_branch=entity != "branches",
+        use_allowed_companies=entity == "companies",
+    )
 
 
 def _scope_form(form, user, entity):
@@ -2030,7 +2054,8 @@ def _scope_form(form, user, entity):
     scope_purchase_form(form, user, entity)
     scope_construction_form(form, user, entity)
     scope_pos_form(form, user, entity)
-    return scope_accounting_form(form, user, entity)
+    scope_accounting_form(form, user, entity)
+    return scope_organization_form(form, include_branch=entity != "branches")
 
 
 def _can_workflow(user, entity, action, instance):
@@ -2206,7 +2231,7 @@ def product_search(request):
     if not _can(request.user, "view", Product, "products"):
         return JsonResponse({"detail": "Anda tidak memiliki akses ke master produk."}, status=403)
 
-    products = Product.objects.filter(active=True)
+    products = _scope_queryset(request.user, "products", Product.objects.filter(active=True))
     product_id = request.GET.get("id", "").strip()
     query = request.GET.get("q", "").strip()[:100]
     if product_id.isdigit():
@@ -2227,10 +2252,10 @@ def customer_search(request):
     if not _can(request.user, "view", Contact, "contacts"):
         return JsonResponse({"detail": "Anda tidak memiliki akses ke master customer."}, status=403)
 
-    customers = Contact.objects.filter(
+    customers = _scope_queryset(request.user, "contacts", Contact.objects.filter(
         active=True,
         contact_type__in=[Contact.ContactType.CUSTOMER, Contact.ContactType.BOTH],
-    )
+    ))
     customer_id = request.GET.get("id", "").strip()
     query = request.GET.get("q", "").strip()[:100]
     if customer_id.isdigit():
@@ -2250,9 +2275,12 @@ def dashboard(request):
     today = timezone.localdate()
     visible_employees = _scope_queryset(request.user, "employees", Employee.objects.all())
     visible_attendance = _scope_queryset(request.user, "attendance", Attendance.objects.all())
-    sales_total = SaleOrder.objects.exclude(status=SaleOrder.Status.CANCELLED).aggregate(value=Sum("total"))["value"] or 0
+    visible_sales = _scope_queryset(request.user, "sales", SaleOrder.objects.all())
+    visible_invoices = _scope_queryset(request.user, "invoices", Invoice.objects.all())
+    visible_products = _scope_queryset(request.user, "products", Product.objects.all())
+    sales_total = visible_sales.exclude(status=SaleOrder.Status.CANCELLED).aggregate(value=Sum("total"))["value"] or 0
     receivables = (
-        Invoice.objects.filter(invoice_type=Invoice.InvoiceType.CUSTOMER)
+        visible_invoices.filter(invoice_type=Invoice.InvoiceType.CUSTOMER)
         .exclude(status__in=[Invoice.Status.PAID, Invoice.Status.CANCELLED])
         .aggregate(value=Sum(F("total") - F("paid_amount")))["value"]
         or 0
@@ -2262,13 +2290,13 @@ def dashboard(request):
         "metrics": [
             {"label": "Sales Value", "value": sales_total, "kind": "currency", "tone": "emerald"},
             {"label": "Receivables", "value": receivables, "kind": "currency", "tone": "amber"},
-            {"label": "Active Products", "value": Product.objects.filter(active=True).count(), "tone": "blue"},
+            {"label": "Active Products", "value": visible_products.filter(active=True).count(), "tone": "blue"},
             {"label": "Employees", "value": visible_employees.filter(status=Employee.Status.ACTIVE).count(), "tone": "violet"},
         ],
-        "recent_sales": SaleOrder.objects.select_related("customer").all()[:6],
-        "low_stock": Product.objects.filter(active=True, product_type=Product.ProductType.STOCKABLE, current_stock__lte=F("reorder_level"))[:6],
+        "recent_sales": visible_sales.select_related("customer")[:6],
+        "low_stock": visible_products.filter(active=True, product_type=Product.ProductType.STOCKABLE, current_stock__lte=F("reorder_level"))[:6],
         "today_attendance": visible_attendance.filter(attendance_date=today).count(),
-        "company_count": Company.objects.filter(active=True).count(),
+        "company_count": len(request.organization_context.allowed_company_ids),
     }
     return render(request, "core/dashboard.html", context)
 
@@ -2351,6 +2379,7 @@ def entity_create(request, entity):
         if isinstance(instance, StockMove):
             instance.created_by = request.user
         instance.save()
+        form.save_m2m()
         messages.success(request, f"{config['singular']} created successfully.")
         return redirect("entity_list", entity=entity)
     return render(request, "core/entity_form.html", {"form": form, "config": config, "entity": entity, "mode": "Create"})

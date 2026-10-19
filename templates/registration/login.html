@@ -28,6 +28,11 @@
         <p class="eyebrow">Welcome back</p>
         <h2>Sign in to ERP GSSHOP</h2>
         <p class="muted">Use your operator account to continue.</p>
+        <div class="login-database">
+          <span>Selected database</span>
+          <strong>{{ request.database_name }}</strong>
+          <a href="{% url 'database_manager' %}">Switch</a>
+        </div>
         {% if form.errors %}<div class="message error">Username or password is incorrect.</div>{% endif %}
         <label for="id_username">Username</label>
         <input class="form-control" id="id_username" type="text" name="username" autofocus autocomplete="username" required>
@@ -40,4 +45,3 @@
   </main>
 </body>
 </html>
-

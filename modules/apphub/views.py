@@ -42,6 +42,19 @@ def _return_url(request, fallback="app_manager"):
     return reverse(fallback)
 
 
+@require_POST
+@login_required
+def set_developer_mode(request):
+    if not request.user.is_staff or not request.user.has_perm("auth.view_permission"):
+        messages.error(request, "Developer Mode requires technical administration permission.")
+        return redirect(_return_url(request))
+    enabled = request.POST.get("enabled") == "1"
+    request.session["developer_mode"] = enabled
+    request.session.modified = True
+    messages.success(request, f"Developer Mode {'enabled' if enabled else 'disabled'}.")
+    return redirect(_return_url(request))
+
+
 @login_required
 def app_manager(request):
     query = request.GET.get("q", "").strip()

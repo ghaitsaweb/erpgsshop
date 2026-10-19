@@ -2,6 +2,7 @@ from collections import OrderedDict
 import csv
 
 from django.contrib import messages
+from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
 from django.core.management import CommandError, call_command
 from django.db import DatabaseError, transaction
@@ -14,6 +15,16 @@ from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_POST
 
 from .discovery import AddonManifestError
+from .access import can_access_app
+from .developer_mode import (
+    DEVELOPER_ACTOR_SESSION_KEY,
+    DEVELOPER_IMPERSONATED_SESSION_KEY,
+    DEVELOPER_MODE_SESSION_KEY,
+    begin_profile_switch,
+    clear_developer_session,
+    developer_mode_is_active,
+    restore_actor_organization_context,
+)
 from .models import ERPApp
 from .upgrade import django_labels_for, execute_upgrade, pending_migration_plan, upgrade_target_apps
 from .workspaces import (
@@ -42,16 +53,69 @@ def _return_url(request, fallback="app_manager"):
     return reverse(fallback)
 
 
+def _app_access_denied(request):
+    messages.error(request, "You do not have access to this application. Ask an administrator to assign the appropriate Group.")
+    return redirect("dashboard")
+
+
 @require_POST
 @login_required
 def set_developer_mode(request):
-    if not request.user.is_staff or not request.user.has_perm("auth.view_permission"):
-        messages.error(request, "Developer Mode requires technical administration permission.")
+    actor = getattr(request, "developer_actor", request.user)
+    if not actor.is_superuser:
+        messages.error(request, "Developer Mode can only be activated by a Super Admin.")
         return redirect(_return_url(request))
     enabled = request.POST.get("enabled") == "1"
-    request.session["developer_mode"] = enabled
+    if enabled:
+        request.session[DEVELOPER_MODE_SESSION_KEY] = True
+        request.session[DEVELOPER_ACTOR_SESSION_KEY] = actor.pk
+        request.session.pop(DEVELOPER_IMPERSONATED_SESSION_KEY, None)
+    else:
+        restore_actor_organization_context(request.session)
+        clear_developer_session(request.session)
     request.session.modified = True
-    messages.success(request, f"Developer Mode {'enabled' if enabled else 'disabled'}.")
+    if enabled:
+        messages.success(request, "Developer Mode enabled. Use Inspect UI when you want to inspect a field or object.")
+    else:
+        messages.success(request, "Developer Mode disabled.")
+    return redirect(_return_url(request))
+
+
+@require_POST
+@login_required
+def switch_developer_profile(request):
+    actor = getattr(request, "developer_actor", request.user)
+    if not actor.is_superuser or not developer_mode_is_active(request, actor):
+        messages.error(request, "Switch Profile is available only to the Super Admin while Developer Mode is active.")
+        return redirect(_return_url(request))
+
+    profile_id = request.POST.get("user_id", "").strip()
+    if not profile_id:
+        restore_actor_organization_context(request.session)
+        request.session.pop(DEVELOPER_IMPERSONATED_SESSION_KEY, None)
+        request.session.modified = True
+        messages.success(request, "Back to your Super Admin profile.")
+        return redirect(_return_url(request))
+
+    try:
+        profile_id = int(profile_id)
+    except (TypeError, ValueError):
+        messages.error(request, "The selected profile is invalid.")
+        return redirect(_return_url(request))
+
+    profile = get_user_model().objects.filter(pk=profile_id, is_active=True).first()
+    if profile is None:
+        messages.error(request, "The selected user is no longer active.")
+    elif profile.pk == actor.pk:
+        restore_actor_organization_context(request.session)
+        request.session.pop(DEVELOPER_IMPERSONATED_SESSION_KEY, None)
+        request.session.modified = True
+        messages.success(request, "Back to your Super Admin profile.")
+    else:
+        begin_profile_switch(request.session)
+        request.session[DEVELOPER_IMPERSONATED_SESSION_KEY] = profile.pk
+        request.session.modified = True
+        messages.success(request, f"You are now viewing the full access of {profile.get_username()}.")
     return redirect(_return_url(request))
 
 
@@ -66,18 +130,18 @@ def app_manager(request):
             | Q(summary__icontains=query)
             | Q(slug__icontains=query)
         )
-    apps = list(queryset)
+    apps = [app for app in queryset if can_access_app(request.user, app.slug)]
     groups = OrderedDict()
     for app in apps:
         app.launch_url = _workspace_url(app)
         groups.setdefault(app.category, []).append(app)
-    summary = ERPApp.objects.aggregate(
-        total=Count("id"),
-        stable=Count("id", filter=Q(status=ERPApp.Status.STABLE)),
-        beta=Count("id", filter=Q(status=ERPApp.Status.BETA)),
-        planned=Count("id", filter=Q(status=ERPApp.Status.PLANNED)),
-        enabled=Count("id", filter=Q(enabled=True)),
-    )
+    summary = {
+        "total": len(apps),
+        "stable": sum(app.status == ERPApp.Status.STABLE for app in apps),
+        "beta": sum(app.status == ERPApp.Status.BETA for app in apps),
+        "planned": sum(app.status == ERPApp.Status.PLANNED for app in apps),
+        "enabled": sum(app.enabled for app in apps),
+    }
     return render(
         request,
         "apphub/manager.html",
@@ -172,6 +236,8 @@ def upgrade_application(request, slug):
 @login_required
 def app_workspace(request, slug):
     app = get_object_or_404(ERPApp, slug=slug)
+    if not can_access_app(request.user, app.slug):
+        return _app_access_denied(request)
     request.session["active_erp_app"] = slug
     recent_apps = [item for item in request.session.get("recent_erp_apps", []) if item != slug]
     request.session["recent_erp_apps"] = [slug, *recent_apps][:6]
@@ -225,7 +291,11 @@ def app_workspace(request, slug):
                 )[:5]
             )
 
-    related_apps = ERPApp.objects.filter(category=app.category).exclude(pk=app.pk)[:5]
+    related_apps = [
+        related_app
+        for related_app in ERPApp.objects.filter(category=app.category).exclude(pk=app.pk)
+        if can_access_app(request.user, related_app.slug)
+    ][:5]
     dependencies = ERPApp.objects.filter(slug__in=app.dependencies).order_by("name")
     return render(
         request,
@@ -250,6 +320,8 @@ def hr_feature(request, feature):
         raise Http404("Human Resources feature not found.")
 
     app = get_object_or_404(ERPApp, slug="hr")
+    if not can_access_app(request.user, app.slug):
+        return _app_access_denied(request)
     request.session["active_erp_app"] = "hr"
     recent_apps = [item for item in request.session.get("recent_erp_apps", []) if item != "hr"]
     request.session["recent_erp_apps"] = ["hr", *recent_apps][:6]
@@ -274,6 +346,8 @@ def accounting_feature(request, feature):
     if definition is None:
         raise Http404("Accounting feature not found.")
     app = get_object_or_404(ERPApp, slug="accounting")
+    if not can_access_app(request.user, app.slug):
+        return _app_access_denied(request)
     request.session["active_erp_app"] = "accounting"
     if not app.enabled:
         messages.info(request, "Install Accounting to open this feature.")
@@ -297,6 +371,8 @@ def accounting_feature_export(request, feature):
     if item is None:
         raise Http404("Accounting feature not found.")
     app = get_object_or_404(ERPApp, slug="accounting", enabled=True)
+    if not can_access_app(request.user, app.slug):
+        return _app_access_denied(request)
     analytics = build_accounting_analytics(feature, request.user)
     if analytics is None:
         raise Http404("Accounting analytics not found.")
@@ -320,7 +396,9 @@ def _accounting_export_data(request, feature):
     _group, item = find_menu_feature("accounting", feature)
     if item is None:
         raise Http404("Accounting feature not found.")
-    get_object_or_404(ERPApp, slug="accounting", enabled=True)
+    app = get_object_or_404(ERPApp, slug="accounting", enabled=True)
+    if not can_access_app(request.user, app.slug):
+        return None, None
     analytics = build_accounting_analytics(feature, request.user)
     if analytics is None:
         raise Http404("Accounting analytics not found.")
@@ -330,6 +408,8 @@ def _accounting_export_data(request, feature):
 @login_required
 def accounting_feature_export_pdf(request, feature):
     title, analytics = _accounting_export_data(request, feature)
+    if title is None:
+        return _app_access_denied(request)
     response = HttpResponse(render_analytics_pdf(title, analytics), content_type="application/pdf")
     response["Content-Disposition"] = f'attachment; filename="accounting-{feature}.pdf"'
     response["X-Content-Type-Options"] = "nosniff"
@@ -339,6 +419,8 @@ def accounting_feature_export_pdf(request, feature):
 @login_required
 def accounting_feature_export_excel(request, feature):
     title, analytics = _accounting_export_data(request, feature)
+    if title is None:
+        return _app_access_denied(request)
     response = HttpResponse(
         render_analytics_excel(title, analytics),
         content_type="application/vnd.ms-excel; charset=utf-8",
@@ -367,6 +449,8 @@ def purchase_feature(request, feature):
         raise Http404("Purchase feature not found.")
 
     app = get_object_or_404(ERPApp, slug="purchase")
+    if not can_access_app(request.user, app.slug):
+        return _app_access_denied(request)
     request.session["active_erp_app"] = "purchase"
     if not app.enabled:
         messages.info(request, "Install Purchase to open this feature.")
@@ -390,6 +474,8 @@ def construction_feature(request, feature):
         raise Http404("Construction feature not found.")
 
     app = get_object_or_404(ERPApp, slug="construction")
+    if not can_access_app(request.user, app.slug):
+        return _app_access_denied(request)
     request.session["active_erp_app"] = "construction"
     if not app.enabled:
         messages.info(request, "Install Construction to open this feature.")
@@ -412,6 +498,8 @@ def _pos_feature(request, feature, app_slug, analytics_builder):
         raise Http404("Retail/F&B feature not found.")
 
     app = get_object_or_404(ERPApp, slug=app_slug)
+    if not can_access_app(request.user, app.slug):
+        return _app_access_denied(request)
     request.session["active_erp_app"] = app_slug
     if not app.enabled:
         messages.info(request, f"Install {app.name} to open this feature.")

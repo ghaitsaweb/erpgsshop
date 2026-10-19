@@ -1,11 +1,13 @@
 {% extends "base.html" %}
+{% load gsshop_developer %}
 {% block title %}{{ mode }} {{ config.singular }} · ERP GSSHOP{% endblock %}
 {% block page_title %}{{ config.singular }}{% endblock %}
 {% block content %}
   <div class="document-shell">
     <header class="document-commandbar">
       <div class="document-actions">
-        <a class="btn btn-secondary" href="{% url 'entity_list' entity %}">Back</a>
+        <a class="btn btn-secondary" href="{% url 'entity_list' entity %}">Cancel</a>
+        {% if editable %}<button form="document-record-form" class="btn btn-primary" type="submit">Save {{ config.singular }}</button>{% endif %}
         {% if object %}<a class="btn btn-secondary" href="{% url 'document_pdf' entity object.pk %}" target="_blank" rel="noopener">Print PDF</a>{% endif %}
         {% for action in available_actions %}
           <form method="post" action="{% url 'document_action' entity object.pk action.key %}">
@@ -23,7 +25,7 @@
       {% endif %}
     </header>
 
-    <form method="post" enctype="multipart/form-data" class="document-form">
+    <form id="document-record-form" method="post" enctype="multipart/form-data" class="document-form" data-dev-object data-dev-entity="{{ developer_meta.entity }}" data-dev-model="{{ developer_meta.model }}" data-dev-table="{{ developer_meta.table }}" data-dev-object-id="{{ developer_meta.object_id }}" data-dev-object-name="{{ developer_meta.object_name }}">
       {% csrf_token %}
       {% for section in line_sections %}{{ section.formset.management_form }}{% endfor %}
       {% if form.non_field_errors %}<div class="message error">{{ form.non_field_errors }}</div>{% endif %}
@@ -40,7 +42,8 @@
 
         <div class="document-header-grid">
           {% for field in form %}
-            <div class="field {% if field.field.widget.input_type == 'checkbox' %}field-checkbox{% endif %}">
+            {% developer_field field config.model as field_meta %}
+            <div class="field {% if field.field.widget.input_type == 'checkbox' %}field-checkbox{% endif %}" data-dev-field="{{ field_meta.name }}" data-dev-field-label="{{ field_meta.label }}" data-dev-field-type="{{ field_meta.type }}" data-dev-field-column="{{ field_meta.column }}" data-dev-field-relation="{{ field_meta.relation }}" data-dev-field-kind="{{ field_meta.kind }}" data-dev-required="{{ field_meta.required|yesno:'true,false' }}">
               <label for="{{ field.id_for_label }}">{{ field.label }}{% if field.field.required %}<span class="required">*</span>{% endif %}</label>
               {{ field }}
               {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
@@ -49,22 +52,23 @@
         </div>
 
         {% for section in line_sections %}
-        <section class="document-lines" data-line-section="{{ section.index }}" data-line-prefix="{{ section.prefix }}">
+        <section class="document-lines" data-line-section="{{ section.index }}" data-line-prefix="{{ section.prefix }}" data-dev-model="{{ section.developer_meta.model }}" data-dev-table="{{ section.developer_meta.table }}" data-dev-entity="{{ section.developer_meta.entity }}">
           <div class="document-tabbar"><span class="active">{{ section.line_title }}</span>{% if forloop.first %}<span>Other Information</span>{% endif %}</div>
           <div class="line-table-wrap">
             <table class="line-table">
               <thead>
                 <tr>
-                  {% for field in section.formset.empty_form.visible_fields %}<th>{{ field.label }}</th>{% endfor %}
+                  {% for field in section.formset.empty_form.visible_fields %}{% developer_field field section.line_model as field_meta %}<th data-dev-field="{{ field_meta.name }}" data-dev-field-label="{{ field_meta.label }}" data-dev-field-type="{{ field_meta.type }}" data-dev-field-column="{{ field_meta.column }}" data-dev-field-relation="{{ field_meta.relation }}" data-dev-field-kind="{{ field_meta.kind }}">{{ field.label }}</th>{% endfor %}
                   {% if editable %}<th class="line-action-column">Action</th>{% endif %}
                 </tr>
               </thead>
               <tbody data-document-line-body>
                 {% for line_form in section.formset.forms %}
-                  <tr class="document-line-row">
+                  <tr class="document-line-row" data-dev-object data-dev-entity="{{ section.developer_meta.entity }}" data-dev-model="{{ section.developer_meta.model }}" data-dev-table="{{ section.developer_meta.table }}" data-dev-object-id="{{ line_form.instance.pk|default:'' }}" data-dev-object-name="{{ section.line_title }}">
                     {% for hidden in line_form.hidden_fields %}{{ hidden }}{% endfor %}
                     {% for field in line_form.visible_fields %}
-                      <td class="{% if field.name == 'DELETE' %}delete-field{% endif %}">
+                      {% developer_field field section.line_model as field_meta %}
+                      <td class="{% if field.name == 'DELETE' %}delete-field{% endif %}" data-dev-field="{{ field_meta.name }}" data-dev-field-label="{{ field_meta.label }}" data-dev-field-type="{{ field_meta.type }}" data-dev-field-column="{{ field_meta.column }}" data-dev-field-relation="{{ field_meta.relation }}" data-dev-field-kind="{{ field_meta.kind }}" data-dev-required="{{ field_meta.required|yesno:'true,false' }}">
                         {{ field }}
                         {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
                       </td>
@@ -87,7 +91,6 @@
 
         <footer class="document-footer">
           <p>{% if editable %}Save the header and all detail lines together.{% else %}This document is locked. Use an available workflow action to continue.{% endif %}</p>
-          {% if editable %}<button class="btn btn-primary" type="submit">Save {{ config.singular }}</button>{% endif %}
         </footer>
       </section>
     </form>

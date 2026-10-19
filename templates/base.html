@@ -9,7 +9,7 @@
   <link rel="icon" href="{% static 'img/logo.svg' %}" type="image/svg+xml">
   <link rel="stylesheet" href="{% static 'css/app.css' %}">
 </head>
-<body data-developer-mode="{% if developer_mode %}true{% else %}false{% endif %}" data-current-route="{{ request.resolver_match.view_name|default:'' }}" data-current-app="{{ active_app_slug|default:'' }}">
+<body data-developer-mode="{% if developer_mode %}true{% else %}false{% endif %}" data-current-route="{{ request.resolver_match.view_name|default:'' }}" data-current-app="{{ active_app_slug|default:'' }}" data-current-entity="{{ developer_page_meta.entity|default:'' }}" data-current-model="{{ developer_page_meta.model|default:'' }}" data-current-table="{{ developer_page_meta.table|default:'' }}" data-current-object-id="{{ developer_page_meta.object_id|default:'' }}">
   <div class="app-shell">
     <aside class="sidebar">
       <a class="brand" href="{% url 'dashboard' %}">
@@ -252,6 +252,46 @@
       </footer>
     </section>
   </div>
+  {% if developer_mode %}
+    <aside class="developer-toolbar" data-developer-toolbar aria-label="Developer tools">
+      <div class="developer-toolbar-status">
+        <strong>DEV MODE</strong>
+        <small>{% if developer_impersonating %}Viewing as {{ request.user.get_username }}{% elif developer_page_meta.model %}{{ developer_page_meta.model }}{% else %}Technical tools{% endif %}</small>
+      </div>
+      <button type="button" class="btn btn-secondary" data-developer-inspect aria-pressed="false">Inspect UI</button>
+      {% if developer_impersonating %}
+        <form method="post" action="{% url 'developer_switch_profile' %}">
+          {% csrf_token %}
+          <input type="hidden" name="next" value="{{ request.get_full_path }}">
+          <button type="submit" class="btn btn-secondary">Back to My Profile</button>
+        </form>
+      {% else %}
+        <details class="developer-profile-menu">
+          <summary>Switch Profile</summary>
+          <form method="post" action="{% url 'developer_switch_profile' %}" class="developer-profile-popover">
+            {% csrf_token %}
+            <input type="hidden" name="next" value="{{ request.get_full_path }}">
+            <label for="developer-profile-user">Login as</label>
+            <select id="developer-profile-user" name="user_id">
+              <option value="">My profile ({{ developer_actor.get_username }})</option>
+              {% for profile_user in developer_switchable_users %}
+                {% if profile_user.pk != developer_actor.pk %}
+                  <option value="{{ profile_user.pk }}">{{ profile_user.username }}{% if profile_user.email %} · {{ profile_user.email }}{% endif %}</option>
+                {% endif %}
+              {% endfor %}
+            </select>
+            <button type="submit" class="btn btn-secondary">Login as</button>
+          </form>
+        </details>
+      {% endif %}
+      <form method="post" action="{% url 'developer_mode' %}" data-developer-mode-disable>
+        {% csrf_token %}
+        <input type="hidden" name="enabled" value="0">
+        <input type="hidden" name="next" value="{{ request.get_full_path }}">
+        <button type="submit" class="developer-mode-off" title="Disable Developer Mode">×</button>
+      </form>
+    </aside>
+  {% endif %}
   <script>
     (() => {
       const input = document.getElementById('menu-search-input');

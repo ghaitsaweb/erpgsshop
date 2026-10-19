@@ -3,6 +3,7 @@
 from django.db.models import Avg, Count, Sum
 
 from core.models import PurchaseOrder
+from modules.organization.context import scope_queryset as scope_organization_queryset
 
 from .access import scope_purchase_queryset
 from .models import (
@@ -33,7 +34,7 @@ ANALYTIC_FEATURES = {
 
 
 def _scoped(user, entity, model):
-    return scope_purchase_queryset(user, entity, model.objects.all())
+    return scope_organization_queryset(scope_purchase_queryset(user, entity, model.objects.all()))
 
 
 def _metric(label, value, detail, tone="blue"):

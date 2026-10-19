@@ -250,6 +250,25 @@ class ERPIntegrityTests(TestCase):
         self.assertEqual(large_response.status_code, 200)
         self.assertEqual(len(small_context), len(large_context))
 
+    def test_standard_list_has_client_controls_and_click_through_rows(self):
+        self.client.force_login(self.user)
+
+        list_response = self.client.get("/app/products/")
+
+        self.assertEqual(list_response.status_code, 200)
+        self.assertContains(list_response, "data-list-controls")
+        self.assertContains(list_response, "data-list-group-field")
+        self.assertContains(list_response, "js/entity-list.js")
+        self.assertContains(list_response, f'data-record-url="/app/products/{self.product.pk}/edit/"')
+        self.assertNotContains(list_response, ">Edit</a>")
+
+        form_response = self.client.get(f"/app/products/{self.product.pk}/edit/")
+
+        self.assertEqual(form_response.status_code, 200)
+        self.assertContains(form_response, "form-commandbar")
+        self.assertContains(form_response, "Save Product")
+        self.assertContains(form_response, ">Cancel</a>")
+
     def test_dashboard_and_module_pages_render(self):
         call_command("sync_apps", verbosity=0)
         self.client.force_login(self.user)

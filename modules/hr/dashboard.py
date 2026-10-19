@@ -7,6 +7,7 @@ from django.utils import timezone
 
 from core.models import Attendance, Employee
 from modules.finance.models import ExpenseClaim, Loan
+from modules.organization.context import scope_queryset as scope_organization_queryset
 
 from .access import scope_hr_queryset
 from .models import (
@@ -42,7 +43,7 @@ ANALYTIC_FEATURES = {
 
 
 def _scoped(user, entity, model):
-    return scope_hr_queryset(user, entity, model.objects.all())
+    return scope_organization_queryset(scope_hr_queryset(user, entity, model.objects.all()))
 
 
 def _status_rows(queryset):

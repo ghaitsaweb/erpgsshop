@@ -3,6 +3,7 @@ from collections import OrderedDict
 from django.db.utils import OperationalError, ProgrammingError
 from django.urls import reverse
 
+from modules.apphub.access import can_access_app
 from modules.apphub.models import ERPApp
 from modules.apphub.workspaces import (
     ENTITY_APP_MAP,
@@ -39,7 +40,11 @@ def navigation(request):
     apps_by_slug = {}
     installed_apps = []
     try:
-        installed_apps = list(ERPApp.objects.filter(enabled=True).order_by("category", "sequence", "name"))
+        installed_apps = [
+            app
+            for app in ERPApp.objects.filter(enabled=True).order_by("category", "sequence", "name")
+            if can_access_app(request.user, app.slug)
+        ]
         apps_by_slug = {app.slug: app for app in installed_apps}
     except (OperationalError, ProgrammingError):
         pass

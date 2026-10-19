@@ -19,7 +19,7 @@
     </div>
     <div class="module-hero-actions">
       {% if app.slug == 'foundation' and can_use_developer_mode %}
-        <form method="post" action="{% url 'developer_mode' %}" class="developer-mode-toggle">
+        <form method="post" action="{% url 'developer_mode' %}" class="developer-mode-toggle" data-developer-mode-toggle>
           {% csrf_token %}
           <input type="hidden" name="enabled" value="{% if developer_mode %}0{% else %}1{% endif %}">
           <input type="hidden" name="next" value="{% url 'app_workspace' app.slug %}">

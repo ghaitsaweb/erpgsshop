@@ -1,24 +1,29 @@
 {% extends "base.html" %}
+{% load gsshop_developer %}
 {% block title %}{{ mode }} {{ config.singular }} · ERP GSSHOP{% endblock %}
 {% block page_title %}{{ mode }} {{ config.singular }}{% endblock %}
 {% block content %}
   <div class="form-layout">
-    <form method="post" enctype="multipart/form-data" class="panel form-panel">
+    <form method="post" enctype="multipart/form-data" class="panel form-panel" data-dev-object data-dev-entity="{{ developer_meta.entity }}" data-dev-model="{{ developer_meta.model }}" data-dev-table="{{ developer_meta.table }}" data-dev-object-id="{{ developer_meta.object_id }}" data-dev-object-name="{{ developer_meta.object_name }}">
       {% csrf_token %}
+      <header class="form-commandbar">
+        <span>{{ mode }} {{ config.singular }}</span>
+        <div class="form-command-actions">
+          <a class="btn btn-secondary" href="{% url 'entity_list' entity %}">Cancel</a>
+          {% if workflow_locked %}<span class="document-state status-{{ current_status }}">Locked · {{ current_status|title }}</span>{% else %}<button class="btn btn-primary" type="submit">Save {{ config.singular }}</button>{% endif %}
+        </div>
+      </header>
       {% if form.non_field_errors %}<div class="message error">{{ form.non_field_errors }}</div>{% endif %}
       <div class="form-grid">
         {% for field in form %}
-          <div class="field {% if field.field.widget.input_type == 'checkbox' %}field-checkbox{% endif %}">
+          {% developer_field field config.model as field_meta %}
+          <div class="field {% if field.field.widget.input_type == 'checkbox' %}field-checkbox{% endif %}" data-dev-field="{{ field_meta.name }}" data-dev-field-label="{{ field_meta.label }}" data-dev-field-type="{{ field_meta.type }}" data-dev-field-column="{{ field_meta.column }}" data-dev-field-relation="{{ field_meta.relation }}" data-dev-field-kind="{{ field_meta.kind }}" data-dev-required="{{ field_meta.required|yesno:'true,false' }}">
             <label for="{{ field.id_for_label }}">{{ field.label }}{% if field.field.required %}<span class="required">*</span>{% endif %}</label>
             {{ field }}
             {% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}
             {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
           </div>
         {% endfor %}
-      </div>
-      <div class="form-actions">
-        <a class="btn btn-secondary" href="{% url 'entity_list' entity %}">Cancel</a>
-        {% if workflow_locked %}<span class="document-state status-{{ current_status }}">Locked · {{ current_status|title }}</span>{% else %}<button class="btn btn-primary" type="submit">Save {{ config.singular }}</button>{% endif %}
       </div>
     </form>
     <aside class="form-help">

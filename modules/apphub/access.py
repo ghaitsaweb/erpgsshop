@@ -1,23 +1,35 @@
-from functools import wraps
+from functools import lru_cache
 
-from django.contrib.auth.views import redirect_to_login
-from django.shortcuts import redirect
-
-from .models import ERPApp
+from .workspaces import APP_WORKSPACES, ENTITY_APP_MAP
 
 
-def enabled_app_required(app_slug):
-    """Protect an add-on view with authentication and installation state."""
+@lru_cache(maxsize=None)
+def app_entities(app_slug):
+    """Return every generic ERP entity that belongs to an application."""
+    workspace_entities = APP_WORKSPACES.get(app_slug, {}).get("entities", [])
+    mapped_entities = [entity for entity, owner in ENTITY_APP_MAP.items() if owner == app_slug]
+    return tuple(dict.fromkeys([*workspace_entities, *mapped_entities]))
 
-    def decorator(view):
-        @wraps(view)
-        def wrapped(request, *args, **kwargs):
-            if not request.user.is_authenticated:
-                return redirect_to_login(request.get_full_path())
-            if not ERPApp.objects.filter(slug=app_slug, enabled=True).exists():
-                return redirect("app_workspace", slug=app_slug)
-            return view(request, *args, **kwargs)
 
-        return wrapped
+def can_access_app(user, app_slug):
+    """Whether a user may open an ERP application workspace.
 
-    return decorator
+    Application access is derived from Django Groups and their model view
+    permissions. This keeps menu visibility and direct URLs aligned with the
+    existing CRUD authorization rules instead of maintaining a second list of
+    applications per user.
+    """
+    if not user or not user.is_authenticated:
+        return False
+    if user.is_superuser:
+        return True
+    if not user.groups.exists():
+        return False
+
+    from core.views import ENTITY_CONFIG, _can
+
+    return any(
+        entity in ENTITY_CONFIG
+        and _can(user, "view", ENTITY_CONFIG[entity]["model"], entity)
+        for entity in app_entities(app_slug)
+    )

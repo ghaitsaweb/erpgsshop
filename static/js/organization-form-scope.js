@@ -1,6 +1,8 @@
 (() => {
   const companyField = document.querySelector('form select[name="company"]');
-  const scopedFields = [...document.querySelectorAll('form select[name="branch"], form select[name="parent"]')];
+  const scopedFields = [...document.querySelectorAll(
+    'form select[name="branch"], form select[name="organization_branch"], form select[name="parent"]'
+  )];
   const switcher = document.getElementById('organization-switcher');
   if (!companyField || !scopedFields.length || !switcher?.dataset.optionsUrl) return;
 
@@ -34,7 +36,7 @@
           const previousOption = [...field.options].find((option) => option.value === previous && !option.disabled);
           if (previousOption) {
             field.value = previous;
-          } else if (field.name === 'branch') {
+          } else if (field.name === 'branch' || field.name === 'organization_branch') {
             field.value = selectedBranchIds.find((id) => branchCompany.get(id) === companyId && [...field.options].some((option) => option.value === id && !option.disabled)) || '';
           } else {
             field.value = '';

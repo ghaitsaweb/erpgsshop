@@ -9,6 +9,8 @@ from django.http import StreamingHttpResponse
 from django.shortcuts import render
 from django.utils import timezone
 
+from modules.organization.context import scope_queryset as scope_organization_queryset
+
 from .models import SaleOrderLine
 
 
@@ -18,12 +20,12 @@ class _Echo:
 
 
 def _rental_queryset(request):
-    queryset = SaleOrderLine.objects.filter(
+    queryset = scope_organization_queryset(SaleOrderLine.objects.filter(
         Q(odoo_source_id__isnull=False)
         | Q(rental_start_date__isnull=False)
         | Q(rental_return_date__isnull=False)
         | ~Q(rental_status="")
-    ).select_related("order", "order__customer", "product", "order__company")
+    )).select_related("order", "order__customer", "product", "order__company")
     query = request.GET.get("q", "").strip()
     status = request.GET.get("status", "all")
     urgency = request.GET.get("urgency", "all")

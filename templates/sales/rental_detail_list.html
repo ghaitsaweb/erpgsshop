@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load static %}
 {% block title %}Detail Sewa · ERP GSSHOP{% endblock %}
 {% block page_title %}Detail Sewa{% endblock %}
 {% block content %}
@@ -101,8 +102,8 @@
           {% else %}
             <tbody>
               {% for line in rows %}
-                <tr class="{% if line.is_overdue %}rental-overdue{% elif line.is_due_soon %}rental-due-soon{% endif %}">
-                  <td><a class="rental-order-link" href="{% url 'entity_edit' 'sales' line.order_id %}">{{ line.order.number }}</a><small>{{ line.order.order_date|date:"d M Y" }}</small></td>
+                <tr class="{% if line.is_overdue %}rental-overdue {% elif line.is_due_soon %}rental-due-soon {% endif %}{% if can_change %}record-row{% endif %}" {% if can_change %}data-record-url="{% url 'entity_edit' 'sales' line.order_id %}" tabindex="0" role="link" aria-label="Open {{ line.order.number }}"{% endif %}>
+                  <td><strong>{{ line.order.number }}</strong><small>{{ line.order.order_date|date:"d M Y" }}</small></td>
                   <td><strong>{{ line.order.customer.name }}</strong><small>{{ line.order.company.code }}</small></td>
                   <td><strong>{{ line.product.name|default:"Section / Note" }}</strong><small>{{ line.description }}</small></td>
                   <td>{{ line.quantity|floatformat:"-3" }}</td>
@@ -126,7 +127,6 @@
                   <td class="align-right rental-money">Rp {{ line.subtotal|floatformat:0 }}</td>
                   <td>
                     <div class="rental-row-actions">
-                      <a class="rental-open" href="{% url 'entity_edit' 'sales' line.order_id %}">Open Order →</a>
                       {% if can_delete %}
                         {% if line.odoo_source_id or line.order.status == 'draft' %}
                           <form method="post" action="{% url 'rental_line_delete' line.pk %}" onsubmit="return confirm('Hapus line ini dari {{ line.order.number|escapejs }}? Data impor Odoo dapat dipulihkan dengan impor ulang.');">
@@ -156,4 +156,5 @@
       {% endif %}
     </section>
   </div>
+  <script src="{% static 'js/entity-list.js' %}"></script>
 {% endblock %}

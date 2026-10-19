@@ -26,6 +26,7 @@ from .forms import (
     WarehouseForm,
     StyledModelForm,
 )
+from .developer import developer_field_metadata, developer_metadata
 from .models import (
     Attendance,
     Company,
@@ -2160,7 +2161,18 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
             prefix=prefix,
             queryset=line_queryset,
         )
-        line_sections.append({**section, "index": index, "prefix": prefix, "formset": formset})
+        line_sections.append(
+            {
+                **section,
+                "index": index,
+                "prefix": prefix,
+                "formset": formset,
+                "developer_meta": developer_metadata(
+                    section["line_model"],
+                    entity=f"{entity}:{section['line_relation']}",
+                ),
+            }
+        )
     formset = line_sections[0]["formset"]
     _scope_form(form, request.user, entity)
     for section in line_sections:
@@ -2221,6 +2233,7 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
         "status_choices": status_choices,
         "available_actions": available_actions,
         "totals": totals,
+        "developer_meta": developer_metadata(model, entity=entity, instance=instance),
     }
     return context, None
 
@@ -2273,11 +2286,16 @@ def customer_search(request):
 @login_required
 def dashboard(request):
     today = timezone.localdate()
-    visible_employees = _scope_queryset(request.user, "employees", Employee.objects.all())
-    visible_attendance = _scope_queryset(request.user, "attendance", Attendance.objects.all())
-    visible_sales = _scope_queryset(request.user, "sales", SaleOrder.objects.all())
-    visible_invoices = _scope_queryset(request.user, "invoices", Invoice.objects.all())
-    visible_products = _scope_queryset(request.user, "products", Product.objects.all())
+    def visible(entity, model):
+        if not _can(request.user, "view", model, entity):
+            return model.objects.none()
+        return _scope_queryset(request.user, entity, model.objects.all())
+
+    visible_employees = visible("employees", Employee)
+    visible_attendance = visible("attendance", Attendance)
+    visible_sales = visible("sales", SaleOrder)
+    visible_invoices = visible("invoices", Invoice)
+    visible_products = visible("products", Product)
     sales_total = visible_sales.exclude(status=SaleOrder.Status.CANCELLED).aggregate(value=Sum("total"))["value"] or 0
     receivables = (
         visible_invoices.filter(invoice_type=Invoice.InvoiceType.CUSTOMER)
@@ -2337,14 +2355,29 @@ def entity_list(request, entity):
     if not queryset.ordered:
         queryset = queryset.order_by("pk")
     page = Paginator(queryset, 25).get_page(request.GET.get("page"))
-    rows = [{"object": obj, "values": [_display_value(obj, field) for field, _ in config["columns"]]} for obj in page.object_list]
+    columns = [
+        {"label": label, **developer_field_metadata(model, field)}
+        for field, label in config["columns"]
+    ]
+    rows = [
+        {
+            "object": obj,
+            "developer_meta": developer_metadata(model, entity=entity, instance=obj),
+            "cells": [
+                {"value": _display_value(obj, column["name"]), **column}
+                for column in columns
+            ],
+        }
+        for obj in page.object_list
+    ]
     context = {
         "entity": entity,
         "config": config,
-        "headers": [label for _, label in config["columns"]],
+        "columns": columns,
         "rows": rows,
         "page": page,
         "query": query,
+        "developer_meta": developer_metadata(model, entity=entity),
         "can_add": config.get("creatable", True) and _can(request.user, "add", model, entity),
         "can_change": config.get("editable", True) and _can(request.user, "change", model, entity),
         "can_delete": config.get("deletable", True) and _can(request.user, "delete", model, entity),
@@ -2382,7 +2415,17 @@ def entity_create(request, entity):
         form.save_m2m()
         messages.success(request, f"{config['singular']} created successfully.")
         return redirect("entity_list", entity=entity)
-    return render(request, "core/entity_form.html", {"form": form, "config": config, "entity": entity, "mode": "Create"})
+    return render(
+        request,
+        "core/entity_form.html",
+        {
+            "form": form,
+            "config": config,
+            "entity": entity,
+            "mode": "Create",
+            "developer_meta": developer_metadata(model, entity=entity),
+        },
+    )
 
 
 @login_required
@@ -2447,6 +2490,7 @@ def entity_edit(request, entity, pk):
             "current_status": current_status,
             "workflow_actions": workflow_actions,
             "workflow_locked": workflow_locked,
+            "developer_meta": developer_metadata(model, entity=entity, instance=instance),
         },
     )
 

@@ -5,7 +5,8 @@
   <div class="tc-form-shell">
     <header class="document-commandbar tc-commandbar">
       <div class="document-actions">
-        <a class="btn btn-secondary" href="{% url 'entity_list' entity %}">Back</a>
+        <a class="btn btn-secondary" href="{% url 'entity_list' entity %}">Cancel</a>
+        {% if setup_editable or participants_editable %}<button form="training-conduct-form" class="btn btn-primary" type="submit">Save Training Conduct</button>{% endif %}
         {% if object %}
           {% for action in workflow_actions %}
             <form method="post" action="{% url 'document_action' entity object.pk action.key %}">
@@ -22,7 +23,7 @@
       {% endif %}
     </header>
 
-    <form method="post" class="tc-form" novalidate>
+    <form id="training-conduct-form" method="post" class="tc-form" novalidate>
       {% csrf_token %}
       {{ schedule_formset.management_form }}
       {{ participant_formset.management_form }}
@@ -153,8 +154,7 @@
 
       {% if setup_editable or participants_editable %}
         <footer class="tc-form-footer">
-          <span>{% if setup_editable %}Save Basic Information, Schedule, and Participants together.{% else %}Only participant changes can be saved at this status.{% endif %}</span>
-          <button class="btn btn-primary" type="submit">Save Training Conduct</button>
+          <span>{% if setup_editable %}Save Basic Information, Schedule, and Participants together using the command bar above.{% else %}Only participant changes can be saved at this status using the command bar above.{% endif %}</span>
         </footer>
       {% endif %}
     </form>

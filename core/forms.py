@@ -43,7 +43,18 @@ class StyledModelForm(forms.ModelForm):
         cleaned_data = super().clean()
         if "discount_percent" in self.fields and cleaned_data.get("discount_percent") in (None, ""):
             cleaned_data["discount_percent"] = Decimal("0")
+        branch = cleaned_data.get("organization_branch")
+        company = cleaned_data.get("company")
+        company_id = getattr(company, "pk", None) or getattr(self.instance, "company_id", None)
+        if branch and company_id and branch.company_id != company_id:
+            self.add_error("organization_branch", "Branch must belong to the selected company.")
         return cleaned_data
+
+    def save(self, commit=True):
+        branch = self.cleaned_data.get("organization_branch")
+        if branch:
+            self.instance._gsshop_organization_branch_id = branch.pk
+        return super().save(commit=commit)
 
 
 class CompanyForm(StyledModelForm):

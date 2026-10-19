@@ -2,6 +2,8 @@
 
 from django.db.models import Count, DecimalField, ExpressionWrapper, F, Q, Sum
 
+from modules.organization.context import scope_queryset as scope_organization_queryset
+
 from .access import scope_pos_queryset
 from .models import POSOrder, POSOrderLine
 from .retail_models import (
@@ -31,7 +33,7 @@ def _metric(label, value, detail, tone="blue"):
 
 
 def _scoped(user, entity, model):
-    return scope_pos_queryset(user, entity, model.objects.all())
+    return scope_organization_queryset(scope_pos_queryset(user, entity, model.objects.all()))
 
 
 def _rows(queryset, field):

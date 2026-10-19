@@ -6,6 +6,8 @@ from django.db.models import Count, DecimalField, F, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
+from modules.organization.context import scope_queryset as scope_organization_queryset
+
 from .access import scope_accounting_queryset
 from .models import (
     Account,
@@ -40,7 +42,7 @@ MONEY = DecimalField(max_digits=18, decimal_places=2)
 
 
 def _scoped(user, entity, model):
-    return scope_accounting_queryset(user, entity, model.objects.all())
+    return scope_organization_queryset(scope_accounting_queryset(user, entity, model.objects.all()))
 
 
 def _metric(label, value, detail, tone="blue"):

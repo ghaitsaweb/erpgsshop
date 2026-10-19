@@ -2,6 +2,7 @@
 
 from django.db.models import Avg, Count, DecimalField, ExpressionWrapper, F, Sum
 
+from modules.organization.context import scope_queryset as scope_organization_queryset
 from modules.operations.models import ConstructionProject
 
 from .access import scope_construction_queryset
@@ -38,7 +39,7 @@ ANALYTIC_FEATURES = {
 
 
 def _scoped(user, entity, model):
-    return scope_construction_queryset(user, entity, model.objects.all())
+    return scope_organization_queryset(scope_construction_queryset(user, entity, model.objects.all()))
 
 
 def _metric(label, value, detail, tone="blue"):

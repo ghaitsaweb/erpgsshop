@@ -1,12 +1,51 @@
 {% extends "base.html" %}
+{% load static %}
 {% block title %}{{ config.title }} · ERP GSSHOP{% endblock %}
 {% block page_title %}{{ config.title }}{% endblock %}
 {% block content %}
-  <div class="toolbar">
+  <div class="toolbar list-toolbar">
     <form method="get" class="search-form">
       <input class="form-control" type="search" name="q" value="{{ query }}" placeholder="Search {{ config.title|lower }}…">
       <button class="btn btn-secondary" type="submit">Search</button>
     </form>
+    <div class="list-quick-controls" data-list-controls>
+      <details class="list-control-menu">
+        <summary>Filter By <i data-list-filter-count hidden>•</i></summary>
+        <div class="list-control-popover">
+          <label>Field
+            <select data-list-filter-field>
+              <option value="">Select field</option>
+              {% for column in columns %}<option value="{{ column.name }}">{{ column.label }}</option>{% endfor %}
+            </select>
+          </label>
+          <label>Operator
+            <select data-list-filter-operator>
+              <option value="contains">contains</option>
+              <option value="equals">is</option>
+              <option value="not-equals">is not</option>
+              <option value="starts-with">starts with</option>
+              <option value="ends-with">ends with</option>
+            </select>
+          </label>
+          <label>Value<input type="search" data-list-filter-value placeholder="Filter current list..."></label>
+          <button type="button" data-list-filter-clear>Clear filter</button>
+          <small>Applies instantly to records loaded on this page.</small>
+        </div>
+      </details>
+      <details class="list-control-menu">
+        <summary>Group By <i data-list-group-count hidden>•</i></summary>
+        <div class="list-control-popover">
+          <label>Field
+            <select data-list-group-field>
+              <option value="">No grouping</option>
+              {% for column in columns %}<option value="{{ column.name }}">{{ column.label }}</option>{% endfor %}
+            </select>
+          </label>
+          <button type="button" data-list-group-clear>Clear grouping</button>
+          <small>Groups the current list instantly in your browser.</small>
+        </div>
+      </details>
+    </div>
     {% if can_add %}<a class="btn btn-primary" href="{% url 'entity_create' entity %}">+ Add {{ config.singular }}</a>{% endif %}
   </div>
 
@@ -14,21 +53,18 @@
     <div class="info-strip">Create the document here, then use <a href="{% url 'admin:index' %}">Administration</a> to add detailed line items.</div>
   {% endif %}
 
-  <div class="panel table-panel">
+  <div class="panel table-panel" data-dev-model="{{ developer_meta.model }}" data-dev-table="{{ developer_meta.table }}" data-dev-entity="{{ developer_meta.entity }}">
     <div class="table-wrap">
-      <table>
-        <thead><tr>{% for header in headers %}<th>{{ header }}</th>{% endfor %}<th class="align-right">Actions</th></tr></thead>
+      <table data-entity-list-table data-dev-model="{{ developer_meta.model }}" data-dev-table="{{ developer_meta.table }}">
+        <thead><tr>{% for column in columns %}<th data-list-field="{{ column.name }}" data-dev-field="{{ column.name }}" data-dev-field-label="{{ column.label }}" data-dev-field-type="{{ column.type }}" data-dev-field-column="{{ column.column }}" data-dev-field-relation="{{ column.relation }}" data-dev-field-kind="{{ column.kind }}">{{ column.label }}</th>{% endfor %}{% if can_delete %}<th class="align-right">Actions</th>{% endif %}</tr></thead>
         <tbody>
           {% for row in rows %}
-            <tr>
-              {% for value in row.values %}<td>{% if forloop.first %}<strong>{{ value }}</strong>{% else %}{{ value }}{% endif %}</td>{% endfor %}
-              <td class="actions align-right">
-                {% if can_change %}<a href="{% url 'entity_edit' entity row.object.pk %}">Edit</a>{% endif %}
-                {% if can_delete %}<a class="danger-link" href="{% url 'entity_delete' entity row.object.pk %}">Delete</a>{% endif %}
-                {% if not can_change and not can_delete %}<span class="muted">Posted</span>{% endif %}
-              </td>
+            <tr class="{% if can_change %}record-row{% endif %}" data-list-row data-dev-object data-dev-entity="{{ row.developer_meta.entity }}" data-dev-model="{{ row.developer_meta.model }}" data-dev-table="{{ row.developer_meta.table }}" data-dev-object-id="{{ row.developer_meta.object_id }}" data-dev-object-name="{{ row.developer_meta.object_name }}" {% if can_change %}data-record-url="{% url 'entity_edit' entity row.object.pk %}" tabindex="0" role="link" aria-label="Open {{ row.developer_meta.object_name }}"{% endif %}>
+              {% for cell in row.cells %}<td data-dev-field="{{ cell.name }}" data-dev-field-label="{{ cell.label }}" data-dev-field-type="{{ cell.type }}" data-dev-field-column="{{ cell.column }}" data-dev-field-relation="{{ cell.relation }}" data-dev-field-kind="{{ cell.kind }}">{% if forloop.first %}<strong>{{ cell.value }}</strong>{% else %}{{ cell.value }}{% endif %}</td>{% endfor %}
+              {% if can_delete %}<td class="actions align-right"><a class="danger-link" href="{% url 'entity_delete' entity row.object.pk %}">Delete</a></td>{% endif %}
             </tr>
           {% empty %}<tr><td class="empty" colspan="20">No records found. Add the first {{ config.singular|lower }}.</td></tr>{% endfor %}
+          {% if rows %}<tr data-list-no-match hidden><td class="empty" colspan="20">No records match this filter on the current page.</td></tr>{% endif %}
         </tbody>
       </table>
     </div>
@@ -40,5 +76,5 @@
       </div>
     {% endif %}
   </div>
+  <script src="{% static 'js/entity-list.js' %}"></script>
 {% endblock %}
-

@@ -8,6 +8,9 @@ from django.forms import inlineformset_factory
 from django.http import StreamingHttpResponse
 from django.shortcuts import redirect, render
 
+from modules.organization.context import scope_form as scope_organization_form
+from modules.organization.context import scope_queryset as scope_organization_queryset
+
 from .access import scope_hr_form, scope_hr_queryset
 from .forms import TrainingConductForm, TrainingConductParticipantForm, TrainingConductScheduleForm
 from .models import TrainingConduct, TrainingConductParticipant, TrainingConductSchedule
@@ -21,7 +24,9 @@ class _Echo:
 def _restrict_line_choices(formset, user):
     for line_form in formset.forms:
         scope_hr_form(line_form, user, "training-conducts")
+        scope_organization_form(line_form)
     scope_hr_form(formset.empty_form, user, "training-conducts")
+    scope_organization_form(formset.empty_form)
 
 
 def _disable_form(form):
@@ -78,10 +83,12 @@ def _export_csv(queryset):
 
 
 def training_conduct_list(request, config, can_add, can_change):
-    queryset = scope_hr_queryset(
-        request.user,
-        "training-conducts",
-        TrainingConduct.objects.select_related("company", "course", "program", "pic"),
+    queryset = scope_organization_queryset(
+        scope_hr_queryset(
+            request.user,
+            "training-conducts",
+            TrainingConduct.objects.select_related("company", "course", "program", "pic"),
+        )
     )
     query = request.GET.get("q", "").strip()
     training_type = request.GET.get("type", "all")
@@ -180,6 +187,7 @@ def training_conduct_form(request, config, instance=None, can_change=True):
     schedule_formset = ScheduleFormSet(request.POST or None, instance=instance, prefix="schedule_lines")
     participant_formset = ParticipantFormSet(request.POST or None, instance=instance, prefix="participant_lines")
     scope_hr_form(form, request.user, "training-conducts")
+    scope_organization_form(form)
     _restrict_line_choices(schedule_formset, request.user)
     _restrict_line_choices(participant_formset, request.user)
 

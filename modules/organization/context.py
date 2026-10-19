@@ -2,11 +2,19 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import lru_cache
 
+from django import forms
+from django.contrib.contenttypes.models import ContentType
 from django.db.models import Q
+from django.db.models.functions import Cast
 
 from core.models import Company
 
-from .models import Branch, UserOrganizationAccess
+from .models import Branch, RecordOrganizationScope, UserOrganizationAccess
+from .record_scope import (
+    default_branch_for_company,
+    direct_company_field_name,
+    record_scope_for,
+)
 
 
 ACTIVE_COMPANY_SESSION_KEY = "active_company_id"
@@ -314,6 +322,59 @@ def _filter_by_lookups(queryset, lookups, values):
     return queryset.filter(filters)
 
 
+@lru_cache(maxsize=None)
+def _company_anchor(model):
+    """Resolve the nearest forward-related model that directly owns Company."""
+    company_lookups = _relation_lookups(model, "core.company")
+    if not company_lookups or company_lookups[0] == "pk":
+        return None
+
+    parts = company_lookups[0].split("__")
+    current_model = model
+    for part in parts[:-1]:
+        field = current_model._meta.get_field(part)
+        current_model = field.related_model
+        if current_model is None:
+            return None
+    if not direct_company_field_name(current_model):
+        return None
+    return "__".join(parts[:-1]), current_model
+
+
+def _filter_by_record_branch_scope(queryset, context):
+    anchor = _company_anchor(queryset.model)
+    if anchor is None:
+        return queryset
+    if not context.active_branch_ids:
+        return queryset.none()
+
+    anchor_path, anchor_model = anchor
+    content_type = ContentType.objects.get_for_model(anchor_model, for_concrete_model=False)
+    all_assignments = RecordOrganizationScope.objects.filter(content_type=content_type)
+    typed_assignments = all_assignments.annotate(
+        typed_object_id=Cast("object_id", output_field=anchor_model._meta.pk),
+    )
+    selected_assignments = typed_assignments.filter(branch_id__in=context.active_branch_ids).values("typed_object_id")
+    anchor_pk_lookup = f"{anchor_path}__pk__in" if anchor_path else "pk__in"
+    filters = Q(**{anchor_pk_lookup: selected_assignments})
+
+    # A deterministic fallback protects rows inserted through bulk_create,
+    # which does not emit Django signals. Unassigned rows belong to the main
+    # branch of their company until an explicit scope is stored.
+    main_company_ids = Branch.objects.filter(
+        pk__in=context.active_branch_ids,
+        is_main=True,
+    ).values("company_id")
+    company_field = direct_company_field_name(anchor_model)
+    unassigned_anchor_ids = (
+        anchor_model._default_manager.filter(**{f"{company_field}_id__in": main_company_ids})
+        .exclude(pk__in=typed_assignments.values("typed_object_id"))
+        .values("pk")
+    )
+    filters |= Q(**{anchor_pk_lookup: unassigned_anchor_ids})
+    return queryset.filter(filters)
+
+
 def scope_queryset(queryset, context=None, *, include_branch=True, use_allowed_companies=False):
     context = context or get_current_context()
     if context is None:
@@ -331,6 +392,8 @@ def scope_queryset(queryset, context=None, *, include_branch=True, use_allowed_c
         if not context.active_branch_ids:
             return queryset.none()
         queryset = _filter_by_lookups(queryset, branch_lookups, context.active_branch_ids)
+    elif include_branch and company_lookups:
+        queryset = _filter_by_record_branch_scope(queryset, context)
     return queryset
 
 
@@ -350,4 +413,34 @@ def scope_form(form, context=None, *, include_branch=True):
                 form.initial[name] = context.company_id
             elif queryset.model is Branch and context.branch_id:
                 form.initial[name] = context.branch_id
+
+    model = getattr(getattr(form, "_meta", None), "model", None)
+    if (
+        include_branch
+        and model is not None
+        and "organization_branch" not in form.fields
+        and direct_company_field_name(model)
+        and not _relation_lookups(model, "organization.branch")
+        and ("company" in form.fields or getattr(form.instance, "pk", None))
+    ):
+        branch_field = forms.ModelChoiceField(
+            label="Branch",
+            queryset=Branch.objects.filter(
+                pk__in=context.active_branch_ids,
+                company_id__in=context.active_company_ids,
+                active=True,
+            ).select_related("company").order_by("company__name", "sequence", "name", "pk"),
+            required=True,
+            help_text="Record ini hanya tampil saat branch tersebut dipilih pada Apply Context.",
+        )
+        branch_field.widget.attrs["class"] = "form-control"
+        items = list(form.fields.items())
+        insert_at = next((index + 1 for index, (name, _field) in enumerate(items) if name == "company"), len(items))
+        items.insert(insert_at, ("organization_branch", branch_field))
+        form.fields = dict(items)
+
+        current_scope = record_scope_for(form.instance) if getattr(form.instance, "pk", None) else None
+        default_branch = current_scope.branch if current_scope else default_branch_for_company(context.company_id, context)
+        if default_branch:
+            form.initial["organization_branch"] = default_branch.pk
     return form

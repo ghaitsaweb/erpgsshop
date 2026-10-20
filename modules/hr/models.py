@@ -62,6 +62,18 @@ class EmploymentContract(TimeStampedModel):
     class Meta:
         ordering = ["-start_date", "number"]
 
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.end_date and self.start_date and self.end_date < self.start_date:
+            errors["end_date"] = "End date must be on or after start date."
+        if self.contract_type == self.ContractType.FIXED_TERM and not self.end_date:
+            errors["end_date"] = "A fixed-term contract requires an end date."
+        if self.base_salary is not None and self.base_salary < 0:
+            errors["base_salary"] = "Base salary cannot be negative."
+        if errors:
+            raise ValidationError(errors)
+
     def __str__(self):
         return self.number
 
@@ -455,6 +467,7 @@ class RawAttendance(TimeStampedModel):
 
     class Meta:
         ordering = ["-captured_at"]
+        indexes = [models.Index(fields=["employee", "captured_at"], name="hr_raw_emp_captured_idx")]
 
     def __str__(self):
         return f"{self.employee} - {self.captured_at}"
@@ -503,12 +516,32 @@ class ScheduleAssignment(TimeStampedModel):
 
     class Meta:
         ordering = ["-date_start", "employee__name"]
+        indexes = [models.Index(fields=["employee", "-date_start"], name="hr_assignment_emp_start_idx")]
 
     def clean(self):
-        from django.core.exceptions import ValidationError
-
-        if self.date_end and self.date_end < self.date_start:
-            raise ValidationError({"date_end": "End date must be on or after start date."})
+        errors = {}
+        if self.date_start and self.date_end and self.date_end < self.date_start:
+            errors["date_end"] = "End date must be on or after start date."
+        if self.employee_id and self.schedule_id:
+            employee_company_id = Employee.objects.filter(pk=self.employee_id).values_list("company_id", flat=True).first()
+            schedule_companies = WorkSchedule.objects.filter(pk=self.schedule_id).values_list(
+                "company_id", "shift__company_id"
+            ).first()
+            if employee_company_id and schedule_companies and (
+                schedule_companies[0] != employee_company_id or schedule_companies[1] != employee_company_id
+            ):
+                errors["schedule"] = "Schedule and shift must belong to the employee company."
+        if self.active and self.employee_id and self.date_start and "date_end" not in errors:
+            overlapping = ScheduleAssignment.objects.filter(employee_id=self.employee_id, active=True)
+            if self.date_end:
+                overlapping = overlapping.filter(date_start__lte=self.date_end)
+            overlapping = overlapping.filter(models.Q(date_end__isnull=True) | models.Q(date_end__gte=self.date_start))
+            if self.pk:
+                overlapping = overlapping.exclude(pk=self.pk)
+            if overlapping.exists():
+                errors["date_start"] = "An active schedule assignment already covers part of this period."
+        if errors:
+            raise ValidationError(errors)
 
     def __str__(self):
         return f"{self.employee} - {self.schedule}"
@@ -1250,6 +1283,14 @@ class AttendanceChangeRequest(TimeStampedModel):
     attendance_date = models.DateField()
     requested_check_in = models.TimeField(blank=True, null=True)
     requested_check_out = models.TimeField(blank=True, null=True)
+    snapshot_captured = models.BooleanField(default=False)
+    had_attendance = models.BooleanField(default=False)
+    original_check_in = models.TimeField(blank=True, null=True)
+    original_check_out = models.TimeField(blank=True, null=True)
+    original_check_in_at = models.DateTimeField(blank=True, null=True)
+    original_check_out_at = models.DateTimeField(blank=True, null=True)
+    original_from_raw_attendance = models.BooleanField(default=False)
+    original_status = models.CharField(max_length=16, blank=True)
     reason = models.TextField()
     status = models.CharField(max_length=16, choices=ApprovalStatus.choices, default=ApprovalStatus.DRAFT)
     approver = models.ForeignKey(
@@ -1262,6 +1303,13 @@ class AttendanceChangeRequest(TimeStampedModel):
 
     class Meta:
         ordering = ["-attendance_date", "employee__name"]
+        indexes = [
+            models.Index(
+                fields=["employee", "attendance_date"],
+                condition=models.Q(status__in=[ApprovalStatus.DRAFT, ApprovalStatus.SUBMITTED, ApprovalStatus.APPROVED]),
+                name="hr_acr_active_day_idx",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.employee} - {self.attendance_date}"

@@ -757,7 +757,7 @@ class ERPIntegrityTests(TestCase):
                 self.assertNotContains(response, "Navigation is ready")
 
     def test_hr_approval_workflow_uses_guarded_status_transitions(self):
-        employee = Employee.objects.create(company=self.company, employee_id="E-WF", name="Workflow Employee")
+        employee = Employee.objects.create(company=self.company, employee_id="E-WF", name="Workflow Employee", phone="100")
         change_request = EmployeeChangeRequest.objects.create(
             employee=employee,
             field_name="phone",
@@ -775,8 +775,10 @@ class ERPIntegrityTests(TestCase):
 
         self.client.post(f"/app/employee-change-requests/{change_request.pk}/action/approve/")
         change_request.refresh_from_db()
+        employee.refresh_from_db()
         self.assertEqual(change_request.status, "approved")
         self.assertEqual(change_request.approver, self.user)
+        self.assertEqual(employee.phone, "200")
         locked_response = self.client.get(f"/app/employee-change-requests/{change_request.pk}/edit/")
         self.assertContains(locked_response, "Locked · Approved")
 

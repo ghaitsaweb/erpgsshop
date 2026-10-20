@@ -371,6 +371,9 @@ class Attendance(TimeStampedModel):
     attendance_date = models.DateField(default=timezone.localdate)
     check_in = models.TimeField(blank=True, null=True)
     check_out = models.TimeField(blank=True, null=True)
+    check_in_at = models.DateTimeField(blank=True, null=True)
+    check_out_at = models.DateTimeField(blank=True, null=True)
+    from_raw_attendance = models.BooleanField(default=False)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PRESENT)
     note = models.CharField(max_length=200, blank=True)
 

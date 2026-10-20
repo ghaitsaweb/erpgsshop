@@ -163,6 +163,11 @@ from modules.hr.models import (
     WorkPattern,
     WorkSchedule,
 )
+from modules.hr.change_requests import transition_employee_change_request
+from modules.hr.attendance_changes import transition_attendance_change_request
+from modules.hr.contracts import transition_employment_contract
+from modules.hr.forms import AttendanceChangeRequestForm, EmployeeChangeRequestForm, EmploymentContractForm, RawAttendanceForm
+from modules.hr.raw_attendance import process_raw_attendance
 from modules.localization.models import DocumentSequence, LocalizationPack, PayrollParameter, TaxRule
 from modules.operations.models import (
     Asset,
@@ -229,6 +234,12 @@ APPROVAL_WORKFLOW = {
     "reject": {"label": "Reject", "from": ["submitted"], "to": "rejected"},
     "cancel": {"label": "Cancel", "from": ["draft", "submitted"], "to": "cancelled"},
     "reset": {"label": "Reset to Draft", "from": ["rejected", "cancelled"], "to": "draft"},
+}
+
+EMPLOYMENT_CONTRACT_WORKFLOW = {
+    "activate": {"label": "Activate", "from": ["draft"], "to": "active", "primary": True},
+    "expire": {"label": "Expire", "from": ["active"], "to": "expired"},
+    "terminate": {"label": "Terminate", "from": ["active"], "to": "terminated"},
 }
 
 PAYROLL_RUN_WORKFLOW = {
@@ -378,8 +389,14 @@ ENTITY_CONFIG = {
         "form": AttendanceForm,
         "title": "Attendance",
         "singular": "Attendance",
-        "columns": [("attendance_date", "Date"), ("employee", "Employee"), ("check_in", "Check In"), ("check_out", "Check Out"), ("status", "Status")],
+        "columns": [
+            ("attendance_date", "Work Date"), ("employee", "Employee"),
+            ("check_in", "Check In"), ("check_out", "Check Out"),
+            ("check_in_at", "Raw Check In At"), ("check_out_at", "Raw Check Out At"),
+            ("status", "Status"),
+        ],
         "search": ["employee__employee_id", "employee__name"],
+        "select_related": ["employee"],
     },
     # Human Resources
     "departments": {
@@ -397,8 +414,10 @@ ENTITY_CONFIG = {
         "singular": "Employment Contract",
         "columns": [("number", "Number"), ("employee", "Employee"), ("contract_type", "Type"), ("start_date", "Start"), ("end_date", "End"), ("status", "Status")],
         "search": ["number", "employee__employee_id", "employee__name"],
-        "form_fields": ["employee", "number", "contract_type", "start_date", "end_date", "base_salary", "status", "notes"],
+        "form": EmploymentContractForm,
         "select_related": ["employee"],
+        "workflow": EMPLOYMENT_CONTRACT_WORKFLOW,
+        "workflow_locked_statuses": {"active", "expired", "terminated"},
     },
     "leave-requests": {
         "model": LeaveRequest,
@@ -480,9 +499,10 @@ ENTITY_CONFIG = {
         "singular": "Employee Change Request",
         "columns": [("employee", "Employee"), ("field_name", "Field"), ("effective_date", "Effective Date"), ("status", "Status"), ("approver", "Approver")],
         "search": ["employee__employee_id", "employee__name", "field_name", "requested_value"],
-        "form_fields": ["employee", "field_name", "current_value", "requested_value", "effective_date", "reason", "approver"],
+        "form": EmployeeChangeRequestForm,
         "select_related": ["employee", "approver"],
-        "workflow": APPROVAL_WORKFLOW,
+        "workflow": {key: value for key, value in APPROVAL_WORKFLOW.items() if key != "reset"},
+        "workflow_locked_statuses": {"submitted", "approved", "rejected", "cancelled"},
     },
     "employee-documents": {
         "model": EmployeeDocument,
@@ -533,12 +553,16 @@ ENTITY_CONFIG = {
     },
     "raw-attendance": {
         "model": RawAttendance,
+        "form": RawAttendanceForm,
+        "deletable": False,
         "title": "Raw Attendance",
         "singular": "Raw Attendance Event",
         "columns": [("captured_at", "Captured At"), ("employee", "Employee"), ("event_type", "Event"), ("source", "Source"), ("processed", "Processed")],
         "search": ["employee__employee_id", "employee__name", "source", "device_identifier"],
-        "form_fields": ["employee", "captured_at", "event_type", "source", "device_identifier", "processed", "note"],
         "select_related": ["employee"],
+        "workflow_field": "processed",
+        "workflow_locked_statuses": {True},
+        "workflow": {"process": {"label": "Process Day", "from": [False], "to": True, "primary": True}},
     },
     "shifts": {
         "model": Shift,
@@ -1272,9 +1296,13 @@ ENTITY_CONFIG.update(
             "singular": "Attendance Change Request",
             "columns": [("employee", "Employee"), ("attendance_date", "Date"), ("requested_check_in", "Check In"), ("requested_check_out", "Check Out"), ("status", "Status")],
             "search": ["employee__employee_id", "employee__name", "reason"],
-            "form_fields": ["employee", "attendance_date", "requested_check_in", "requested_check_out", "reason", "approver"],
+            "form": AttendanceChangeRequestForm,
             "select_related": ["employee", "approver"],
-            "workflow": APPROVAL_WORKFLOW,
+            "workflow": {
+                **{key: APPROVAL_WORKFLOW[key] for key in ("submit", "approve", "reject")},
+                "cancel": {"label": "Cancel", "from": ["submitted"], "to": "cancelled"},
+            },
+            "workflow_locked_statuses": {"submitted", "approved", "rejected", "cancelled"},
         },
         "live-tracking-sessions": {
             "model": LiveTrackingSession,
@@ -2454,13 +2482,23 @@ def entity_edit(request, entity, pk):
         messages.error(request, "This record is immutable or you do not have permission to edit it.")
         return redirect("entity_list", entity=entity)
     scoped_queryset = _scope_queryset(request.user, entity, model.objects.all())
+    if entity == "raw-attendance" and request.method == "POST":
+        return _edit_raw_attendance(request, config, scoped_queryset, pk)
+    if entity == "attendance-change-requests" and request.method == "POST":
+        return _edit_attendance_change_request(request, config, scoped_queryset, pk)
+    if entity == "contracts" and request.method == "POST":
+        return _edit_employment_contract(request, config, scoped_queryset, pk)
+    if entity == "employee-change-requests" and request.method == "POST":
+        return _edit_employee_change_request(request, config, scoped_queryset, pk)
     instance = get_object_or_404(scoped_queryset, pk=pk)
     if entity in DOCUMENT_CONFIG:
         context, response = _document_context(request, entity, config, instance=instance, mode="Edit")
         return response or render(request, "core/document_form.html", context)
     current_status = getattr(instance, config.get("workflow_field", "status"), None)
     locked_statuses = set(config.get("workflow_locked_statuses", {"approved", "cancelled"}))
-    workflow_locked = bool(config.get("workflow")) and current_status in locked_statuses
+    workflow_locked = (entity == "attendance" and instance.from_raw_attendance) or (
+        bool(config.get("workflow")) and current_status in locked_statuses
+    )
     if request.method == "POST" and workflow_locked:
         messages.error(request, "This record is locked by its workflow status.")
         return redirect("entity_edit", entity=entity, pk=pk)
@@ -2495,6 +2533,140 @@ def entity_edit(request, entity, pk):
     )
 
 
+@transaction.atomic
+def _edit_raw_attendance(request, config, scoped_queryset, pk):
+    """Serialize edits with processing and keep consumed punches immutable."""
+    original = get_object_or_404(scoped_queryset, pk=pk)
+    Employee.objects.select_for_update().get(pk=original.employee_id)
+    instance = get_object_or_404(scoped_queryset.select_for_update(), pk=pk)
+    if instance.employee_id != original.employee_id or instance.processed:
+        messages.error(request, "This raw punch changed or was already processed. Reload the record.")
+        return redirect("entity_edit", entity="raw-attendance", pk=pk)
+    form = RawAttendanceForm(request.POST, request.FILES, instance=instance)
+    _scope_form(form, request.user, "raw-attendance")
+    if form.is_valid():
+        form.save()
+        messages.success(request, "Raw Attendance Event updated successfully.")
+        return redirect("entity_list", entity="raw-attendance")
+    return render(
+        request,
+        "core/entity_form.html",
+        {
+            "form": form,
+            "config": config,
+            "entity": "raw-attendance",
+            "mode": "Edit",
+            "object": instance,
+            "current_status": instance.processed,
+            "workflow_actions": [{"key": "process", **config["workflow"]["process"]}],
+            "workflow_locked": False,
+            "developer_meta": developer_metadata(RawAttendance, entity="raw-attendance", instance=instance),
+        },
+    )
+
+
+@transaction.atomic
+def _edit_attendance_change_request(request, config, scoped_queryset, pk):
+    """Keep submitted correction values immutable under concurrent approval."""
+    instance = get_object_or_404(scoped_queryset.select_for_update(), pk=pk)
+    if instance.status != "draft":
+        messages.error(request, "This record is locked by its workflow status.")
+        return redirect("entity_edit", entity="attendance-change-requests", pk=pk)
+    form = AttendanceChangeRequestForm(request.POST, request.FILES, instance=instance)
+    _scope_form(form, request.user, "attendance-change-requests")
+    if form.is_valid():
+        form.save()
+        messages.success(request, "Attendance Change Request updated successfully.")
+        return redirect("entity_list", entity="attendance-change-requests")
+    return render(
+        request,
+        "core/entity_form.html",
+        {
+            "form": form,
+            "config": config,
+            "entity": "attendance-change-requests",
+            "mode": "Edit",
+            "object": instance,
+            "current_status": instance.status,
+            "workflow_actions": [{"key": "submit", **APPROVAL_WORKFLOW["submit"]}],
+            "workflow_locked": False,
+            "developer_meta": developer_metadata(AttendanceChangeRequest, entity="attendance-change-requests", instance=instance),
+        },
+    )
+
+
+@transaction.atomic
+def _edit_employment_contract(request, config, scoped_queryset, pk):
+    """Reject a draft edit if another actor activated the contract first."""
+    instance = get_object_or_404(scoped_queryset.select_for_update(), pk=pk)
+    if instance.status != EmploymentContract.Status.DRAFT:
+        messages.error(request, "This record is locked by its workflow status.")
+        return redirect("entity_edit", entity="contracts", pk=pk)
+    form = EmploymentContractForm(request.POST, request.FILES, instance=instance)
+    _scope_form(form, request.user, "contracts")
+    if form.is_valid():
+        form.save()
+        messages.success(request, "Employment Contract updated successfully.")
+        return redirect("entity_list", entity="contracts")
+    return render(
+        request,
+        "core/entity_form.html",
+        {
+            "form": form,
+            "config": config,
+            "entity": "contracts",
+            "mode": "Edit",
+            "object": instance,
+            "current_status": instance.status,
+            "workflow_actions": [{"key": "activate", **EMPLOYMENT_CONTRACT_WORKFLOW["activate"]}],
+            "workflow_locked": False,
+            "developer_meta": developer_metadata(EmploymentContract, entity="contracts", instance=instance),
+        },
+    )
+
+
+@transaction.atomic
+def _edit_employee_change_request(request, config, scoped_queryset, pk):
+    """Keep draft edits separate from concurrent submission or profile updates."""
+    instance = get_object_or_404(scoped_queryset.select_for_update(), pk=pk)
+    if instance.status != "draft":
+        messages.error(request, "This record is locked by its workflow status.")
+        return redirect("entity_edit", entity="employee-change-requests", pk=pk)
+
+    form = EmployeeChangeRequestForm(request.POST, request.FILES, instance=instance)
+    _scope_form(form, request.user, "employee-change-requests")
+    if form.is_valid():
+        employee = Employee.objects.select_for_update().get(pk=form.cleaned_data["employee"].pk)
+        actual_value = getattr(employee, form.cleaned_data["field_name"])
+        if actual_value != form.cleaned_data["current_value"]:
+            form.add_error("employee", "The employee profile changed while this draft was being edited. Please review and save again.")
+        else:
+            form.save()
+            messages.success(request, "Employee Change Request updated successfully.")
+            return redirect("entity_list", entity="employee-change-requests")
+
+    workflow_actions = [
+        {"key": key, **definition}
+        for key, definition in config["workflow"].items()
+        if instance.status in definition["from"] and _can_workflow(request.user, "employee-change-requests", key, instance)
+    ]
+    return render(
+        request,
+        "core/entity_form.html",
+        {
+            "form": form,
+            "config": config,
+            "entity": "employee-change-requests",
+            "mode": "Edit",
+            "object": instance,
+            "current_status": instance.status,
+            "workflow_actions": workflow_actions,
+            "workflow_locked": False,
+            "developer_meta": developer_metadata(EmployeeChangeRequest, entity="employee-change-requests", instance=instance),
+        },
+    )
+
+
 @login_required
 def entity_delete(request, entity, pk):
     config = _config(entity)
@@ -2507,6 +2679,9 @@ def entity_delete(request, entity, pk):
         return redirect("entity_list", entity=entity)
     scoped_queryset = _scope_queryset(request.user, entity, model.objects.all())
     instance = get_object_or_404(scoped_queryset, pk=pk)
+    if entity == "attendance" and instance.from_raw_attendance:
+        messages.error(request, "Raw-derived attendance must be changed through an attendance correction request.")
+        return redirect("entity_list", entity=entity)
     if request.method == "POST":
         instance.delete()
         messages.success(request, f"{config['singular']} deleted.")
@@ -2633,7 +2808,53 @@ def document_action(request, entity, pk, action):
             update_values["approver_id"] = request.user.pk
         actual_status = definition["to"]
         with transaction.atomic():
-            if definition.get("service_controls_state") and model._meta.app_label in {
+            if entity == "raw-attendance":
+                locked = get_object_or_404(scoped_queryset.select_related("employee"), pk=pk)
+                if locked.processed != current_status:
+                    updated = 0
+                else:
+                    try:
+                        process_raw_attendance(locked, expected_company_id=locked.employee.company_id)
+                    except ValidationError as exc:
+                        messages.error(request, "; ".join(exc.messages))
+                        return redirect("entity_edit", entity=entity, pk=pk)
+                    instance = locked
+                    updated = 1
+            elif entity == "attendance-change-requests":
+                locked = get_object_or_404(scoped_queryset.select_for_update(), pk=pk)
+                if locked.status != current_status:
+                    updated = 0
+                else:
+                    try:
+                        transition_attendance_change_request(locked, action, request.user)
+                    except ValidationError as exc:
+                        messages.error(request, "; ".join(exc.messages))
+                        return redirect("entity_edit", entity=entity, pk=pk)
+                    instance = locked
+                    updated = 1
+            elif entity == "contracts":
+                locked = get_object_or_404(scoped_queryset.select_for_update(), pk=pk)
+                if locked.status != current_status:
+                    updated = 0
+                else:
+                    try:
+                        transition_employment_contract(locked, action)
+                    except ValidationError as exc:
+                        messages.error(request, "; ".join(exc.messages))
+                        return redirect("entity_edit", entity=entity, pk=pk)
+                    updated = 1
+            elif entity == "employee-change-requests":
+                locked = get_object_or_404(scoped_queryset.select_for_update(), pk=pk)
+                if locked.status != current_status:
+                    updated = 0
+                else:
+                    try:
+                        transition_employee_change_request(locked, action, request.user)
+                    except ValidationError as exc:
+                        messages.error(request, "; ".join(exc.messages))
+                        return redirect("entity_edit", entity=entity, pk=pk)
+                    updated = 1
+            elif definition.get("service_controls_state") and model._meta.app_label in {
                 "gsshop_construction", "gsshop_finance", "gsshop_pos", "gsshop_hr", "gsshop_purchase"
             }:
                 locked = get_object_or_404(scoped_queryset.select_for_update(), pk=pk)
@@ -2662,9 +2883,10 @@ def document_action(request, entity, pk, action):
                         entity=entity,
                         record_id=instance.pk,
                         action=action,
-                        previous_status=current_status or "",
-                        new_status=definition["to"],
+                        previous_status="unprocessed" if entity == "raw-attendance" else current_status or "",
+                        new_status="processed" if entity == "raw-attendance" else definition["to"],
                         actor=request.user,
+                        details=getattr(instance, "_workflow_audit_details", {}),
                     )
             if updated == 1 and entity == "purchase-peppol-submissions":
                 PurchasePeppolEvent.objects.create(
@@ -2674,6 +2896,8 @@ def document_action(request, entity, pk, action):
                 )
         if updated != 1:
             messages.error(request, "The record changed while this action was running. Please review it again.")
+        elif entity == "raw-attendance":
+            messages.success(request, "Raw punches processed into one daily attendance record.")
         elif actual_status is None and definition["to"] is None:
             messages.success(request, f"{config['singular']} action {definition['label']} completed.")
         elif actual_status != definition["to"]:

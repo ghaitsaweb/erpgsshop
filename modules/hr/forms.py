@@ -2,7 +2,70 @@ from django import forms
 
 from core.forms import StyledModelForm
 
-from .models import TrainingConduct, TrainingConductParticipant, TrainingConductSchedule
+from .change_requests import CHANGE_REQUEST_FIELDS
+from .models import (
+    AttendanceChangeRequest,
+    EmployeeChangeRequest,
+    EmploymentContract,
+    RawAttendance,
+    TrainingConduct,
+    TrainingConductParticipant,
+    TrainingConductSchedule,
+)
+
+
+class RawAttendanceForm(StyledModelForm):
+    class Meta:
+        model = RawAttendance
+        fields = ["employee", "captured_at", "event_type", "source", "device_identifier", "note"]
+
+
+class AttendanceChangeRequestForm(StyledModelForm):
+    class Meta:
+        model = AttendanceChangeRequest
+        fields = ["employee", "attendance_date", "requested_check_in", "requested_check_out", "reason"]
+
+    def clean(self):
+        cleaned = super().clean()
+        if cleaned.get("requested_check_in") is None and cleaned.get("requested_check_out") is None:
+            self.add_error("requested_check_in", "Enter a corrected check-in or check-out time.")
+        return cleaned
+
+
+class EmploymentContractForm(StyledModelForm):
+    class Meta:
+        model = EmploymentContract
+        fields = ["employee", "number", "contract_type", "start_date", "end_date", "base_salary", "notes"]
+
+
+class EmployeeChangeRequestForm(StyledModelForm):
+    field_name = forms.ChoiceField(choices=list(CHANGE_REQUEST_FIELDS.items()))
+
+    class Meta:
+        model = EmployeeChangeRequest
+        fields = ["employee", "field_name", "current_value", "requested_value", "effective_date", "reason"]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["current_value"].disabled = True
+        self.fields["current_value"].help_text = "Captured from the selected employee when this draft is saved."
+        self.fields["requested_value"].required = False
+
+    def clean(self):
+        cleaned = super().clean()
+        employee = cleaned.get("employee")
+        field_name = cleaned.get("field_name")
+        if employee is not None and field_name in CHANGE_REQUEST_FIELDS:
+            current_value = getattr(employee, field_name)
+            cleaned["current_value"] = current_value
+            if cleaned.get("requested_value") == current_value:
+                self.add_error("requested_value", "Enter a value different from the employee profile.")
+            if "requested_value" in cleaned:
+                try:
+                    employee._meta.get_field(field_name).clean(cleaned["requested_value"], employee)
+                except forms.ValidationError as exc:
+                    self.add_error("requested_value", exc)
+        return cleaned
 
 
 class TrainingConductForm(StyledModelForm):

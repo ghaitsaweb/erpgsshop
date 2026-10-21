@@ -412,7 +412,6 @@ ENTITY_CONFIG = {
         "columns": [("employee_id", "Employee ID"), ("name", "Name"), ("branch", "Branch"), ("department_record", "Department"), ("job_position", "Position"), ("supervisor", "Manager"), ("status", "Status")],
         "search": ["employee_id", "name", "department", "position", "branch__name", "department_record__name", "job_position__name"],
         "select_related": ["branch", "department_record", "job_position", "supervisor"],
-        "deletable": False,
     },
     "attendance": {
         "model": Attendance,

@@ -2,7 +2,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
 
-from .models import Company, Product, StockMove, Warehouse
+from .models import Company, Employee, Product, StockMove, Warehouse
 
 
 class EntityBulkDeleteTests(TestCase):
@@ -136,3 +136,33 @@ class EntityBulkDeleteTests(TestCase):
 
         self.assertContains(response, "delete confirmation is invalid")
         self.assertTrue(Product.objects.filter(pk=self.first.pk).exists())
+
+    def test_employee_list_uses_the_same_guarded_bulk_delete(self):
+        employee = Employee.objects.create(
+            company=self.company,
+            employee_id="EMP-BULK-1",
+            name="Unreferenced Employee",
+        )
+        list_url = reverse("entity_list", args=["employees"])
+        bulk_url = reverse("entity_bulk_delete", args=["employees"])
+
+        list_response = self.client.get(list_url)
+
+        self.assertEqual(list_response.status_code, 200)
+        self.assertContains(list_response, 'data-select-all')
+        self.assertContains(list_response, f'value="{employee.pk}"')
+
+        preview = self.client.post(
+            bulk_url,
+            {"selected_ids": [str(employee.pk)], "next": list_url},
+        )
+        self.assertEqual(preview.status_code, 200)
+        self.assertContains(preview, "Unreferenced Employee")
+
+        response = self.client.post(
+            bulk_url,
+            {"confirmation_token": preview.context["confirmation_token"]},
+        )
+
+        self.assertRedirects(response, list_url, fetch_redirect_response=False)
+        self.assertFalse(Employee.objects.filter(pk=employee.pk).exists())

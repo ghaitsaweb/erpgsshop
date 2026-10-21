@@ -111,7 +111,7 @@ def generate_contract_letter(contract, actor):
 @transaction.atomic
 def add_contract_allowance_version(*, contract, component, amount, effective_date, end_date, actor, reason):
     """Append an audited allowance version without rewriting active history."""
-    contract = EmploymentContract.objects.select_for_update().select_related(
+    contract = EmploymentContract.objects.select_for_update(of=("self",)).select_related(
         "employee", "salary_package"
     ).get(pk=contract.pk)
     if contract.status != EmploymentContract.Status.ACTIVE:

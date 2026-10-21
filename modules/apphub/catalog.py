@@ -2,7 +2,7 @@ APP_CATALOG = [
     # Platform
     {"slug": "foundation", "name": "ERP Foundation", "category": "Platform", "summary": "Companies, users, roles, permissions, audit-ready records, and shared master data.", "icon": "◈", "status": "stable", "enabled": True, "is_core": True, "sequence": 10},
     {"slug": "app-manager", "name": "App Manager", "category": "Platform", "summary": "Discover, enable, and monitor modular GSSHOP applications.", "icon": "▦", "status": "stable", "enabled": True, "is_core": True, "sequence": 20, "route": "app_manager"},
-    {"slug": "approval-workflow", "name": "Approval Workflow", "category": "Platform", "summary": "Configurable multi-step approvals, delegation, escalation, and audit history.", "icon": "✓", "status": "planned", "sequence": 30},
+    {"slug": "approval-workflow", "name": "Approval Workflow", "category": "Platform", "summary": "Configurable multi-step approvals, delegation, escalation, and audit history.", "icon": "✓", "status": "beta", "enabled": True, "sequence": 30, "route": "/approvals/"},
     {"slug": "documents", "name": "Documents", "category": "Platform", "summary": "Document storage, versioning, tags, access control, and record attachments.", "icon": "▤", "status": "planned", "sequence": 40},
     {"slug": "mail-notifications", "name": "Mail & Notifications", "category": "Platform", "summary": "Templates, inbox, reminders, push notifications, and communication history.", "icon": "✉", "status": "planned", "sequence": 50},
     {"slug": "knowledge", "name": "Knowledge", "category": "Platform", "summary": "Internal knowledge base, articles, revision history, and access policies.", "icon": "◇", "status": "planned", "sequence": 60},

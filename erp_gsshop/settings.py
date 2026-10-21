@@ -26,6 +26,7 @@ INSTALLED_APPS = [
     "core.apps.CoreConfig",
     "modules.organization.apps.OrganizationConfig",
     "modules.apphub.apps.AppHubConfig",
+    "modules.approval_workflow.apps.ApprovalWorkflowConfig",
     "modules.hr.apps.HRConfig",
     "modules.purchase.apps.PurchaseConfig",
     "modules.construction.apps.ConstructionConfig",
@@ -130,6 +131,14 @@ CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://redis:6379/1
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 1800
 CELERY_BEAT_SCHEDULE = {
+    "approval-workflow-runtime": {
+        "task": "approval_workflow.scan_due_runtime",
+        "schedule": 60.0,
+    },
+    "approval-workflow-outbox": {
+        "task": "approval_workflow.drain_outbox",
+        "schedule": 30.0,
+    },
     "finance-due-asset-disposals": {
         "task": "finance.finalize_due_asset_disposals",
         "schedule": 900.0,

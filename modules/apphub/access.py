@@ -25,6 +25,11 @@ def can_access_app(user, app_slug):
         return True
     if not user.groups.exists():
         return False
+    if app_slug == "approval-workflow":
+        # The dedicated inbox applies company, active-level, delegation, and
+        # submitter checks per transaction. Any role-bearing ERP user may open
+        # the module even when they do not administer its configuration.
+        return True
 
     from core.views import ENTITY_CONFIG, _can
 

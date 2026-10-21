@@ -10,11 +10,16 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from core.models import Company, Employee
-from modules.hr.change_requests import transition_employee_change_request
+from modules.hr.change_requests import initialize_employee_relation_drafts, transition_employee_change_request
 from modules.hr.forms import EmployeeChangeRequestForm
 from modules.hr.models import (
     EmployeeChangeRequest,
     EmployeeChangeRequestLine,
+    EmployeeAddress,
+    EmployeeBankAccount,
+    EmployeeDependent,
+    EmployeeEducation,
+    EmployeeEmergencyContact,
     HRSetting,
     HRWorkflowAudit,
 )
@@ -46,7 +51,8 @@ class EmployeeChangeRequestWorkflowTests(TestCase):
         return EmployeeChangeRequest.objects.create(**values)
 
     def _action(self, change_request, action):
-        return self.client.post(f"/app/employee-change-requests/{change_request.pk}/action/{action}/")
+        data = {"reason": "Rejected during workflow test"} if action == "reject" else {}
+        return self.client.post(f"/app/employee-change-requests/{change_request.pk}/action/{action}/", data)
 
     def test_form_captures_employee_value_and_approval_applies_it_once(self):
         response = self.client.post(
@@ -313,6 +319,129 @@ class EmployeeChangeRequestWorkflowTests(TestCase):
                     for field_name, requested_value in values[: line_count - 1]
                 ]
             )
+            with CaptureQueriesContext(connection) as captured:
+                transition_employee_change_request(change_request, "submit", self.user)
+            return len(captured)
+
+        small = query_count(2, "small")
+        large = query_count(12, "large")
+        self.assertEqual(small, large)
+
+    def test_relationship_snapshots_apply_updates_additions_and_removals(self):
+        address = EmployeeAddress.objects.create(
+            employee=self.employee,
+            address_type="current",
+            address="Old street",
+            city="Jakarta",
+            primary=True,
+        )
+        emergency = EmployeeEmergencyContact.objects.create(
+            employee=self.employee,
+            name="Old Contact",
+            phone="111",
+        )
+        bank = EmployeeBankAccount.objects.create(
+            employee=self.employee,
+            bank_name="Old Bank",
+            account_number="001",
+            primary=True,
+        )
+        EmployeeDependent.objects.create(
+            employee=self.employee,
+            name="Existing Child",
+            gender="female",
+        )
+        education = EmployeeEducation.objects.create(
+            employee=self.employee,
+            certificate="bachelor",
+            school="Existing University",
+        )
+        change_request = self._request(field_name="", current_value="", requested_value="")
+        initialize_employee_relation_drafts(change_request)
+
+        address_draft = change_request.address_changes.get(source_address=address)
+        address_draft.address = "New street"
+        address_draft.save(update_fields=["address", "updated_at"])
+        change_request.emergency_contact_changes.get(source_contact=emergency).delete()
+        bank_draft = change_request.bank_account_changes.get(source_account=bank)
+        bank_draft.account_number = "002"
+        bank_draft.save(update_fields=["account_number", "updated_at"])
+        change_request.bank_account_changes.create(
+            bank_name="New Bank",
+            account_number="003",
+            account_holder=self.employee.name,
+        )
+
+        self._action(change_request, "submit")
+        change_request.refresh_from_db()
+        self.assertEqual(change_request.status, "submitted")
+        self.assertEqual(
+            set(change_request.relation_history.values_list("relation_type", flat=True)),
+            {"address", "emergency_contact", "bank_account"},
+        )
+
+        self._action(change_request, "approve")
+        change_request.refresh_from_db()
+        address.refresh_from_db()
+        bank.refresh_from_db()
+        education.refresh_from_db()
+        self.assertEqual(change_request.status, "approved")
+        self.assertEqual(address.address, "New street")
+        self.assertEqual(bank.account_number, "002")
+        self.assertFalse(EmployeeEmergencyContact.objects.filter(employee=self.employee).exists())
+        self.assertEqual(EmployeeBankAccount.objects.filter(employee=self.employee).count(), 2)
+        self.assertEqual(EmployeeEducation.objects.filter(employee=self.employee).count(), 1)
+        self.assertEqual(education.school, "Existing University")
+        self.assertEqual(change_request.relation_history.filter(applied_at__isnull=False).count(), 3)
+
+    def test_relationship_approval_rejects_stale_employee_master(self):
+        address = EmployeeAddress.objects.create(
+            employee=self.employee,
+            address_type="current",
+            address="Old street",
+        )
+        change_request = self._request(field_name="", current_value="", requested_value="")
+        initialize_employee_relation_drafts(change_request)
+        draft = change_request.address_changes.get(source_address=address)
+        draft.city = "Bandung"
+        draft.save(update_fields=["city", "updated_at"])
+        self._action(change_request, "submit")
+
+        address.address = "Changed outside approval"
+        address.save(update_fields=["address", "updated_at"])
+        self._action(change_request, "approve")
+
+        change_request.refresh_from_db()
+        address.refresh_from_db()
+        self.assertEqual(change_request.status, "submitted")
+        self.assertEqual(address.address, "Changed outside approval")
+        self.assertEqual(address.city, "")
+
+    def test_relationship_submit_query_count_does_not_grow_with_row_count(self):
+        def query_count(row_count, suffix):
+            employee = Employee.objects.create(
+                company=self.company,
+                employee_id=f"ECR-REL-{suffix}",
+                name=f"Relationship Query Employee {suffix}",
+            )
+            EmployeeAddress.objects.bulk_create(
+                [
+                    EmployeeAddress(
+                        employee=employee,
+                        address_type="current" if index == 0 else "home",
+                        address=f"Street {index}",
+                    )
+                    for index in range(row_count)
+                ]
+            )
+            change_request = EmployeeChangeRequest.objects.create(
+                employee=employee,
+                field_name="",
+                current_value="",
+                requested_value="",
+            )
+            initialize_employee_relation_drafts(change_request)
+            change_request.address_changes.update(city="Jakarta")
             with CaptureQueriesContext(connection) as captured:
                 transition_employee_change_request(change_request, "submit", self.user)
             return len(captured)

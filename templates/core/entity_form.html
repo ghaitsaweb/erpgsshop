@@ -36,6 +36,10 @@
           {% for action in workflow_actions %}
             <form method="post" action="{% url 'document_action' entity object.pk action.key %}">
               {% csrf_token %}
+              {% if action.key == 'approve' or action.key == 'reject' %}
+                <label for="workflow-reason-{{ action.key }}">{% if action.key == 'reject' %}Rejection{% else %}Approval{% endif %} reason{% if action.key == 'reject' %} *{% endif %}</label>
+                <textarea id="workflow-reason-{{ action.key }}" class="form-control" name="reason" rows="2" {% if action.key == 'reject' %}required{% endif %}></textarea>
+              {% endif %}
               <button class="btn {% if action.primary %}btn-primary{% else %}btn-secondary{% endif %} btn-block" type="submit">{{ action.label }}</button>
             </form>
           {% endfor %}
@@ -44,13 +48,22 @@
       {% if entity == 'employee-change-requests' and object %}
         {% with detail_count=object.change_lines.count %}
         <section class="workflow-actions-panel">
-          <div><small>Change details</small><strong>{{ detail_count|add:1 }} field{{ detail_count|pluralize }}</strong></div>
+          <div><small>Scalar change details</small><strong>{{ detail_count }} additional field{{ detail_count|pluralize }}{% if object.field_name %} + primary{% endif %}</strong></div>
           {% if object.status == 'draft' %}<a class="btn btn-secondary btn-block" href="{% url 'entity_create' 'employee-change-request-lines' %}?request={{ object.pk }}">Add another field</a>{% endif %}
           <a class="btn btn-secondary btn-block" href="{% url 'entity_list' 'employee-change-request-lines' %}?request={{ object.pk }}">View change details</a>
           {% if object.change_history.exists %}<a class="btn btn-secondary btn-block" href="{% url 'entity_list' 'employee-change-request-history' %}?request={{ object.pk }}">View immutable history</a>{% endif %}
           {% if object.attachment_name %}<a class="btn btn-secondary btn-block" href="{% url 'employee_change_request_attachment' object.pk %}">Download {{ object.attachment_name }}</a>{% endif %}
         </section>
         {% endwith %}
+        <section class="workflow-actions-panel">
+          <div><small>Relationship details</small><strong>Edit the full employee snapshot</strong></div>
+          <a class="btn btn-secondary btn-block" href="{% url 'entity_list' 'employee-address-changes' %}?request={{ object.pk }}">Addresses ({{ object.address_changes.count }})</a>
+          <a class="btn btn-secondary btn-block" href="{% url 'entity_list' 'employee-emergency-contact-changes' %}?request={{ object.pk }}">Emergency contacts ({{ object.emergency_contact_changes.count }})</a>
+          <a class="btn btn-secondary btn-block" href="{% url 'entity_list' 'employee-bank-account-changes' %}?request={{ object.pk }}">Bank accounts ({{ object.bank_account_changes.count }})</a>
+          <a class="btn btn-secondary btn-block" href="{% url 'entity_list' 'employee-dependent-changes' %}?request={{ object.pk }}">Dependents ({{ object.dependent_changes.count }})</a>
+          <a class="btn btn-secondary btn-block" href="{% url 'entity_list' 'employee-education-changes' %}?request={{ object.pk }}">Education ({{ object.education_changes.count }})</a>
+          {% if object.relation_history.exists %}<a class="btn btn-secondary btn-block" href="{% url 'entity_list' 'employee-change-relation-history' %}?request={{ object.pk }}">View relationship history</a>{% endif %}
+        </section>
       {% endif %}
       {% if entity == 'stock-moves' %}<div class="info-strip">Stock ledger entries are immutable. Corrections use an opposite movement to preserve the audit trail.</div>{% endif %}
     </aside>

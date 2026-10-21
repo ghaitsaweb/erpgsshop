@@ -348,9 +348,9 @@ class CompanyHoliday(TimeStampedModel):
 
 class EmployeeChangeRequest(TimeStampedModel):
     employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="change_requests")
-    field_name = models.CharField(max_length=80)
+    field_name = models.CharField(max_length=80, blank=True)
     current_value = models.TextField(blank=True)
-    requested_value = models.TextField()
+    requested_value = models.TextField(blank=True)
     effective_date = models.DateField(default=timezone.localdate)
     reason = models.TextField(blank=True)
     attachment_name = models.CharField(max_length=255, blank=True, editable=False)
@@ -371,7 +371,7 @@ class EmployeeChangeRequest(TimeStampedModel):
         return super().delete(*args, **kwargs)
 
     def __str__(self):
-        return f"{self.employee} - {self.field_name}"
+        return f"{self.employee} - {self.field_name or 'relationship details'}"
 
 
 class EmployeeChangeRequestLine(TimeStampedModel):
@@ -401,6 +401,206 @@ class EmployeeChangeRequestLine(TimeStampedModel):
 
     def __str__(self):
         return f"{self.request} - {self.field_name}"
+
+
+class EmployeeChangeRequestDetailBase(TimeStampedModel):
+    """Shared draft lock for typed one-to-many employee change details."""
+
+    source_field_name = None
+
+    class Meta:
+        abstract = True
+
+    def clean(self):
+        super().clean()
+        if self.request_id and self.request.status != ApprovalStatus.DRAFT:
+            raise ValidationError("Employee change details can only be changed while the request is a draft.")
+        source = getattr(self, self.source_field_name, None) if self.source_field_name else None
+        if source and self.request_id and source.employee_id != self.request.employee_id:
+            raise ValidationError("The source relationship must belong to the request employee.")
+
+    def delete(self, *args, **kwargs):
+        if self.request.status != ApprovalStatus.DRAFT:
+            raise ValidationError("Employee change details can only be deleted while the request is a draft.")
+        return super().delete(*args, **kwargs)
+
+
+class EmployeeAddressChange(EmployeeChangeRequestDetailBase):
+    source_field_name = "source_address"
+    request = models.ForeignKey(EmployeeChangeRequest, on_delete=models.CASCADE, related_name="address_changes")
+    source_address = models.ForeignKey(
+        "EmployeeAddress",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        editable=False,
+        related_name="change_drafts",
+    )
+    address_type = models.CharField(
+        max_length=16,
+        choices=(
+            ("current", "Current Address"),
+            ("identity", "Identity Address"),
+            ("home", "Home"),
+            ("domicile", "Domicile"),
+            ("emergency", "Emergency"),
+        ),
+        default="current",
+    )
+    address = models.TextField(blank=True)
+    city = models.CharField(max_length=100, blank=True)
+    province = models.CharField(max_length=100, blank=True)
+    postal_code = models.CharField(max_length=20, blank=True)
+    phone = models.CharField(max_length=50, blank=True)
+    primary = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["request", "source_address"],
+                condition=models.Q(source_address__isnull=False),
+                name="unique_employee_address_change_source",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.request} - {self.get_address_type_display()}"
+
+
+class EmployeeEmergencyContactChange(EmployeeChangeRequestDetailBase):
+    source_field_name = "source_contact"
+    request = models.ForeignKey(EmployeeChangeRequest, on_delete=models.CASCADE, related_name="emergency_contact_changes")
+    source_contact = models.ForeignKey(
+        "EmployeeEmergencyContact",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        editable=False,
+        related_name="change_drafts",
+    )
+    name = models.CharField(max_length=255)
+    phone = models.CharField(max_length=50, blank=True)
+    relationship = models.CharField(max_length=80, blank=True)
+    address = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["request", "source_contact"],
+                condition=models.Q(source_contact__isnull=False),
+                name="unique_employee_emergency_change_source",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.request} - {self.name}"
+
+
+class EmployeeBankAccountChange(EmployeeChangeRequestDetailBase):
+    source_field_name = "source_account"
+    request = models.ForeignKey(EmployeeChangeRequest, on_delete=models.CASCADE, related_name="bank_account_changes")
+    source_account = models.ForeignKey(
+        "EmployeeBankAccount",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        editable=False,
+        related_name="change_drafts",
+    )
+    bank_name = models.CharField(max_length=160)
+    bic = models.CharField(max_length=50, blank=True)
+    bank_unit = models.CharField(max_length=255, blank=True)
+    account_number = models.CharField(max_length=50, blank=True)
+    account_holder = models.CharField(max_length=255, blank=True)
+    primary = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["request", "source_account"],
+                condition=models.Q(source_account__isnull=False),
+                name="unique_employee_bank_change_source",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.request} - {self.bank_name}"
+
+
+class EmployeeDependentChange(EmployeeChangeRequestDetailBase):
+    source_field_name = "source_dependent"
+    request = models.ForeignKey(EmployeeChangeRequest, on_delete=models.CASCADE, related_name="dependent_changes")
+    source_dependent = models.ForeignKey(
+        "EmployeeDependent",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        editable=False,
+        related_name="change_drafts",
+    )
+    name = models.CharField(max_length=255)
+    relationship = models.CharField(max_length=80, blank=True)
+    gender = models.CharField(max_length=16, choices=Employee.Gender.choices)
+    contact = models.CharField(max_length=50, blank=True)
+    birth_date = models.DateField(blank=True, null=True)
+    age = models.PositiveSmallIntegerField(blank=True, null=True)
+    education = models.CharField(max_length=255, blank=True)
+    occupation = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["request", "source_dependent"],
+                condition=models.Q(source_dependent__isnull=False),
+                name="unique_employee_dependent_change_source",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.request} - {self.name}"
+
+
+class EmployeeEducationChange(EmployeeChangeRequestDetailBase):
+    source_field_name = "source_education"
+    class Certificate(models.TextChoices):
+        GRADUATE = "graduate", "Graduate"
+        BACHELOR = "bachelor", "Bachelor"
+        MASTER = "master", "Master"
+        DOCTOR = "doctor", "Doctor"
+        OTHER = "other", "Other"
+
+    request = models.ForeignKey(EmployeeChangeRequest, on_delete=models.CASCADE, related_name="education_changes")
+    source_education = models.ForeignKey(
+        "EmployeeEducation",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        editable=False,
+        related_name="change_drafts",
+    )
+    certificate = models.CharField(max_length=50, choices=Certificate.choices)
+    study_field = models.CharField(max_length=255, blank=True)
+    school = models.CharField(max_length=255, blank=True)
+    city = models.CharField(max_length=255, blank=True)
+    graduation_year = models.CharField(max_length=4, blank=True)
+    gpa = models.DecimalField(max_digits=5, decimal_places=2, blank=True, null=True)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["request", "source_education"],
+                condition=models.Q(source_education__isnull=False),
+                name="unique_employee_education_change_source",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.request} - {self.get_certificate_display()}"
 
 
 class EmployeeChangeRequestHistory(TimeStampedModel):
@@ -435,6 +635,46 @@ class EmployeeChangeRequestHistory(TimeStampedModel):
 
     def delete(self, *args, **kwargs):
         raise ValidationError("Submitted employee change history cannot be deleted.")
+
+
+class EmployeeChangeRelationHistory(TimeStampedModel):
+    class RelationType(models.TextChoices):
+        ADDRESS = "address", "Addresses"
+        EMERGENCY_CONTACT = "emergency_contact", "Emergency Contacts"
+        BANK_ACCOUNT = "bank_account", "Bank Accounts"
+        DEPENDENT = "dependent", "Dependents"
+        EDUCATION = "education", "Education"
+
+    request = models.ForeignKey(EmployeeChangeRequest, on_delete=models.PROTECT, related_name="relation_history")
+    relation_type = models.CharField(max_length=32, choices=RelationType.choices)
+    value_before = models.JSONField(default=list)
+    value_after = models.JSONField(default=list)
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="submitted_employee_relation_change_history",
+    )
+    applied_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["request", "relation_type"],
+                name="unique_employee_relation_change_history",
+            )
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValidationError("Submitted employee relation history is immutable.")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Submitted employee relation history cannot be deleted.")
+
+    def __str__(self):
+        return f"{self.request} - {self.get_relation_type_display()}"
 
 
 class EmployeeDocument(TimeStampedModel):
@@ -1324,6 +1564,8 @@ class EmployeeCategory(TimeStampedModel):
 
 class EmployeeAddress(TimeStampedModel):
     class AddressType(models.TextChoices):
+        CURRENT = "current", "Current Address"
+        IDENTITY = "identity", "Identity Address"
         HOME = "home", "Home"
         DOMICILE = "domicile", "Domicile"
         EMERGENCY = "emergency", "Emergency"
@@ -1334,6 +1576,7 @@ class EmployeeAddress(TimeStampedModel):
     city = models.CharField(max_length=100, blank=True)
     province = models.CharField(max_length=100, blank=True)
     postal_code = models.CharField(max_length=20, blank=True)
+    phone = models.CharField(max_length=50, blank=True)
     primary = models.BooleanField(default=False)
 
     class Meta:
@@ -1356,6 +1599,77 @@ class EmployeeRelation(TimeStampedModel):
 
     def __str__(self):
         return f"{self.employee} - {self.name}"
+
+
+class EmployeeEmergencyContact(TimeStampedModel):
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="emergency_contacts")
+    name = models.CharField(max_length=255)
+    phone = models.CharField(max_length=50, blank=True)
+    relationship = models.CharField(max_length=80, blank=True)
+    address = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        ordering = ["employee__name", "name"]
+
+    def __str__(self):
+        return f"{self.employee} - {self.name}"
+
+
+class EmployeeBankAccount(TimeStampedModel):
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="bank_accounts")
+    bank_name = models.CharField(max_length=160)
+    bic = models.CharField(max_length=50, blank=True)
+    bank_unit = models.CharField(max_length=255, blank=True)
+    account_number = models.CharField(max_length=50, blank=True)
+    account_holder = models.CharField(max_length=255, blank=True)
+    primary = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["employee__name", "bank_name", "account_number"]
+
+    def __str__(self):
+        return f"{self.employee} - {self.bank_name}"
+
+
+class EmployeeDependent(TimeStampedModel):
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="dependents")
+    name = models.CharField(max_length=255)
+    relationship = models.CharField(max_length=80, blank=True)
+    gender = models.CharField(max_length=16, choices=Employee.Gender.choices)
+    contact = models.CharField(max_length=50, blank=True)
+    birth_date = models.DateField(blank=True, null=True)
+    age = models.PositiveSmallIntegerField(blank=True, null=True)
+    education = models.CharField(max_length=255, blank=True)
+    occupation = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        ordering = ["employee__name", "name"]
+
+    def __str__(self):
+        return f"{self.employee} - {self.name}"
+
+
+class EmployeeEducation(TimeStampedModel):
+    class Certificate(models.TextChoices):
+        GRADUATE = "graduate", "Graduate"
+        BACHELOR = "bachelor", "Bachelor"
+        MASTER = "master", "Master"
+        DOCTOR = "doctor", "Doctor"
+        OTHER = "other", "Other"
+
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="educations")
+    certificate = models.CharField(max_length=50, choices=Certificate.choices)
+    study_field = models.CharField(max_length=255, blank=True)
+    school = models.CharField(max_length=255, blank=True)
+    city = models.CharField(max_length=255, blank=True)
+    graduation_year = models.CharField(max_length=4, blank=True)
+    gpa = models.DecimalField(max_digits=5, decimal_places=2, blank=True, null=True)
+
+    class Meta:
+        ordering = ["employee__name", "-graduation_year"]
+
+    def __str__(self):
+        return f"{self.employee} - {self.get_certificate_display()}"
 
 
 class WorkingCalendar(TimeStampedModel):

@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}My Approvals · ERP GSSHOP{% endblock %}
+{% block page_title %}My Approvals{% endblock %}
+{% block content %}
+  <div class="panel table-panel">
+    <form method="post" action="{% url 'approval_mass_action' %}">
+      {% csrf_token %}
+      <div class="form-commandbar">
+        <input class="form-control" type="text" name="reason" placeholder="Shared reason (required for reject)">
+        <button class="btn btn-primary" type="submit" name="action" value="approve">Approve selected</button>
+        <button class="btn btn-secondary" type="submit" name="action" value="reject">Reject selected</button>
+      </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Select</th><th>Reference</th><th>Entity</th><th>Company</th><th>Rule</th><th>Level</th><th>Submitted</th></tr></thead>
+        <tbody>
+          {% for approval in instances %}
+            <tr class="record-row" data-record-url="{% url 'approval_detail' approval.pk %}" tabindex="0" role="link">
+              <td>{% if approval.workflow.enable_mass_approval %}<input type="checkbox" name="approval_ids" value="{{ approval.pk }}" aria-label="Select {{ approval.reference }}">{% else %}—{% endif %}</td>
+              <td><strong><a href="{% url 'approval_detail' approval.pk %}">{{ approval.reference }}</a></strong></td>
+              <td>{{ approval.entity }}</td>
+              <td>{{ approval.company }}</td>
+              <td>{{ approval.rule }}</td>
+              <td>{{ approval.current_level|add:1 }}</td>
+              <td>{{ approval.submitted_at }}</td>
+            </tr>
+          {% empty %}<tr><td class="empty" colspan="7">There are no approvals waiting for you.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+    </form>
+  </div>
+  <div class="panel table-panel">
+    <div class="panel-heading"><h2>Approval notifications</h2></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Notification</th><th>Event</th><th>Created</th></tr></thead>
+        <tbody>
+          {% for notification in notifications %}
+            <tr>
+              <td><a href="{% url 'approval_detail' notification.instance_id %}">{{ notification.title }}</a><br><small>{{ notification.message }}</small></td>
+              <td>{{ notification.event }}</td>
+              <td>{{ notification.created_at }}</td>
+            </tr>
+          {% empty %}<tr><td class="empty" colspan="3">There are no approval notifications.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}

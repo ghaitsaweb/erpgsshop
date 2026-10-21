@@ -9,6 +9,16 @@ from .forms import EmployeeChangeRequestLineForm
 ENTITY_MODELS = {
     "employee-change-request-lines": hr_models.EmployeeChangeRequestLine,
     "employee-change-request-history": hr_models.EmployeeChangeRequestHistory,
+    "employee-change-relation-history": hr_models.EmployeeChangeRelationHistory,
+    "employee-address-changes": hr_models.EmployeeAddressChange,
+    "employee-emergency-contact-changes": hr_models.EmployeeEmergencyContactChange,
+    "employee-bank-account-changes": hr_models.EmployeeBankAccountChange,
+    "employee-dependent-changes": hr_models.EmployeeDependentChange,
+    "employee-education-changes": hr_models.EmployeeEducationChange,
+    "employee-emergency-contacts": hr_models.EmployeeEmergencyContact,
+    "employee-bank-accounts": hr_models.EmployeeBankAccount,
+    "employee-dependents": hr_models.EmployeeDependent,
+    "employee-education": hr_models.EmployeeEducation,
     "employee-id-card-templates": hr_models.EmployeeIDCardTemplate,
     "employee-id-cards": hr_models.EmployeeIDCard,
     "multiple-job-assignments": hr_models.MultipleJobAssignment,
@@ -65,6 +75,7 @@ def _build_config(entity, model):
         config["form_fields"] = [field for field in config["form_fields"] if field != "status"]
     if entity in {
         "employee-change-request-history",
+        "employee-change-relation-history",
         "contract-allowance-history",
         "employee-document-history",
         "hr-workflow-audits",
@@ -87,6 +98,7 @@ HR_DETAIL_ENTITY_CONFIG["employee-change-request-lines"].update(
         ],
         "form": EmployeeChangeRequestLineForm,
         "select_related": ["request", "request__employee"],
+        "parent_request_filter": True,
     }
 )
 HR_DETAIL_ENTITY_CONFIG["employee-change-request-history"].update(
@@ -101,6 +113,31 @@ HR_DETAIL_ENTITY_CONFIG["employee-change-request-history"].update(
             ("applied_at", "Applied At"),
         ],
         "select_related": ["request", "request__employee", "submitted_by"],
+        "parent_request_filter": True,
+    }
+)
+
+for relation_entity in (
+    "employee-address-changes",
+    "employee-emergency-contact-changes",
+    "employee-bank-account-changes",
+    "employee-dependent-changes",
+    "employee-education-changes",
+):
+    HR_DETAIL_ENTITY_CONFIG[relation_entity]["parent_request_filter"] = True
+
+HR_DETAIL_ENTITY_CONFIG["employee-change-relation-history"].update(
+    {
+        "title": "Employee Relationship Change History",
+        "singular": "Employee Relationship Change History",
+        "columns": [
+            ("request", "Request"),
+            ("relation_type", "Relationship"),
+            ("submitted_by", "Submitted By"),
+            ("applied_at", "Applied At"),
+        ],
+        "select_related": ["request", "request__employee", "submitted_by"],
+        "parent_request_filter": True,
     }
 )
 

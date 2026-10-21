@@ -164,7 +164,11 @@ from modules.hr.models import (
     WorkPattern,
     WorkSchedule,
 )
-from modules.hr.change_requests import serialize_employee_value, transition_employee_change_request
+from modules.hr.change_requests import (
+    initialize_employee_relation_drafts,
+    serialize_employee_value,
+    transition_employee_change_request,
+)
 from modules.hr.career_transitions import transition_career_request
 from modules.hr.attendance_changes import transition_attendance_change_request
 from modules.hr.contracts import add_contract_allowance_version, transition_employment_contract
@@ -199,6 +203,19 @@ from modules.organization.forms import BranchForm
 from modules.organization.models import Branch
 from modules.apphub.models import ERPApp
 from modules.apphub.workspaces import ENTITY_APP_MAP
+from modules.approval_workflow.entity_config import APPROVAL_ENTITY_CONFIG
+from modules.approval_workflow.access import (
+    can_approval_entity_action,
+    is_approval_entity,
+    scope_approval_form,
+    scope_approval_queryset,
+)
+from modules.approval_workflow.models import ApprovalInstance
+from modules.approval_workflow.services import (
+    ensure_legacy_pending_approval,
+    perform_approval_action,
+    submit_for_approval,
+)
 from modules.hr.access import can_hr_entity_action, can_hr_workflow_action, scope_hr_form, scope_hr_queryset
 from modules.hr.detail_config import HR_DETAIL_ENTITY_CONFIG
 from modules.hr.training_views import training_conduct_form, training_conduct_list
@@ -1225,7 +1242,7 @@ ENTITY_CONFIG.update(
             "singular": "Employee Address",
             "columns": [("employee", "Employee"), ("address_type", "Type"), ("city", "City"), ("province", "Province"), ("primary", "Primary")],
             "search": ["employee__employee_id", "employee__name", "address", "city", "province"],
-            "form_fields": ["employee", "address_type", "address", "city", "province", "postal_code", "primary"],
+            "form_fields": ["employee", "address_type", "address", "city", "province", "postal_code", "phone", "primary"],
             "select_related": ["employee"],
         },
         "employee-relations": {
@@ -1509,6 +1526,7 @@ ENTITY_CONFIG.update(
 
 ENTITY_CONFIG.update(PURCHASE_ENTITY_CONFIG)
 ENTITY_CONFIG.update(HR_DETAIL_ENTITY_CONFIG)
+ENTITY_CONFIG.update(APPROVAL_ENTITY_CONFIG)
 ENTITY_CONFIG.update(CONSTRUCTION_ENTITY_CONFIG)
 ENTITY_CONFIG.update(POS_ENTITY_CONFIG)
 ENTITY_CONFIG.update(ACCOUNTING_ENTITY_CONFIG)
@@ -2081,6 +2099,7 @@ def _config(entity):
 def _can(user, action, model, entity=None):
     return (
         user.has_perm(f"{model._meta.app_label}.{action}_{model._meta.model_name}")
+        and can_approval_entity_action(user, entity, action)
         and can_hr_entity_action(user, entity, action)
         and can_purchase_entity_action(user, entity, action)
         and can_construction_entity_action(user, entity, action)
@@ -2090,11 +2109,14 @@ def _can(user, action, model, entity=None):
 
 
 def _scope_queryset(user, entity, queryset):
+    queryset = scope_approval_queryset(user, entity, queryset)
     queryset = scope_hr_queryset(user, entity, queryset)
     queryset = scope_purchase_queryset(user, entity, queryset)
     queryset = scope_construction_queryset(user, entity, queryset)
     queryset = scope_pos_queryset(user, entity, queryset)
     queryset = scope_accounting_queryset(user, entity, queryset)
+    if is_approval_entity(entity):
+        return queryset
     return scope_organization_queryset(
         queryset,
         include_branch=entity != "branches",
@@ -2103,6 +2125,7 @@ def _scope_queryset(user, entity, queryset):
 
 
 def _scope_form(form, user, entity):
+    scope_approval_form(form, user, entity)
     scope_hr_form(form, user, entity)
     scope_purchase_form(form, user, entity)
     scope_construction_form(form, user, entity)
@@ -2397,7 +2420,7 @@ def entity_list(request, entity):
         )
     queryset = _scope_queryset(request.user, entity, model.objects.all())
     parent_request_id = request.GET.get("request", "").strip()
-    if entity in {"employee-change-request-lines", "employee-change-request-history"} and parent_request_id.isdecimal():
+    if config.get("parent_request_filter") and parent_request_id.isdecimal():
         queryset = queryset.filter(request_id=int(parent_request_id))
     if config.get("select_related"):
         queryset = queryset.select_related(*config["select_related"])
@@ -2461,7 +2484,7 @@ def entity_create(request, entity):
         context, response = _document_context(request, entity, config)
         return response or render(request, "core/document_form.html", context)
     initial = None
-    if entity == "employee-change-request-lines" and request.method == "GET":
+    if config.get("parent_request_filter") and request.method == "GET" and config.get("creatable", True):
         request_id = request.GET.get("request")
         if request_id and request_id.isdecimal():
             parent_queryset = _scope_queryset(
@@ -2507,6 +2530,8 @@ def entity_create(request, entity):
         if isinstance(instance, StockMove):
             instance.created_by = request.user
         instance.save()
+        if entity == "employee-change-requests":
+            initialize_employee_relation_drafts(instance)
         form.save_m2m()
         messages.success(request, f"{config['singular']} created successfully.")
         return redirect("entity_list", entity=entity)
@@ -2558,7 +2583,16 @@ def entity_edit(request, entity, pk):
     if entity == "employee-change-requests" and request.method == "POST":
         return _edit_employee_change_request(request, config, scoped_queryset, pk)
     if entity == "employee-change-requests":
-        scoped_queryset = scoped_queryset.prefetch_related("change_lines", "change_history")
+        scoped_queryset = scoped_queryset.prefetch_related(
+            "change_lines",
+            "change_history",
+            "relation_history",
+            "address_changes",
+            "emergency_contact_changes",
+            "bank_account_changes",
+            "dependent_changes",
+            "education_changes",
+        )
     instance = get_object_or_404(scoped_queryset, pk=pk)
     if entity in DOCUMENT_CONFIG:
         context, response = _document_context(request, entity, config, instance=instance, mode="Edit")
@@ -2569,7 +2603,7 @@ def entity_edit(request, entity, pk):
         entity == "contract-allowances"
         and instance.contract.status == EmploymentContract.Status.ACTIVE
     ) or (
-        entity == "employee-change-request-lines"
+        config.get("parent_request_filter")
         and instance.request.status != "draft"
     ) or (
         bool(config.get("workflow")) and current_status in locked_statuses
@@ -2712,7 +2746,8 @@ def _edit_employee_change_request(request, config, scoped_queryset, pk):
     _scope_form(form, request.user, "employee-change-requests")
     if form.is_valid():
         employee = Employee.objects.select_for_update().get(pk=form.cleaned_data["employee"].pk)
-        actual_value = serialize_employee_value(getattr(employee, form.cleaned_data["field_name"]))
+        field_name = form.cleaned_data["field_name"]
+        actual_value = serialize_employee_value(getattr(employee, field_name)) if field_name else ""
         if actual_value != form.cleaned_data["current_value"]:
             form.add_error("employee", "The employee profile changed while this draft was being edited. Please review and save again.")
         else:
@@ -2757,7 +2792,7 @@ def entity_delete(request, entity, pk):
     if entity == "attendance" and instance.from_raw_attendance:
         messages.error(request, "Raw-derived attendance must be changed through an attendance correction request.")
         return redirect("entity_list", entity=entity)
-    if entity == "employee-change-request-lines" and instance.request.status != "draft":
+    if config.get("parent_request_filter") and hasattr(instance, "request") and instance.request.status != "draft":
         messages.error(request, "Employee change details can only be deleted while the request is a draft.")
         return redirect("entity_list", entity=entity)
     if request.method == "POST":
@@ -2952,7 +2987,7 @@ def document_action(request, entity, pk, action):
                     updated = 1
             elif entity == "career-transition-requests":
                 locked = get_object_or_404(
-                    scoped_queryset.select_for_update().select_related(
+                    scoped_queryset.select_for_update(of=("self",)).select_related(
                         "employee",
                         "transition_type",
                         "target_branch",
@@ -2979,7 +3014,54 @@ def document_action(request, entity, pk, action):
                     updated = 0
                 else:
                     try:
-                        transition_employee_change_request(locked, action, request.user)
+                        if action == "submit":
+                            submit_for_approval(
+                                locked,
+                                request.user,
+                                entity=entity,
+                                apply_submit=lambda target: transition_employee_change_request(
+                                    target,
+                                    "submit",
+                                    request.user,
+                                ),
+                            )
+                        elif action in {"approve", "reject"}:
+                            approval_instance = (
+                                ApprovalInstance.objects.filter(
+                                    workflow__content_type__app_label=locked._meta.app_label,
+                                    workflow__content_type__model=locked._meta.model_name,
+                                    object_id=locked.pk,
+                                    status=ApprovalInstance.Status.PENDING,
+                                )
+                                .select_related("rule", "workflow", "content_type")
+                                .first()
+                            )
+                            if approval_instance is None:
+                                approval_instance = ensure_legacy_pending_approval(
+                                    locked,
+                                    request.user,
+                                    entity=entity,
+                                )
+                            outcome = perform_approval_action(
+                                approval_instance,
+                                request.user,
+                                action,
+                                reason=request.POST.get("reason", ""),
+                                apply_result=lambda target, result_action: transition_employee_change_request(
+                                    target,
+                                    result_action,
+                                    request.user,
+                                ),
+                            )
+                            locked.refresh_from_db(fields=["status", "approver", "approved_at", "updated_at"])
+                            actual_status = locked.status
+                            if not outcome.completed:
+                                locked._workflow_audit_details = {
+                                    "approval_instance_id": approval_instance.pk,
+                                    "approval_level_advanced": True,
+                                }
+                        else:
+                            transition_employee_change_request(locked, action, request.user)
                     except ValidationError as exc:
                         messages.error(request, "; ".join(exc.messages))
                         return redirect("entity_edit", entity=entity, pk=pk)
@@ -3015,7 +3097,7 @@ def document_action(request, entity, pk, action):
                         record_id=instance.pk,
                         action=action,
                         previous_status="unprocessed" if entity == "raw-attendance" else current_status or "",
-                        new_status="processed" if entity == "raw-attendance" else definition["to"],
+                        new_status="processed" if entity == "raw-attendance" else actual_status,
                         actor=request.user,
                         details=getattr(instance, "_workflow_audit_details", {}),
                     )

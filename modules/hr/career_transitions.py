@@ -57,7 +57,7 @@ def transition_career_request(request_record, action, actor):
     if request_record.effective_date > timezone.localdate():
         raise ValidationError("A career transition cannot be applied before its effective date.")
 
-    employee = Employee.objects.select_for_update().select_related(
+    employee = Employee.objects.select_for_update(of=("self",)).select_related(
         "branch",
         "department_record",
         "job_position",

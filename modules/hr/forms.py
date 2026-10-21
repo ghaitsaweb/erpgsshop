@@ -121,7 +121,10 @@ class EmployeeChangeRequestForm(StyledModelForm):
         help_text="PDF, image, Word, or Excel file; maximum 10 MB.",
     )
 
-    field_name = forms.ChoiceField(choices=list(CHANGE_REQUEST_FIELDS.items()))
+    field_name = forms.ChoiceField(
+        choices=[("", "Relationship details only"), *CHANGE_REQUEST_FIELDS.items()],
+        required=False,
+    )
 
     class Meta:
         model = EmployeeChangeRequest
@@ -141,6 +144,8 @@ class EmployeeChangeRequestForm(StyledModelForm):
         cleaned = super().clean()
         employee = cleaned.get("employee")
         field_name = cleaned.get("field_name")
+        if self.instance.pk and employee and employee.pk != self.instance.employee_id:
+            self.add_error("employee", "The employee cannot be changed after the request is created.")
         if employee is not None and field_name in CHANGE_REQUEST_FIELDS:
             current_value = serialize_employee_value(getattr(employee, field_name))
             cleaned["current_value"] = current_value
@@ -152,6 +157,9 @@ class EmployeeChangeRequestForm(StyledModelForm):
                 else:
                     if serialize_employee_value(requested) == current_value:
                         self.add_error("requested_value", "Enter a value different from the employee profile.")
+        elif not field_name:
+            cleaned["current_value"] = ""
+            cleaned["requested_value"] = ""
         attachment = cleaned.get("attachment")
         if attachment:
             allowed_extensions = {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".doc", ".docx", ".xls", ".xlsx"}

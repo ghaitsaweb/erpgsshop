@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}{{ approval.reference }} · Approval{% endblock %}
+{% block page_title %}Approval · {{ approval.reference }}{% endblock %}
+{% block content %}
+  <div class="form-layout">
+    <section class="panel form-panel">
+      <header class="form-commandbar"><span>{{ approval.rule }}</span><strong class="document-state status-{{ approval.status }}">{{ approval.get_status_display }}</strong></header>
+      <dl class="approval-summary">
+        <dt>Entity</dt><dd>{{ approval.entity }}</dd>
+        <dt>Company</dt><dd>{{ approval.company }}</dd>
+        <dt>Submitted by</dt><dd>{{ approval.submitted_by }}</dd>
+        <dt>Submitted at</dt><dd>{{ approval.submitted_at }}</dd>
+        <dt>Current level</dt><dd>{{ approval.current_level|add:1 }}</dd>
+      </dl>
+      <h3>History</h3>
+      <div class="table-wrap"><table><thead><tr><th>Action</th><th>Level</th><th>Actor</th><th>Reason</th><th>Time</th></tr></thead><tbody>
+        {% for item in approval.actions.all %}<tr><td>{{ item.get_action_display }}</td><td>{% if item.level != None %}{{ item.level|add:1 }}{% else %}—{% endif %}</td><td>{{ item.performed_by }}</td><td>{{ item.reason|default:"—" }}</td><td>{{ item.performed_at }}</td></tr>{% endfor %}
+      </tbody></table></div>
+    </section>
+    <aside class="form-help">
+      {% if can_act %}
+        <section class="workflow-actions-panel">
+          <form method="post" action="{% url 'approval_action' approval.pk %}">{% csrf_token %}<input type="hidden" name="action" value="approve"><label>Approval reason{% if approval.rule.require_approve_reason %} *{% endif %}</label><textarea class="form-control" name="reason" rows="3"></textarea><button class="btn btn-primary btn-block" type="submit">Approve</button></form>
+          <form method="post" action="{% url 'approval_action' approval.pk %}">{% csrf_token %}<input type="hidden" name="action" value="reject"><label>Rejection reason *</label><textarea class="form-control" name="reason" rows="3" required></textarea><button class="btn btn-secondary btn-block" type="submit">Reject</button></form>
+        </section>
+      {% endif %}
+      <a class="btn btn-secondary btn-block" href="{% url 'approval_inbox' %}">Back to My Approvals</a>
+    </aside>
+  </div>
+{% endblock %}

@@ -60,6 +60,7 @@ def activate_due_delegation(instance_id, now=None):
     ):
         return False
     candidate_ids = set((instance.active_level or {}).get("resolved_user_ids") or [])
+    configured_delegate_ids = set((instance.active_level or {}).get("resolved_delegate_user_ids") or [])
     delegations = list(
         ApprovalDelegation.objects.filter(
             delegator_id__in=candidate_ids,
@@ -74,16 +75,19 @@ def activate_due_delegation(instance_id, now=None):
     )
     instance.delegate_activated_at = now
     instance.save(update_fields=["delegate_activated_at", "updated_at"])
-    if not delegations:
+    if not delegations and not configured_delegate_ids:
         return True
-    delegate_ids = sorted({item["delegate_id"] for item in delegations})
+    delegate_ids = sorted({item["delegate_id"] for item in delegations} | configured_delegate_ids)
     ApprovalAction.objects.create(
         instance=instance,
         action=ApprovalAction.Action.AUTO_DELEGATE,
         level=instance.current_level,
         performed_by=_system_actor(instance),
         reason="Delegation delay elapsed.",
-        metadata={"delegations": delegations},
+        metadata={
+            "delegations": delegations,
+            "configured_delegate_user_ids": sorted(configured_delegate_ids),
+        },
     )
     _queue_event(instance, "delegated", delegate_ids)
     return True

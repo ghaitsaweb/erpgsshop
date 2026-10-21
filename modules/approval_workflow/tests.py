@@ -22,7 +22,7 @@ from .models import (
     ApprovalRule,
     ApprovalTimeoutWhitelist,
 )
-from .runtime import complete_due_timeout, drain_approval_outbox
+from .runtime import activate_due_delegation, complete_due_timeout, drain_approval_outbox
 from .services import can_user_act, perform_approval_action, submit_for_approval
 from .tasks import process_mass_approval_item
 
@@ -232,6 +232,69 @@ class EmployeeChangeApprovalTests(TestCase):
         self.rule.save(update_fields=["use_delegate", "updated_at"])
 
         self.assertTrue(can_user_act(approval, self.delegate))
+
+    def test_rule_configured_delegate_activates_after_delay(self):
+        self.rule.use_delegate = True
+        self.rule.delegate_after = 1
+        self.rule.delegate_period = ApprovalRule.Period.MINUTES
+        self.rule.approval_levels = [
+            {
+                "name": "HR review",
+                "user_ids": [self.approver.pk],
+                "selected_delegate_ids": [self.delegate.pk],
+                "minimum_approvals": 1,
+            }
+        ]
+        self.rule.save(
+            update_fields=[
+                "use_delegate",
+                "delegate_after",
+                "delegate_period",
+                "approval_levels",
+                "updated_at",
+            ]
+        )
+        approval = self._submit(self._request())
+        self.assertEqual(approval.active_level["resolved_delegate_user_ids"], [self.delegate.pk])
+        self.assertFalse(can_user_act(approval, self.delegate))
+        approval.delegate_due_at = timezone.now() - timedelta(seconds=1)
+        approval.save(update_fields=["delegate_due_at", "updated_at"])
+
+        self.assertTrue(activate_due_delegation(approval.pk))
+        approval.refresh_from_db()
+        self.assertTrue(can_user_act(approval, self.delegate))
+        outcome = self._act(approval, self.delegate, "approve")
+
+        action = approval.actions.get(action=ApprovalAction.Action.APPROVE)
+        self.assertTrue(outcome.completed)
+        self.assertEqual(action.effective_approver, self.delegate)
+        self.assertIsNone(action.delegated_from)
+        self.assertTrue(approval.actions.filter(action=ApprovalAction.Action.AUTO_DELEGATE).exists())
+
+    def test_approver_and_configured_delegate_must_not_overlap(self):
+        self.rule.use_delegate = True
+        self.rule.delegate_after = 1
+        self.rule.delegate_period = ApprovalRule.Period.MINUTES
+        self.rule.approval_levels = [
+            {
+                "name": "Invalid overlap",
+                "user_ids": [self.approver.pk],
+                "selected_delegate_ids": [self.approver.pk],
+                "minimum_approvals": 1,
+            }
+        ]
+        self.rule.save(
+            update_fields=[
+                "use_delegate",
+                "delegate_after",
+                "delegate_period",
+                "approval_levels",
+                "updated_at",
+            ]
+        )
+
+        with self.assertRaisesMessage(ValidationError, "same user as approver and delegate"):
+            self._submit(self._request())
 
     def test_whitelisted_timeout_rejects_with_immutable_snapshot(self):
         content_type = ContentType.objects.get_for_model(EmployeeChangeRequest)

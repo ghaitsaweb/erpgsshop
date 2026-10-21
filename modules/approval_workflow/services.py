@@ -161,6 +161,34 @@ def _level_group_references(level):
     return names, {int(group_id) for group_id in ids}
 
 
+def _configured_ids(values):
+    result = set()
+    for value in values or []:
+        if isinstance(value, dict):
+            value = value.get("id") or value.get("value") or value.get("user_id")
+        if value not in (None, ""):
+            result.add(int(value))
+    return result
+
+
+def _level_delegate_references(level):
+    names = set(level.get("delegate_group_names") or [])
+    ids = _configured_ids(level.get("delegate_group_ids") or level.get("selected_delegate_group_ids"))
+    return names, ids
+
+
+def _level_direct_delegate_ids(level):
+    ids = _configured_ids(
+        level.get("delegate_user_ids")
+        or level.get("selected_delegate_ids")
+        or level.get("selected_delegates")
+    )
+    for source in level.get("delegates") or []:
+        if source.get("type") == "user":
+            ids.update(_configured_ids(source.get("user_ids") or source.get("users")))
+    return ids
+
+
 def _resolve_levels(record, levels, company_id):
     if len(levels) > MAX_APPROVAL_LEVELS:
         raise ValidationError(f"Approval rules support at most {MAX_APPROVAL_LEVELS} levels.")
@@ -170,12 +198,16 @@ def _resolve_levels(record, levels, company_id):
     direct_ids = set()
     for level in levels:
         names, ids = _level_group_references(level)
+        delegate_names, delegate_ids = _level_delegate_references(level)
         all_group_names.update(names)
+        all_group_names.update(delegate_names)
         all_group_ids.update(ids)
-        direct_ids.update(level.get("user_ids") or level.get("selected_user_ids") or [])
+        all_group_ids.update(delegate_ids)
+        direct_ids.update(_configured_ids(level.get("user_ids") or level.get("selected_user_ids")))
+        direct_ids.update(_level_direct_delegate_ids(level))
         for source in level.get("approvers") or []:
             if source.get("type") == "user":
-                direct_ids.update(source.get("user_ids") or [])
+                direct_ids.update(_configured_ids(source.get("user_ids")))
             elif source.get("type") == "record_supervisor":
                 record_paths.add("employee.supervisor.user_id")
             elif source.get("type") in {"record_field", "hierarchy"} and source.get("field"):
@@ -218,18 +250,28 @@ def _resolve_levels(record, levels, company_id):
     snapshots = []
     for level in levels:
         snapshot = dict(level)
-        user_ids = set(level.get("user_ids") or level.get("selected_user_ids") or []) & active_direct_ids
+        user_ids = _configured_ids(level.get("user_ids") or level.get("selected_user_ids")) & active_direct_ids
         names, ids = _level_group_references(level)
         ids.update(group_ids_by_name[name] for name in names if name in group_ids_by_name)
         for group_id in ids:
             user_ids.update(users_by_group.get(group_id, ()))
         for source in level.get("approvers") or []:
             if source.get("type") == "user":
-                user_ids.update(set(source.get("user_ids") or []) & active_direct_ids)
+                user_ids.update(_configured_ids(source.get("user_ids")) & active_direct_ids)
             elif source.get("type") == "record_supervisor":
                 user_ids.update(record_users_by_path.get("employee.supervisor.user_id", set()) & active_direct_ids)
             elif source.get("type") in {"record_field", "hierarchy"} and source.get("field"):
                 user_ids.update(record_users_by_path.get(source["field"], set()) & active_direct_ids)
+        delegate_user_ids = _level_direct_delegate_ids(level) & active_direct_ids
+        delegate_names, delegate_group_ids = _level_delegate_references(level)
+        delegate_group_ids.update(
+            group_ids_by_name[name] for name in delegate_names if name in group_ids_by_name
+        )
+        for group_id in delegate_group_ids:
+            delegate_user_ids.update(users_by_group.get(group_id, ()))
+        overlap = user_ids & delegate_user_ids
+        if overlap:
+            raise ValidationError("An approval level cannot use the same user as approver and delegate.")
         minimum = int(level.get("minimum_approvals", level.get("min_approval", 1)))
         if len(user_ids) < minimum:
             user_ids.update(fallback_ids)
@@ -240,6 +282,7 @@ def _resolve_levels(record, levels, company_id):
                 f"Approval level {level.get('name') or level.get('layer_name') or 'unnamed'} does not have enough active approvers."
             )
         snapshot["resolved_user_ids"] = sorted(user_ids)
+        snapshot["resolved_delegate_user_ids"] = sorted(delegate_user_ids)
         snapshot["minimum_approvals"] = minimum
         snapshots.append(snapshot)
     return snapshots
@@ -388,7 +431,12 @@ def can_user_act(instance, user):
         return True
     level = instance.active_level or {}
     candidates = set(level.get("resolved_user_ids") or [])
-    return user.pk in candidates or _delegated_from(instance, user.pk, candidates) is not None
+    configured_delegates = set(level.get("resolved_delegate_user_ids") or [])
+    return (
+        user.pk in candidates
+        or (delegation_available(instance) and user.pk in configured_delegates)
+        or _delegated_from(instance, user.pk, candidates) is not None
+    )
 
 
 @transaction.atomic
@@ -409,11 +457,13 @@ def perform_approval_action(instance, actor, action, *, reason="", apply_result)
     if level is None:
         raise ValidationError("The approval instance has no active level.")
     candidate_ids = set(level.get("resolved_user_ids") or [])
+    configured_delegate_ids = set(level.get("resolved_delegate_user_ids") or [])
     master = instance.rule.master_approver_id == actor.pk
     delegated_from = None
     if not actor.is_superuser and not master and actor.pk not in candidate_ids:
         delegated_from = _delegated_from(instance, actor.pk, candidate_ids)
-        if delegated_from is None:
+        configured_delegate = delegation_available(instance) and actor.pk in configured_delegate_ids
+        if delegated_from is None and not configured_delegate:
             raise ValidationError("You are not an approver for the active approval level.")
     reason = (reason or "").strip()
     if action == "reject" and not reason:

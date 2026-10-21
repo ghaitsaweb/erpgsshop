@@ -51,11 +51,13 @@ def _visible_pending(user):
     visible = []
     for instance in instances:
         candidate_ids = set((instance.active_level or {}).get("resolved_user_ids") or [])
+        configured_delegate_ids = set((instance.active_level or {}).get("resolved_delegate_user_ids") or [])
         if (
             instance.rule.master_approver_id == user.pk
             or user.pk in candidate_ids
             or candidate_ids & immediate_delegator_ids
             or (delegation_available(instance, now) and candidate_ids & delegator_ids)
+            or (delegation_available(instance, now) and user.pk in configured_delegate_ids)
         ):
             visible.append(instance)
     return visible

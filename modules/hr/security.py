@@ -80,6 +80,7 @@ PAYROLL_MODELS = {
     "employmentcontract",
     "contracttype",
     "contractallowance",
+    "contractlettertemplate",
     "contractletter",
     "payslip",
     "payrollperiod",

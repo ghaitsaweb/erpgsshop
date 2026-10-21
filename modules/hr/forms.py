@@ -5,6 +5,7 @@ from core.forms import StyledModelForm
 from .change_requests import CHANGE_REQUEST_FIELDS
 from .models import (
     AttendanceChangeRequest,
+    ContractAllowance,
     EmployeeChangeRequest,
     EmploymentContract,
     RawAttendance,
@@ -35,7 +36,53 @@ class AttendanceChangeRequestForm(StyledModelForm):
 class EmploymentContractForm(StyledModelForm):
     class Meta:
         model = EmploymentContract
-        fields = ["employee", "number", "contract_type", "start_date", "end_date", "base_salary", "notes"]
+        fields = [
+            "employee",
+            "number",
+            "contract_type",
+            "start_date",
+            "end_date",
+            "salary_package",
+            "base_salary",
+            "letter_template",
+            "notes",
+        ]
+
+    def clean(self):
+        cleaned = super().clean()
+        salary_package = cleaned.get("salary_package")
+        if salary_package and cleaned.get("base_salary") == 0:
+            cleaned["base_salary"] = salary_package.base_salary
+            self.instance.base_salary = salary_package.base_salary
+        return cleaned
+
+
+class ContractAllowanceForm(StyledModelForm):
+    change_reason = forms.CharField(
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 3}),
+        help_text="Required when adding a new effective allowance version to an active contract.",
+    )
+
+    class Meta:
+        model = ContractAllowance
+        fields = ["contract", "component", "amount", "effective_date", "end_date", "active"]
+
+    def clean(self):
+        cleaned = super().clean()
+        contract = cleaned.get("contract")
+        reason = (cleaned.get("change_reason") or "").strip()
+        if contract and contract.status == EmploymentContract.Status.ACTIVE:
+            if self.instance.pk:
+                raise forms.ValidationError(
+                    "Active-contract allowance versions are immutable. Add a new allowance version instead."
+                )
+            if not cleaned.get("active"):
+                self.add_error("active", "A new active-contract allowance version must be active.")
+            if len(reason) < 8:
+                self.add_error("change_reason", "Enter a concrete change reason of at least 8 characters.")
+        cleaned["change_reason"] = reason
+        return cleaned
 
 
 class EmployeeChangeRequestForm(StyledModelForm):

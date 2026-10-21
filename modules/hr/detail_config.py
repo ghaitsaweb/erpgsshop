@@ -60,7 +60,7 @@ def _build_config(entity, model):
     if entity == "leave-bulk-operations":
         config["workflow"] = APPROVAL_WORKFLOW
         config["form_fields"] = [field for field in config["form_fields"] if field != "status"]
-    if entity in {"employee-document-history", "hr-workflow-audits"}:
+    if entity in {"contract-allowance-history", "employee-document-history", "hr-workflow-audits"}:
         config.update({"creatable": False, "editable": False, "deletable": False})
     return config
 

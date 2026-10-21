@@ -62,6 +62,7 @@ for model in [
     hr_models.ScheduleExchange,
     hr_models.ContractType,
     hr_models.ContractAllowance,
+    hr_models.ContractLetterTemplate,
     hr_models.ContractLetter,
     hr_models.DisciplinaryStage,
     hr_models.AttendanceChangeRequest,

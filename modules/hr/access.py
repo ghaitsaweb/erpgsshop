@@ -27,6 +27,7 @@ FULL_HR_GROUPS = {HR_SUPER_USER, HR_MANAGER, HR_ADMINISTRATOR}
 PAYROLL_ENTITIES = {
     "contracts",
     "contract-allowances",
+    "contract-letter-templates",
     "contract-letters",
     "contract-types",
     "payslips",
@@ -182,6 +183,7 @@ HR_SCOPED_ENTITIES = {
     "schedule-exchanges",
     "contract-types",
     "contract-allowances",
+    "contract-letter-templates",
     "contract-letters",
     "disciplinary-stages",
     "attendance-change-requests",

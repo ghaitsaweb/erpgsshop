@@ -1,4 +1,5 @@
 from decimal import Decimal
+import re
 import uuid
 
 from django.conf import settings
@@ -51,6 +52,20 @@ class EmploymentContract(TimeStampedModel):
         TERMINATED = "terminated", "Terminated"
 
     employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="contracts")
+    salary_package = models.ForeignKey(
+        "SalaryPackage",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="contracts",
+    )
+    letter_template = models.ForeignKey(
+        "ContractLetterTemplate",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="contracts",
+    )
     number = models.CharField(max_length=40, unique=True)
     contract_type = models.CharField(max_length=20, choices=ContractType.choices)
     start_date = models.DateField()
@@ -71,6 +86,16 @@ class EmploymentContract(TimeStampedModel):
             errors["end_date"] = "A fixed-term contract requires an end date."
         if self.base_salary is not None and self.base_salary < 0:
             errors["base_salary"] = "Base salary cannot be negative."
+        if self.salary_package_id and self.employee_id:
+            if self.salary_package.company_id != self.employee.company_id:
+                errors["salary_package"] = "The salary package must belong to the employee company."
+            if not self.salary_package.active:
+                errors["salary_package"] = "Select an active salary package."
+        if self.letter_template_id and self.employee_id:
+            if self.letter_template.company_id != self.employee.company_id:
+                errors["letter_template"] = "The letter template must belong to the employee company."
+            if not self.letter_template.active:
+                errors["letter_template"] = "Select an active contract letter template."
         if errors:
             raise ValidationError(errors)
 
@@ -1033,6 +1058,13 @@ class PayrollRun(TimeStampedModel):
 
 class CompensationBenefit(TimeStampedModel):
     employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="compensation_benefits")
+    contract = models.ForeignKey(
+        EmploymentContract,
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="compensation_snapshots",
+    )
     effective_date = models.DateField(default=timezone.localdate)
     basic_salary = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     allowance_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
@@ -1043,6 +1075,24 @@ class CompensationBenefit(TimeStampedModel):
 
     class Meta:
         ordering = ["-effective_date", "employee__name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["contract", "effective_date"],
+                name="unique_contract_compensation_effective_date",
+            )
+        ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.contract_id and self.employee_id and self.contract.employee_id != self.employee_id:
+            errors["contract"] = "The compensation contract must belong to the selected employee."
+        for field_name in ("basic_salary", "allowance_amount", "deduction_amount"):
+            value = getattr(self, field_name)
+            if value is not None and value < 0:
+                errors[field_name] = "Compensation amounts cannot be negative."
+        if errors:
+            raise ValidationError(errors)
 
     @property
     def total_compensation(self):
@@ -1226,6 +1276,52 @@ class ContractType(TimeStampedModel):
         return f"{self.code} - {self.name}"
 
 
+CONTRACT_LETTER_VARIABLES = {
+    "company_name",
+    "contract_number",
+    "employee_id",
+    "employee_name",
+    "start_date",
+    "end_date",
+    "base_salary",
+}
+
+
+class ContractLetterTemplate(TimeStampedModel):
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="contract_letter_templates")
+    code = models.CharField(max_length=30)
+    name = models.CharField(max_length=120)
+    letter_type = models.CharField(max_length=80, default="Employment Contract")
+    content = models.TextField(
+        help_text=(
+            "Supported variables: {{ company_name }}, {{ contract_number }}, {{ employee_id }}, "
+            "{{ employee_name }}, {{ start_date }}, {{ end_date }}, and {{ base_salary }}."
+        )
+    )
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "code"],
+                name="unique_contract_letter_template_code",
+            )
+        ]
+
+    def clean(self):
+        super().clean()
+        variables = set(re.findall(r"{{\s*([a-z_][a-z0-9_]*)\s*}}", self.content or ""))
+        unsupported = sorted(variables - CONTRACT_LETTER_VARIABLES)
+        if unsupported:
+            raise ValidationError(
+                {"content": f"Unsupported contract letter variables: {', '.join(unsupported)}."}
+            )
+
+    def __str__(self):
+        return f"{self.code} - {self.name}"
+
+
 class ContractAllowance(TimeStampedModel):
     contract = models.ForeignKey(EmploymentContract, on_delete=models.CASCADE, related_name="allowance_lines")
     component = models.ForeignKey(SalaryComponent, on_delete=models.PROTECT, related_name="contract_allowances")
@@ -1236,10 +1332,44 @@ class ContractAllowance(TimeStampedModel):
 
     class Meta:
         ordering = ["-effective_date", "component__name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["contract", "component", "effective_date"],
+                name="unique_contract_allowance_effective_date",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(amount__gte=0),
+                name="contract_allowance_amount_nonnegative",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["contract", "active", "effective_date"],
+                name="hr_contract_allow_active_idx",
+            )
+        ]
 
     def clean(self):
+        super().clean()
+        errors = {}
         if self.end_date and self.end_date < self.effective_date:
-            raise ValidationError({"end_date": "End date must be on or after effective date."})
+            errors["end_date"] = "End date must be on or after effective date."
+        if self.amount is not None and self.amount < 0:
+            errors["amount"] = "Allowance amount cannot be negative."
+        if self.contract_id and self.component_id:
+            employee_company_id = self.contract.employee.company_id
+            if self.component.company_id != employee_company_id:
+                errors["component"] = "The salary component must belong to the contract company."
+            if self.component.component_type != SalaryComponent.ComponentType.EARNING:
+                errors["component"] = "Contract allowances require an earning salary component."
+            if self.effective_date < self.contract.start_date:
+                errors["effective_date"] = "Allowance cannot start before the contract."
+            if self.contract.end_date and self.effective_date > self.contract.end_date:
+                errors["effective_date"] = "Allowance cannot start after the contract ends."
+            if self.end_date and self.contract.end_date and self.end_date > self.contract.end_date:
+                errors["end_date"] = "Allowance cannot end after the contract."
+        if errors:
+            raise ValidationError(errors)
 
     def __str__(self):
         return f"{self.contract} - {self.component}"
@@ -1247,14 +1377,35 @@ class ContractAllowance(TimeStampedModel):
 
 class ContractLetter(TimeStampedModel):
     contract = models.ForeignKey(EmploymentContract, on_delete=models.CASCADE, related_name="letters")
+    template = models.ForeignKey(
+        ContractLetterTemplate,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="generated_letters",
+    )
     letter_number = models.CharField(max_length=50, unique=True)
     letter_type = models.CharField(max_length=80, default="Employment Contract")
     issued_date = models.DateField(default=timezone.localdate)
+    content = models.TextField(blank=True)
+    generated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="generated_contract_letters",
+    )
     attachment_url = models.URLField(blank=True)
     notes = models.TextField(blank=True)
 
     class Meta:
         ordering = ["-issued_date"]
+
+    def clean(self):
+        super().clean()
+        if self.contract_id and self.template_id:
+            if self.contract.employee.company_id != self.template.company_id:
+                raise ValidationError({"template": "The template must belong to the contract company."})
 
     def __str__(self):
         return self.letter_number

@@ -98,6 +98,7 @@ from modules.hr.models import (
     CompensationBenefit,
     ContractAllowance,
     ContractLetter,
+    ContractLetterTemplate,
     ContractType,
     Department,
     DisciplinaryStage,
@@ -165,8 +166,14 @@ from modules.hr.models import (
 )
 from modules.hr.change_requests import transition_employee_change_request
 from modules.hr.attendance_changes import transition_attendance_change_request
-from modules.hr.contracts import transition_employment_contract
-from modules.hr.forms import AttendanceChangeRequestForm, EmployeeChangeRequestForm, EmploymentContractForm, RawAttendanceForm
+from modules.hr.contracts import add_contract_allowance_version, transition_employment_contract
+from modules.hr.forms import (
+    AttendanceChangeRequestForm,
+    ContractAllowanceForm,
+    EmployeeChangeRequestForm,
+    EmploymentContractForm,
+    RawAttendanceForm,
+)
 from modules.hr.raw_attendance import process_raw_attendance
 from modules.localization.models import DocumentSequence, LocalizationPack, PayrollParameter, TaxRule
 from modules.operations.models import (
@@ -832,10 +839,10 @@ ENTITY_CONFIG = {
         "model": CompensationBenefit,
         "title": "Compensation & Benefits",
         "singular": "Compensation & Benefit",
-        "columns": [("employee", "Employee"), ("effective_date", "Effective Date"), ("basic_salary", "Basic Salary"), ("allowance_amount", "Allowance"), ("deduction_amount", "Deduction"), ("total_compensation", "Total"), ("status", "Status")],
+        "columns": [("employee", "Employee"), ("contract", "Contract"), ("effective_date", "Effective Date"), ("basic_salary", "Basic Salary"), ("allowance_amount", "Allowance"), ("deduction_amount", "Deduction"), ("total_compensation", "Total"), ("status", "Status")],
         "search": ["employee__employee_id", "employee__name"],
         "form_fields": ["employee", "effective_date", "basic_salary", "allowance_amount", "deduction_amount", "approver", "notes"],
-        "select_related": ["employee", "approver"],
+        "select_related": ["employee", "contract", "approver"],
         "workflow": APPROVAL_WORKFLOW,
     },
     # Finance
@@ -1269,8 +1276,18 @@ ENTITY_CONFIG.update(
             "singular": "Contract Allowance",
             "columns": [("contract", "Contract"), ("component", "Component"), ("amount", "Amount"), ("effective_date", "Effective"), ("active", "Active")],
             "search": ["contract__number", "contract__employee__name", "component__name"],
-            "form_fields": ["contract", "component", "amount", "effective_date", "end_date", "active"],
+            "form": ContractAllowanceForm,
             "select_related": ["contract", "contract__employee", "component"],
+            "deletable": False,
+        },
+        "contract-letter-templates": {
+            "model": ContractLetterTemplate,
+            "title": "Contract Letter Templates",
+            "singular": "Contract Letter Template",
+            "columns": [("code", "Code"), ("name", "Template"), ("company", "Company"), ("letter_type", "Letter Type"), ("active", "Active")],
+            "search": ["code", "name", "letter_type", "content"],
+            "form_fields": ["company", "code", "name", "letter_type", "content", "active"],
+            "select_related": ["company"],
         },
         "contract-letters": {
             "model": ContractLetter,
@@ -1278,8 +1295,11 @@ ENTITY_CONFIG.update(
             "singular": "Contract Letter",
             "columns": [("letter_number", "Letter Number"), ("contract", "Contract"), ("letter_type", "Type"), ("issued_date", "Issued Date")],
             "search": ["letter_number", "contract__number", "contract__employee__name", "letter_type"],
-            "form_fields": ["contract", "letter_number", "letter_type", "issued_date", "attachment_url", "notes"],
-            "select_related": ["contract", "contract__employee"],
+            "form_fields": ["contract", "template", "letter_number", "letter_type", "issued_date", "content", "generated_by", "attachment_url", "notes"],
+            "select_related": ["contract", "contract__employee", "template", "generated_by"],
+            "creatable": False,
+            "editable": False,
+            "deletable": False,
         },
         "disciplinary-stages": {
             "model": DisciplinaryStage,
@@ -2436,6 +2456,34 @@ def entity_create(request, entity):
     form = _form_class(config)(request.POST or None, request.FILES or None)
     _scope_form(form, request.user, entity)
     if form.is_valid():
+        if entity == "contract-allowances" and form.cleaned_data["contract"].status == EmploymentContract.Status.ACTIVE:
+            try:
+                add_contract_allowance_version(
+                    contract=form.cleaned_data["contract"],
+                    component=form.cleaned_data["component"],
+                    amount=form.cleaned_data["amount"],
+                    effective_date=form.cleaned_data["effective_date"],
+                    end_date=form.cleaned_data.get("end_date"),
+                    actor=request.user,
+                    reason=form.cleaned_data["change_reason"],
+                )
+            except ValidationError as exc:
+                form.add_error(None, exc)
+            else:
+                messages.success(request, "Contract allowance version created and compensation refreshed.")
+                return redirect("entity_list", entity=entity)
+        if form.errors:
+            return render(
+                request,
+                "core/entity_form.html",
+                {
+                    "form": form,
+                    "config": config,
+                    "entity": entity,
+                    "mode": "Create",
+                    "developer_meta": developer_metadata(model, entity=entity),
+                },
+            )
         instance = form.save(commit=False)
         if isinstance(instance, StockMove):
             instance.created_by = request.user
@@ -2497,6 +2545,9 @@ def entity_edit(request, entity, pk):
     current_status = getattr(instance, config.get("workflow_field", "status"), None)
     locked_statuses = set(config.get("workflow_locked_statuses", {"approved", "cancelled"}))
     workflow_locked = (entity == "attendance" and instance.from_raw_attendance) or (
+        entity == "contract-allowances"
+        and instance.contract.status == EmploymentContract.Status.ACTIVE
+    ) or (
         bool(config.get("workflow")) and current_status in locked_statuses
     )
     if request.method == "POST" and workflow_locked:
@@ -2838,10 +2889,11 @@ def document_action(request, entity, pk, action):
                     updated = 0
                 else:
                     try:
-                        transition_employment_contract(locked, action)
+                        transition_employment_contract(locked, action, request.user)
                     except ValidationError as exc:
                         messages.error(request, "; ".join(exc.messages))
                         return redirect("entity_edit", entity=entity, pk=pk)
+                    instance = locked
                     updated = 1
             elif entity == "employee-change-requests":
                 locked = get_object_or_404(scoped_queryset.select_for_update(), pk=pk)

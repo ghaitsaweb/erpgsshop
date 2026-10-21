@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Delete selected {{ config.title }} · ERP GSSHOP{% endblock %}
+{% block page_title %}Delete selected {{ config.title }}{% endblock %}
+{% block content %}
+  <div class="panel danger-panel bulk-delete-confirm">
+    <p class="eyebrow danger-text">Confirmation required</p>
+    <h2>Delete {{ objects|length }} selected record{{ objects|length|pluralize }}?</h2>
+    <p>The server will delete this exact selection in one transaction. If one record is protected or has changed, none of the selected records will be deleted.</p>
+    <div class="bulk-delete-inventory" aria-label="Selected records">
+      <table>
+        <thead><tr><th>ID</th><th>{{ config.singular }}</th></tr></thead>
+        <tbody>
+          {% for object in objects %}<tr><td>{{ object.pk }}</td><td><strong>{{ object }}</strong></td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="bulk-delete-warning">Deletion is permanent in the application. Recovery requires restoring the affected data from a database backup.</p>
+    <form method="post" action="{% url 'entity_bulk_delete' entity %}" class="form-actions">
+      {% csrf_token %}
+      <input type="hidden" name="confirmation_token" value="{{ confirmation_token }}">
+      <a class="btn btn-secondary" href="{{ return_to }}">Cancel</a>
+      <button class="btn btn-danger" type="submit">Delete {{ objects|length }} record{{ objects|length|pluralize }}</button>
+    </form>
+  </div>
+{% endblock %}

@@ -1,0 +1,138 @@
+from django.contrib.auth import get_user_model
+from django.test import TestCase
+from django.urls import reverse
+
+from .models import Company, Product, StockMove, Warehouse
+
+
+class EntityBulkDeleteTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_superuser(
+            username="bulk-delete-admin",
+            password="test-password-123",
+            email="bulk-delete@example.com",
+        )
+        self.company = Company.objects.create(code="BLK", name="Bulk Delete Company")
+        self.first = Product.objects.create(
+            company=self.company,
+            sku="BULK-1",
+            name="Bulk Product One",
+        )
+        self.second = Product.objects.create(
+            company=self.company,
+            sku="BULK-2",
+            name="Bulk Product Two",
+        )
+        self.keep = Product.objects.create(
+            company=self.company,
+            sku="BULK-KEEP",
+            name="Product That Must Stay",
+        )
+        self.client.force_login(self.user)
+        self.url = reverse("entity_bulk_delete", args=["products"])
+
+    def _preview(self, *products, next_url="/app/products/"):
+        return self.client.post(
+            self.url,
+            {
+                "selected_ids": [str(product.pk) for product in products],
+                "next": next_url,
+            },
+        )
+
+    def test_list_supports_individual_and_current_page_selection(self):
+        response = self.client.get(reverse("entity_list", args=["products"]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-select-all')
+        self.assertContains(response, 'data-select-record', count=3)
+        self.assertContains(response, self.url)
+        self.assertNotContains(response, 'class="danger-link"')
+
+    def test_preview_is_non_mutating_and_confirmation_deletes_exact_selection(self):
+        return_url = "/app/products/?q=Bulk"
+        preview = self._preview(self.first, self.second, next_url=return_url)
+
+        self.assertEqual(preview.status_code, 200)
+        self.assertContains(preview, "Delete 2 selected records?")
+        self.assertContains(preview, "Bulk Product One")
+        self.assertContains(preview, "Bulk Product Two")
+        self.assertEqual(Product.objects.filter(pk__in=[self.first.pk, self.second.pk]).count(), 2)
+
+        response = self.client.post(
+            self.url,
+            {"confirmation_token": preview.context["confirmation_token"]},
+        )
+
+        self.assertRedirects(response, return_url, fetch_redirect_response=False)
+        self.assertFalse(Product.objects.filter(pk__in=[self.first.pk, self.second.pk]).exists())
+        self.assertTrue(Product.objects.filter(pk=self.keep.pk).exists())
+
+    def test_missing_or_out_of_scope_id_fails_closed(self):
+        response = self.client.post(
+            self.url,
+            {"selected_ids": [str(self.first.pk), "999999"], "next": "/app/products/"},
+            follow=True,
+        )
+
+        self.assertContains(response, "selection changed or contains records outside your access scope")
+        self.assertTrue(Product.objects.filter(pk=self.first.pk).exists())
+
+    def test_selection_is_bounded_to_one_page(self):
+        response = self.client.post(
+            self.url,
+            {"selected_ids": [str(index) for index in range(1, 27)]},
+            follow=True,
+        )
+
+        self.assertContains(response, "Select no more than 25 records at a time")
+        self.assertEqual(Product.objects.filter(company=self.company).count(), 3)
+
+    def test_protected_record_rolls_back_the_whole_selection(self):
+        protected_product = Product.objects.create(
+            company=self.company,
+            sku="BULK-PROTECTED",
+            name="Protected Product",
+        )
+        warehouse = Warehouse.objects.create(
+            company=self.company,
+            code="BULK-WH",
+            name="Bulk Warehouse",
+        )
+        StockMove.objects.create(
+            company=self.company,
+            product=protected_product,
+            warehouse=warehouse,
+            direction=StockMove.Direction.IN,
+            quantity=1,
+            created_by=self.user,
+        )
+        preview = self._preview(self.first, protected_product)
+
+        response = self.client.post(
+            self.url,
+            {"confirmation_token": preview.context["confirmation_token"]},
+            follow=True,
+        )
+
+        self.assertContains(response, "still used by other business records")
+        self.assertTrue(Product.objects.filter(pk=self.first.pk).exists())
+        self.assertTrue(Product.objects.filter(pk=protected_product.pk).exists())
+
+    def test_confirmation_token_is_bound_to_the_current_user(self):
+        preview = self._preview(self.first)
+        other_user = get_user_model().objects.create_superuser(
+            username="other-bulk-delete-admin",
+            password="test-password-123",
+            email="other-bulk-delete@example.com",
+        )
+        self.client.force_login(other_user)
+
+        response = self.client.post(
+            self.url,
+            {"confirmation_token": preview.context["confirmation_token"]},
+            follow=True,
+        )
+
+        self.assertContains(response, "delete confirmation is invalid")
+        self.assertTrue(Product.objects.filter(pk=self.first.pk).exists())

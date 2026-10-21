@@ -46,6 +46,20 @@
         </div>
       </details>
     </div>
+    {% if can_delete %}
+      <form id="bulk-delete-form" class="list-bulk-actions" method="post" action="{% url 'entity_bulk_delete' entity %}" data-bulk-delete-form hidden>
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{{ request.get_full_path }}">
+        <strong><span data-selected-count>0</span> selected</strong>
+        <details class="list-action-menu">
+          <summary>Action</summary>
+          <div class="list-action-popover">
+            <button type="submit"><span aria-hidden="true">×</span> Delete</button>
+          </div>
+        </details>
+        <button class="list-clear-selection" type="button" data-clear-selection>Clear</button>
+      </form>
+    {% endif %}
     {% if can_add %}<a class="btn btn-primary" href="{% url 'entity_create' entity %}">+ Add {{ config.singular }}</a>{% endif %}
   </div>
 
@@ -56,12 +70,12 @@
   <div class="panel table-panel" data-dev-model="{{ developer_meta.model }}" data-dev-table="{{ developer_meta.table }}" data-dev-entity="{{ developer_meta.entity }}">
     <div class="table-wrap">
       <table data-entity-list-table data-dev-model="{{ developer_meta.model }}" data-dev-table="{{ developer_meta.table }}">
-        <thead><tr>{% for column in columns %}<th data-list-field="{{ column.name }}" data-dev-field="{{ column.name }}" data-dev-field-label="{{ column.label }}" data-dev-field-type="{{ column.type }}" data-dev-field-column="{{ column.column }}" data-dev-field-relation="{{ column.relation }}" data-dev-field-kind="{{ column.kind }}">{{ column.label }}</th>{% endfor %}{% if can_delete %}<th class="align-right">Actions</th>{% endif %}</tr></thead>
+        <thead><tr>{% if can_delete %}<th class="list-select-column"><input class="list-select-checkbox" type="checkbox" data-select-all aria-label="Select all records on this page"></th>{% endif %}{% for column in columns %}<th data-list-field="{{ column.name }}" data-dev-field="{{ column.name }}" data-dev-field-label="{{ column.label }}" data-dev-field-type="{{ column.type }}" data-dev-field-column="{{ column.column }}" data-dev-field-relation="{{ column.relation }}" data-dev-field-kind="{{ column.kind }}">{{ column.label }}</th>{% endfor %}</tr></thead>
         <tbody>
           {% for row in rows %}
             <tr class="{% if can_change %}record-row{% endif %}" data-list-row data-dev-object data-dev-entity="{{ row.developer_meta.entity }}" data-dev-model="{{ row.developer_meta.model }}" data-dev-table="{{ row.developer_meta.table }}" data-dev-object-id="{{ row.developer_meta.object_id }}" data-dev-object-name="{{ row.developer_meta.object_name }}" {% if can_change %}data-record-url="{% url 'entity_edit' entity row.object.pk %}" tabindex="0" role="link" aria-label="Open {{ row.developer_meta.object_name }}"{% endif %}>
+              {% if can_delete %}<td class="list-select-column"><input class="list-select-checkbox" type="checkbox" name="selected_ids" value="{{ row.object.pk }}" form="bulk-delete-form" data-select-record aria-label="Select {{ row.developer_meta.object_name }}"></td>{% endif %}
               {% for cell in row.cells %}<td data-dev-field="{{ cell.name }}" data-dev-field-label="{{ cell.label }}" data-dev-field-type="{{ cell.type }}" data-dev-field-column="{{ cell.column }}" data-dev-field-relation="{{ cell.relation }}" data-dev-field-kind="{{ cell.kind }}">{% if forloop.first %}<strong>{{ cell.value }}</strong>{% else %}{{ cell.value }}{% endif %}</td>{% endfor %}
-              {% if can_delete %}<td class="actions align-right"><a class="danger-link" href="{% url 'entity_delete' entity row.object.pk %}">Delete</a></td>{% endif %}
             </tr>
           {% empty %}<tr><td class="empty" colspan="20">No records found. Add the first {{ config.singular|lower }}.</td></tr>{% endfor %}
           {% if rows %}<tr data-list-no-match hidden><td class="empty" colspan="20">No records match this filter on the current page.</td></tr>{% endif %}

@@ -1,9 +1,11 @@
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.core import signing
 from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Count, F, Max, Prefetch, Q, Sum
+from django.db.models.deletion import ProtectedError, RestrictedError
 from django.forms import inlineformset_factory, modelform_factory
 from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -2096,6 +2098,88 @@ def _config(entity):
         raise Http404("Unknown ERP module") from exc
 
 
+BULK_DELETE_MAX_SELECTION = 25
+BULK_DELETE_TOKEN_MAX_AGE = 10 * 60
+BULK_DELETE_TOKEN_SALT = "core.entity-bulk-delete.v1"
+
+
+def _delete_return_to(request, entity, candidate=None):
+    candidate = (candidate or request.POST.get("next") or "").strip()
+    if candidate and url_has_allowed_host_and_scheme(
+        candidate,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
+    ):
+        return candidate
+    return f"/app/{entity}/"
+
+
+def _parse_bulk_delete_ids(raw_ids):
+    selected_ids = []
+    seen = set()
+    for raw_id in raw_ids:
+        try:
+            record_id = int(raw_id)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("The selected record list is invalid.") from exc
+        if record_id <= 0:
+            raise ValidationError("The selected record list is invalid.")
+        if record_id not in seen:
+            selected_ids.append(record_id)
+            seen.add(record_id)
+    if not selected_ids:
+        raise ValidationError("Select at least one record first.")
+    if len(selected_ids) > BULK_DELETE_MAX_SELECTION:
+        raise ValidationError(
+            f"Select no more than {BULK_DELETE_MAX_SELECTION} records at a time."
+        )
+    return selected_ids
+
+
+def _delete_queryset(user, entity, config, *, for_update=False):
+    queryset = _scope_queryset(user, entity, config["model"].objects.all())
+    related_fields = list(config.get("select_related", ()))
+    if config.get("parent_request_filter") and "request" not in related_fields:
+        related_fields.append("request")
+    if related_fields:
+        queryset = queryset.select_related(*related_fields)
+    if for_update:
+        queryset = queryset.select_for_update(of=("self",))
+    return queryset
+
+
+def _load_delete_targets(user, entity, config, selected_ids, *, for_update=False):
+    targets = list(
+        _delete_queryset(user, entity, config, for_update=for_update).filter(pk__in=selected_ids)
+    )
+    targets_by_id = {target.pk: target for target in targets}
+    if len(targets_by_id) != len(selected_ids):
+        raise ValidationError(
+            "The selection changed or contains records outside your access scope. Select the records again."
+        )
+    return [targets_by_id[record_id] for record_id in selected_ids]
+
+
+def _delete_block_reason(entity, config, instance):
+    if entity == "attendance" and instance.from_raw_attendance:
+        return "Raw-derived attendance must be changed through an attendance correction request."
+    if (
+        config.get("parent_request_filter")
+        and hasattr(instance, "request")
+        and instance.request.status != "draft"
+    ):
+        return "Employee change details can only be deleted while the request is a draft."
+    return ""
+
+
+def _delete_error_message(error):
+    if isinstance(error, ValidationError):
+        return " ".join(error.messages)
+    if isinstance(error, (ProtectedError, RestrictedError)):
+        return "The selected records are still used by other business records and cannot be deleted."
+    return "The selected records could not be deleted because related business data changed."
+
+
 def _can(user, action, model, entity=None):
     return (
         user.has_perm(f"{model._meta.app_label}.{action}_{model._meta.model_name}")
@@ -2787,19 +2871,128 @@ def entity_delete(request, entity, pk):
     if not config.get("deletable", True) or not _can(request.user, "delete", model, entity):
         messages.error(request, "This record cannot be deleted or you do not have permission.")
         return redirect("entity_list", entity=entity)
-    scoped_queryset = _scope_queryset(request.user, entity, model.objects.all())
-    instance = get_object_or_404(scoped_queryset, pk=pk)
-    if entity == "attendance" and instance.from_raw_attendance:
-        messages.error(request, "Raw-derived attendance must be changed through an attendance correction request.")
-        return redirect("entity_list", entity=entity)
-    if config.get("parent_request_filter") and hasattr(instance, "request") and instance.request.status != "draft":
-        messages.error(request, "Employee change details can only be deleted while the request is a draft.")
+    instance = get_object_or_404(_delete_queryset(request.user, entity, config), pk=pk)
+    block_reason = _delete_block_reason(entity, config, instance)
+    if block_reason:
+        messages.error(request, block_reason)
         return redirect("entity_list", entity=entity)
     if request.method == "POST":
-        instance.delete()
+        try:
+            with transaction.atomic():
+                locked_instance = get_object_or_404(
+                    _delete_queryset(request.user, entity, config, for_update=True),
+                    pk=pk,
+                )
+                block_reason = _delete_block_reason(entity, config, locked_instance)
+                if block_reason:
+                    raise ValidationError(block_reason)
+                locked_instance.delete()
+        except (ValidationError, ProtectedError, RestrictedError, IntegrityError) as error:
+            messages.error(request, _delete_error_message(error))
+            return redirect("entity_list", entity=entity)
         messages.success(request, f"{config['singular']} deleted.")
         return redirect("entity_list", entity=entity)
     return render(request, "core/entity_confirm_delete.html", {"object": instance, "config": config, "entity": entity})
+
+
+@require_POST
+@login_required
+def entity_bulk_delete(request, entity):
+    config = _config(entity)
+    unavailable = _unavailable_application(request, entity)
+    if unavailable:
+        return unavailable
+    model = config["model"]
+    return_to = _delete_return_to(request, entity)
+    if not config.get("deletable", True) or not _can(request.user, "delete", model, entity):
+        messages.error(request, "These records cannot be deleted or you do not have permission.")
+        return redirect(return_to)
+
+    confirmation_token = request.POST.get("confirmation_token", "").strip()
+    if confirmation_token:
+        try:
+            payload = signing.loads(
+                confirmation_token,
+                salt=BULK_DELETE_TOKEN_SALT,
+                max_age=BULK_DELETE_TOKEN_MAX_AGE,
+            )
+            if payload.get("entity") != entity or payload.get("user_id") != request.user.pk:
+                raise signing.BadSignature("Bulk delete confirmation does not match this request.")
+            selected_ids = _parse_bulk_delete_ids(payload.get("selected_ids", ()))
+            return_to = _delete_return_to(request, entity, payload.get("return_to"))
+        except signing.SignatureExpired:
+            messages.error(request, "The delete confirmation expired. Select the records again.")
+            return redirect(return_to)
+        except (signing.BadSignature, ValidationError, AttributeError) as error:
+            message = (
+                _delete_error_message(error)
+                if isinstance(error, ValidationError)
+                else "The delete confirmation is invalid. Select the records again."
+            )
+            messages.error(request, message)
+            return redirect(return_to)
+
+        try:
+            with transaction.atomic():
+                targets = _load_delete_targets(
+                    request.user,
+                    entity,
+                    config,
+                    selected_ids,
+                    for_update=True,
+                )
+                blocked = [
+                    reason
+                    for target in targets
+                    if (reason := _delete_block_reason(entity, config, target))
+                ]
+                if blocked:
+                    raise ValidationError(blocked[0])
+                # scale-guard: allow SG001 — per-instance delete guards must run; selection is capped at 25 records.
+                for target in targets:
+                    target.delete()
+        except (ValidationError, ProtectedError, RestrictedError, IntegrityError) as error:
+            messages.error(request, _delete_error_message(error))
+            return redirect(return_to)
+
+        messages.success(request, f"{len(selected_ids)} {config['title'].lower()} deleted.")
+        return redirect(return_to)
+
+    try:
+        selected_ids = _parse_bulk_delete_ids(request.POST.getlist("selected_ids"))
+        targets = _load_delete_targets(request.user, entity, config, selected_ids)
+        blocked = [
+            reason
+            for target in targets
+            if (reason := _delete_block_reason(entity, config, target))
+        ]
+        if blocked:
+            raise ValidationError(blocked[0])
+    except ValidationError as error:
+        messages.error(request, _delete_error_message(error))
+        return redirect(return_to)
+
+    confirmation_token = signing.dumps(
+        {
+            "entity": entity,
+            "selected_ids": selected_ids,
+            "user_id": request.user.pk,
+            "return_to": return_to,
+        },
+        salt=BULK_DELETE_TOKEN_SALT,
+        compress=True,
+    )
+    return render(
+        request,
+        "core/entity_bulk_confirm_delete.html",
+        {
+            "config": config,
+            "entity": entity,
+            "objects": targets,
+            "confirmation_token": confirmation_token,
+            "return_to": return_to,
+        },
+    )
 
 
 @require_GET

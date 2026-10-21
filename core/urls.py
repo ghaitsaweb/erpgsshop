@@ -14,6 +14,7 @@ urlpatterns = [
     ),
     path("app/<slug:entity>/", views.entity_list, name="entity_list"),
     path("app/<slug:entity>/new/", views.entity_create, name="entity_create"),
+    path("app/<slug:entity>/bulk-delete/", views.entity_bulk_delete, name="entity_bulk_delete"),
     path("app/<slug:entity>/<int:pk>/edit/", views.entity_edit, name="entity_edit"),
     path("app/<slug:entity>/<int:pk>/print.pdf", views.document_pdf, name="document_pdf"),
     path("app/<slug:entity>/<int:pk>/action/<slug:action>/", views.document_action, name="document_action"),

@@ -32,7 +32,23 @@
   const filterCount = controls?.querySelector('[data-list-filter-count]');
   const groupCount = controls?.querySelector('[data-list-group-count]');
   const columns = Array.from(table.tHead?.querySelectorAll('[data-list-field]') || []);
-  const columnIndex = Object.fromEntries(columns.map((column, index) => [column.dataset.listField, index]));
+  const columnIndex = Object.fromEntries(columns.map((column) => [column.dataset.listField, column.cellIndex]));
+  const selectAll = table.querySelector('[data-select-all]');
+  const selectionInputs = Array.from(table.querySelectorAll('[data-select-record]'));
+  const bulkDeleteForm = document.querySelector('[data-bulk-delete-form]');
+  const selectedCount = bulkDeleteForm?.querySelector('[data-selected-count]');
+
+  const updateSelection = () => {
+    const selected = selectionInputs.filter((input) => input.checked);
+    const visible = selectionInputs.filter((input) => !input.closest('[data-list-row]').hidden);
+    const selectedVisible = visible.filter((input) => input.checked);
+    if (selectedCount) selectedCount.textContent = String(selected.length);
+    if (bulkDeleteForm) bulkDeleteForm.hidden = selected.length === 0;
+    if (selectAll) {
+      selectAll.checked = visible.length > 0 && selectedVisible.length === visible.length;
+      selectAll.indeterminate = selectedVisible.length > 0 && selectedVisible.length < visible.length;
+    }
+  };
 
   const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
   const rawValue = (row, field) => {
@@ -62,6 +78,8 @@
     const visibleRows = rows.filter((row) => {
       const visible = matchesFilter(row);
       row.hidden = !visible;
+      const selection = row.querySelector('[data-select-record]');
+      if (!visible && selection) selection.checked = false;
       return visible;
     });
     const field = groupSelect?.value || '';
@@ -97,6 +115,7 @@
           toggle.setAttribute('aria-expanded', String(nextExpanded));
           toggle.querySelector('span').textContent = nextExpanded ? '▾' : '▸';
           groupRows.forEach((row) => { row.hidden = !nextExpanded; });
+          updateSelection();
         });
         toggle.setAttribute('aria-expanded', 'true');
         cell.appendChild(toggle);
@@ -110,7 +129,22 @@
     if (noMatch) noMatch.hidden = visibleRows.length !== 0;
     if (filterCount) filterCount.hidden = !(fieldSelect?.value && filterInput?.value.trim());
     if (groupCount) groupCount.hidden = !field;
+    updateSelection();
   };
+
+  selectAll?.addEventListener('change', () => {
+    selectionInputs.forEach((input) => {
+      if (!input.closest('[data-list-row]').hidden) input.checked = selectAll.checked;
+    });
+    updateSelection();
+  });
+  selectionInputs.forEach((input) => input.addEventListener('change', updateSelection));
+  bulkDeleteForm?.querySelector('[data-clear-selection]')?.addEventListener('click', () => {
+    selectionInputs.forEach((input) => { input.checked = false; });
+    const actionMenu = bulkDeleteForm.querySelector('details');
+    if (actionMenu) actionMenu.open = false;
+    updateSelection();
+  });
 
   controls?.querySelector('[data-list-filter-clear]')?.addEventListener('click', () => {
     fieldSelect.value = '';
@@ -127,4 +161,5 @@
   });
 
   activateRecordRows(rows);
+  updateSelection();
 })();

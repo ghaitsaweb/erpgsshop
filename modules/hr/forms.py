@@ -1,13 +1,17 @@
+from pathlib import Path
+
 from django import forms
 
 from core.forms import StyledModelForm
 
-from .change_requests import CHANGE_REQUEST_FIELDS
+from .change_requests import clean_requested_value, serialize_employee_value
+from .employee_change_fields import CHANGE_REQUEST_FIELDS
 from .models import (
     AttendanceChangeRequest,
     CareerTransitionRequest,
     ContractAllowance,
     EmployeeChangeRequest,
+    EmployeeChangeRequestLine,
     EmploymentContract,
     RawAttendance,
     TrainingConduct,
@@ -112,6 +116,11 @@ class CareerTransitionRequestForm(StyledModelForm):
 
 
 class EmployeeChangeRequestForm(StyledModelForm):
+    attachment = forms.FileField(
+        required=False,
+        help_text="PDF, image, Word, or Excel file; maximum 10 MB.",
+    )
+
     field_name = forms.ChoiceField(choices=list(CHANGE_REQUEST_FIELDS.items()))
 
     class Meta:
@@ -123,21 +132,82 @@ class EmployeeChangeRequestForm(StyledModelForm):
         self.fields["current_value"].disabled = True
         self.fields["current_value"].help_text = "Captured from the selected employee when this draft is saved."
         self.fields["requested_value"].required = False
+        if self.instance and self.instance.attachment_name:
+            self.fields["attachment"].help_text = (
+                f"Current evidence: {self.instance.attachment_name}. Upload a file to replace it."
+            )
 
     def clean(self):
         cleaned = super().clean()
         employee = cleaned.get("employee")
         field_name = cleaned.get("field_name")
         if employee is not None and field_name in CHANGE_REQUEST_FIELDS:
-            current_value = getattr(employee, field_name)
+            current_value = serialize_employee_value(getattr(employee, field_name))
             cleaned["current_value"] = current_value
-            if cleaned.get("requested_value") == current_value:
-                self.add_error("requested_value", "Enter a value different from the employee profile.")
             if "requested_value" in cleaned:
                 try:
-                    employee._meta.get_field(field_name).clean(cleaned["requested_value"], employee)
+                    requested = clean_requested_value(employee, field_name, cleaned["requested_value"])
                 except forms.ValidationError as exc:
                     self.add_error("requested_value", exc)
+                else:
+                    if serialize_employee_value(requested) == current_value:
+                        self.add_error("requested_value", "Enter a value different from the employee profile.")
+        attachment = cleaned.get("attachment")
+        if attachment:
+            allowed_extensions = {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".doc", ".docx", ".xls", ".xlsx"}
+            extension = Path(attachment.name).suffix.lower()
+            if extension not in allowed_extensions:
+                self.add_error("attachment", "Attachment type is not allowed.")
+            if attachment.size == 0:
+                self.add_error("attachment", "Attachment cannot be empty.")
+            if attachment.size > 10 * 1024 * 1024:
+                self.add_error("attachment", "Attachment cannot exceed 10 MB.")
+        return cleaned
+
+    def save(self, commit=True):
+        instance = super().save(commit=False)
+        attachment = self.cleaned_data.get("attachment")
+        if attachment:
+            instance.attachment_name = Path(attachment.name).name[:255]
+            instance.attachment_content_type = (attachment.content_type or "application/octet-stream")[:120]
+            attachment.seek(0)
+            instance.attachment_content = attachment.read()
+        if commit:
+            instance.save()
+            self.save_m2m()
+        return instance
+
+
+class EmployeeChangeRequestLineForm(StyledModelForm):
+    field_name = forms.ChoiceField(choices=list(CHANGE_REQUEST_FIELDS.items()))
+
+    class Meta:
+        model = EmployeeChangeRequestLine
+        fields = ["request", "field_name", "current_value", "requested_value"]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["current_value"].disabled = True
+        self.fields["requested_value"].required = False
+        self.fields["request"].queryset = self.fields["request"].queryset.filter(status="draft")
+
+    def clean(self):
+        cleaned = super().clean()
+        request = cleaned.get("request")
+        field_name = cleaned.get("field_name")
+        if request and field_name in CHANGE_REQUEST_FIELDS:
+            if field_name == request.field_name:
+                self.add_error("field_name", "This field is already the primary request change.")
+            current_value = serialize_employee_value(getattr(request.employee, field_name))
+            cleaned["current_value"] = current_value
+            if "requested_value" in cleaned:
+                try:
+                    requested = clean_requested_value(request.employee, field_name, cleaned["requested_value"])
+                except forms.ValidationError as exc:
+                    self.add_error("requested_value", exc)
+                else:
+                    if serialize_employee_value(requested) == current_value:
+                        self.add_error("requested_value", "Enter a value different from the employee profile.")
         return cleaned
 
 

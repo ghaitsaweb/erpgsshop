@@ -3,9 +3,12 @@
 from django.db import models
 
 from . import models as hr_models
+from .forms import EmployeeChangeRequestLineForm
 
 
 ENTITY_MODELS = {
+    "employee-change-request-lines": hr_models.EmployeeChangeRequestLine,
+    "employee-change-request-history": hr_models.EmployeeChangeRequestHistory,
     "employee-id-card-templates": hr_models.EmployeeIDCardTemplate,
     "employee-id-cards": hr_models.EmployeeIDCard,
     "multiple-job-assignments": hr_models.MultipleJobAssignment,
@@ -60,12 +63,46 @@ def _build_config(entity, model):
     if entity == "leave-bulk-operations":
         config["workflow"] = APPROVAL_WORKFLOW
         config["form_fields"] = [field for field in config["form_fields"] if field != "status"]
-    if entity in {"contract-allowance-history", "employee-document-history", "hr-workflow-audits"}:
+    if entity in {
+        "employee-change-request-history",
+        "contract-allowance-history",
+        "employee-document-history",
+        "hr-workflow-audits",
+    }:
         config.update({"creatable": False, "editable": False, "deletable": False})
     return config
 
 
 HR_DETAIL_ENTITY_CONFIG = {entity: _build_config(entity, model) for entity, model in ENTITY_MODELS.items()}
+
+HR_DETAIL_ENTITY_CONFIG["employee-change-request-lines"].update(
+    {
+        "title": "Employee Change Request Details",
+        "singular": "Employee Change Request Detail",
+        "columns": [
+            ("request", "Request"),
+            ("field_name", "Field"),
+            ("current_value", "Current Value"),
+            ("requested_value", "Requested Value"),
+        ],
+        "form": EmployeeChangeRequestLineForm,
+        "select_related": ["request", "request__employee"],
+    }
+)
+HR_DETAIL_ENTITY_CONFIG["employee-change-request-history"].update(
+    {
+        "title": "Employee Change Request History",
+        "singular": "Employee Change Request History",
+        "columns": [
+            ("request", "Request"),
+            ("field_label", "Field"),
+            ("value_before", "Before"),
+            ("value_after", "After"),
+            ("applied_at", "Applied At"),
+        ],
+        "select_related": ["request", "request__employee", "submitted_by"],
+    }
+)
 
 HR_DETAIL_ENTITY_CONFIG["payroll-accounting-events"]["workflow"] = {
     "post": {"label": "Post Accounting", "from": ["pending", "failed"], "to": "posted", "primary": True, "service_controls_state": True},

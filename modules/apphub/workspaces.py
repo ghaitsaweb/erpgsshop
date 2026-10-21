@@ -248,7 +248,8 @@ APP_WORKSPACES = {
 # discovery, contextual navigation, and application installation share one list.
 APP_WORKSPACES["hr"]["entities"].extend(
     [
-        "business-units", "work-locations", "job-positions", "employee-change-requests", "employee-documents",
+        "business-units", "work-locations", "job-positions", "employee-change-requests",
+        "employee-change-request-lines", "employee-change-request-history", "employee-documents",
         "employee-disciplinary", "employee-checklists", "employee-onboarding", "employee-offboarding",
         "raw-attendance", "shifts", "work-schedules", "schedule-assignments", "leave-types", "leave-allocations",
         "overtime-rules", "payroll-periods", "salary-components", "travel-requests", "training-programs",
@@ -392,6 +393,8 @@ for entity in (
     "work-locations",
     "job-positions",
     "employee-change-requests",
+    "employee-change-request-lines",
+    "employee-change-request-history",
     "employee-documents",
     "employee-disciplinary",
     "employee-checklists",
@@ -490,6 +493,8 @@ ENTITY_MENU_LABELS = {
     "work-locations": "Work Locations",
     "job-positions": "Job Positions",
     "employee-change-requests": "Employee Change Requests",
+    "employee-change-request-lines": "Change Request Details",
+    "employee-change-request-history": "Change Request History",
     "employee-documents": "Employee Documents",
     "employee-disciplinary": "Employee Disciplinary",
     "employee-checklists": "Employee Checklists",
@@ -1375,6 +1380,8 @@ APP_MENU_GROUPS = {
             "items": [
                 {"label": "Employees", "entity": "employees"},
                 {"label": "Employee Change Requests", "entity": "employee-change-requests"},
+                {"label": "Change Request Details", "entity": "employee-change-request-lines"},
+                {"label": "Change Request History", "entity": "employee-change-request-history"},
                 {"label": "Employment Contracts", "entity": "contracts"},
                 {"label": "Employee Documents", "entity": "employee-documents"},
                 {"label": "Employee Disciplinary", "entity": "employee-disciplinary"},

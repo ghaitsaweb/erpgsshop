@@ -41,6 +41,17 @@
           {% endfor %}
         </section>
       {% endif %}
+      {% if entity == 'employee-change-requests' and object %}
+        {% with detail_count=object.change_lines.count %}
+        <section class="workflow-actions-panel">
+          <div><small>Change details</small><strong>{{ detail_count|add:1 }} field{{ detail_count|pluralize }}</strong></div>
+          {% if object.status == 'draft' %}<a class="btn btn-secondary btn-block" href="{% url 'entity_create' 'employee-change-request-lines' %}?request={{ object.pk }}">Add another field</a>{% endif %}
+          <a class="btn btn-secondary btn-block" href="{% url 'entity_list' 'employee-change-request-lines' %}?request={{ object.pk }}">View change details</a>
+          {% if object.change_history.exists %}<a class="btn btn-secondary btn-block" href="{% url 'entity_list' 'employee-change-request-history' %}?request={{ object.pk }}">View immutable history</a>{% endif %}
+          {% if object.attachment_name %}<a class="btn btn-secondary btn-block" href="{% url 'employee_change_request_attachment' object.pk %}">Download {{ object.attachment_name }}</a>{% endif %}
+        </section>
+        {% endwith %}
+      {% endif %}
       {% if entity == 'stock-moves' %}<div class="info-strip">Stock ledger entries are immutable. Corrections use an opposite movement to preserve the audit trail.</div>{% endif %}
     </aside>
   </div>

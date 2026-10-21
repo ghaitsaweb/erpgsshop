@@ -328,6 +328,11 @@ class Employee(TimeStampedModel):
         ACTIVE = "active", "Active"
         INACTIVE = "inactive", "Inactive"
 
+    class Gender(models.TextChoices):
+        MALE = "male", "Male"
+        FEMALE = "female", "Female"
+        OTHER = "other", "Other"
+
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="employees")
     branch = models.ForeignKey(
         "organization.Branch",
@@ -382,6 +387,24 @@ class Employee(TimeStampedModel):
     name = models.CharField(max_length=160)
     email = models.EmailField(blank=True)
     phone = models.CharField(max_length=40, blank=True)
+    gender = models.CharField(max_length=16, choices=Gender.choices, blank=True)
+    commute_distance_km = models.DecimalField(max_digits=8, decimal_places=2, blank=True, null=True)
+    religion = models.CharField(max_length=80, blank=True)
+    race = models.CharField(max_length=80, blank=True)
+    marital_status = models.CharField(max_length=40, blank=True)
+    nationality = models.CharField(max_length=80, blank=True)
+    province = models.CharField(max_length=100, blank=True)
+    domicile_code = models.CharField(max_length=20, blank=True)
+    identification = models.CharField(max_length=100, blank=True)
+    passport = models.CharField(max_length=100, blank=True)
+    birth_date = models.DateField(blank=True, null=True)
+    place_of_birth = models.CharField(max_length=160, blank=True)
+    blood_type = models.CharField(max_length=3, blank=True)
+    height_cm = models.DecimalField(max_digits=6, decimal_places=2, blank=True, null=True)
+    weight_kg = models.DecimalField(max_digits=6, decimal_places=2, blank=True, null=True)
+    visa_number = models.CharField(max_length=120, blank=True)
+    work_permit_number = models.CharField(max_length=120, blank=True)
+    visa_expiry_date = models.DateField(blank=True, null=True)
     department = models.CharField(max_length=100, blank=True)
     position = models.CharField(max_length=100, blank=True)
     join_date = models.DateField(default=timezone.localdate)
@@ -396,7 +419,14 @@ class Employee(TimeStampedModel):
 
     class Meta:
         ordering = ["name"]
-        constraints = [models.UniqueConstraint(fields=["company", "employee_id"], name="unique_employee_id_per_company")]
+        constraints = [
+            models.UniqueConstraint(fields=["company", "employee_id"], name="unique_employee_id_per_company"),
+            models.UniqueConstraint(
+                fields=["company", "identification"],
+                condition=~models.Q(identification=""),
+                name="unique_employee_identification_per_company",
+            ),
+        ]
 
     def clean(self):
         super().clean()
@@ -427,6 +457,12 @@ class Employee(TimeStampedModel):
                 errors["job_position"] = "Job position must belong to the selected department."
         if self.status == self.Status.ACTIVE and self.inactive_date:
             errors["inactive_date"] = "An active employee cannot have an inactive date."
+        if self.birth_date and self.birth_date > timezone.localdate():
+            errors["birth_date"] = "Birth date cannot be in the future."
+        for field_name in ("commute_distance_km", "height_cm", "weight_kg"):
+            value = getattr(self, field_name)
+            if value is not None and value < 0:
+                errors[field_name] = "Enter a value greater than or equal to zero."
         if errors:
             raise ValidationError(errors)
 

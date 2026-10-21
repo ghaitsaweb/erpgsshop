@@ -7,6 +7,11 @@ urlpatterns = [
     path("dashboard/", views.dashboard, name="dashboard"),
     path("api/products/search/", views.product_search, name="product_search"),
     path("api/customers/search/", views.customer_search, name="customer_search"),
+    path(
+        "app/employee-change-requests/<int:pk>/attachment/",
+        views.employee_change_request_attachment,
+        name="employee_change_request_attachment",
+    ),
     path("app/<slug:entity>/", views.entity_list, name="entity_list"),
     path("app/<slug:entity>/new/", views.entity_create, name="entity_create"),
     path("app/<slug:entity>/<int:pk>/edit/", views.entity_edit, name="entity_edit"),

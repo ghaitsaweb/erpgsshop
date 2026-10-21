@@ -353,14 +353,88 @@ class EmployeeChangeRequest(TimeStampedModel):
     requested_value = models.TextField()
     effective_date = models.DateField(default=timezone.localdate)
     reason = models.TextField(blank=True)
+    attachment_name = models.CharField(max_length=255, blank=True, editable=False)
+    attachment_content_type = models.CharField(max_length=120, blank=True, editable=False)
+    attachment_content = models.BinaryField(blank=True, null=True, editable=False)
     status = models.CharField(max_length=16, choices=ApprovalStatus.choices, default=ApprovalStatus.DRAFT)
     approver = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, blank=True, null=True, related_name="employee_change_approvals")
+    submitted_at = models.DateTimeField(blank=True, null=True, editable=False)
+    approved_at = models.DateTimeField(blank=True, null=True, editable=False)
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [models.Index(fields=["employee", "status", "effective_date"], name="hr_emp_change_status_idx")]
+
+    def delete(self, *args, **kwargs):
+        if self.status != ApprovalStatus.DRAFT:
+            raise ValidationError("Only a draft employee change request can be deleted.")
+        return super().delete(*args, **kwargs)
 
     def __str__(self):
         return f"{self.employee} - {self.field_name}"
+
+
+class EmployeeChangeRequestLine(TimeStampedModel):
+    request = models.ForeignKey(EmployeeChangeRequest, on_delete=models.CASCADE, related_name="change_lines")
+    field_name = models.CharField(max_length=80)
+    current_value = models.TextField(blank=True)
+    requested_value = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["request", "field_name"],
+                name="unique_employee_change_request_field",
+            )
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.request_id and self.request.status != ApprovalStatus.DRAFT:
+            raise ValidationError("Employee change details can only be changed while the request is a draft.")
+
+    def delete(self, *args, **kwargs):
+        if self.request.status != ApprovalStatus.DRAFT:
+            raise ValidationError("Employee change details can only be deleted while the request is a draft.")
+        return super().delete(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.request} - {self.field_name}"
+
+
+class EmployeeChangeRequestHistory(TimeStampedModel):
+    request = models.ForeignKey(EmployeeChangeRequest, on_delete=models.PROTECT, related_name="change_history")
+    field_name = models.CharField(max_length=80)
+    field_label = models.CharField(max_length=120)
+    value_before = models.TextField(blank=True)
+    value_after = models.TextField(blank=True)
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="submitted_employee_change_history",
+    )
+    applied_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["request", "field_name"],
+                name="unique_employee_change_history_field",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.request} - {self.field_label}"
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValidationError("Submitted employee change history is immutable.")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Submitted employee change history cannot be deleted.")
 
 
 class EmployeeDocument(TimeStampedModel):
@@ -735,6 +809,10 @@ class HRSetting(TimeStampedModel):
     attendance_tolerance_minutes = models.PositiveIntegerField(default=15)
     leave_approval_levels = models.PositiveSmallIntegerField(default=1, validators=[MinValueValidator(1), MaxValueValidator(5)])
     overtime_approval_required = models.BooleanField(default=True)
+    employee_change_request_attachment = models.BooleanField(
+        default=False,
+        help_text="Require one supporting attachment before an employee change request can be submitted.",
+    )
     payroll_currency = models.CharField(max_length=3, default="IDR")
 
     class Meta:

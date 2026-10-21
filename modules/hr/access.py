@@ -74,6 +74,8 @@ SELF_SERVICE_ENTITIES = {
     "overtime",
     "payslips",
     "employee-change-requests",
+    "employee-change-request-lines",
+    "employee-change-request-history",
     "employee-documents",
     "employee-onboarding",
     "employee-offboarding",
@@ -111,6 +113,7 @@ SELF_MUTABLE_ENTITIES = {
     "leave-requests",
     "overtime",
     "employee-change-requests",
+    "employee-change-request-lines",
     "employee-documents",
     "travel-requests",
     "cash-advances",
@@ -138,6 +141,8 @@ HR_SCOPED_ENTITIES = {
     "work-locations",
     "job-positions",
     "employee-change-requests",
+    "employee-change-request-lines",
+    "employee-change-request-history",
     "employee-documents",
     "employee-disciplinary",
     "employee-checklists",
@@ -340,6 +345,8 @@ def scope_hr_queryset(user, entity, queryset):
     if "loan" in fields:
         return queryset.filter(loan__employee_id__in=employee_ids)
     model_lookup = {
+        "employeechangerequestline": ("request__employee_id", employee_ids),
+        "employeechangerequesthistory": ("request__employee_id", employee_ids),
         "employeedocumenthistory": ("document__employee_id", employee_ids),
         "payrolldisbursement": ("payroll_run__company_id", company_ids),
         "payrollaccountingevent": ("payroll_run__company_id", company_ids),

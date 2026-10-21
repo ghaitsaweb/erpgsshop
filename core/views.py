@@ -8,7 +8,7 @@ from django.forms import inlineformset_factory, modelform_factory
 from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
-from django.utils.http import url_has_allowed_host_and_scheme
+from django.utils.http import content_disposition_header, url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_GET, require_POST
 
 from .forms import (
@@ -164,7 +164,7 @@ from modules.hr.models import (
     WorkPattern,
     WorkSchedule,
 )
-from modules.hr.change_requests import transition_employee_change_request
+from modules.hr.change_requests import serialize_employee_value, transition_employee_change_request
 from modules.hr.career_transitions import transition_career_request
 from modules.hr.attendance_changes import transition_attendance_change_request
 from modules.hr.contracts import add_contract_allowance_version, transition_employment_contract
@@ -508,7 +508,7 @@ ENTITY_CONFIG = {
         "model": EmployeeChangeRequest,
         "title": "Employee Change Requests",
         "singular": "Employee Change Request",
-        "columns": [("employee", "Employee"), ("field_name", "Field"), ("effective_date", "Effective Date"), ("status", "Status"), ("approver", "Approver")],
+        "columns": [("employee", "Employee"), ("field_name", "Primary Field"), ("effective_date", "Effective Date"), ("attachment_name", "Evidence"), ("status", "Status"), ("approver", "Approver")],
         "search": ["employee__employee_id", "employee__name", "field_name", "requested_value"],
         "form": EmployeeChangeRequestForm,
         "select_related": ["employee", "approver"],
@@ -2396,6 +2396,9 @@ def entity_list(request, entity):
             can_delete=_can(request.user, "delete", model, entity),
         )
     queryset = _scope_queryset(request.user, entity, model.objects.all())
+    parent_request_id = request.GET.get("request", "").strip()
+    if entity in {"employee-change-request-lines", "employee-change-request-history"} and parent_request_id.isdecimal():
+        queryset = queryset.filter(request_id=int(parent_request_id))
     if config.get("select_related"):
         queryset = queryset.select_related(*config["select_related"])
     query = request.GET.get("q", "").strip()
@@ -2457,7 +2460,19 @@ def entity_create(request, entity):
     if entity in DOCUMENT_CONFIG:
         context, response = _document_context(request, entity, config)
         return response or render(request, "core/document_form.html", context)
-    form = _form_class(config)(request.POST or None, request.FILES or None)
+    initial = None
+    if entity == "employee-change-request-lines" and request.method == "GET":
+        request_id = request.GET.get("request")
+        if request_id and request_id.isdecimal():
+            parent_queryset = _scope_queryset(
+                request.user,
+                "employee-change-requests",
+                EmployeeChangeRequest.objects.filter(status="draft"),
+            )
+            parent = parent_queryset.filter(pk=int(request_id)).first()
+            if parent:
+                initial = {"request": parent}
+    form = _form_class(config)(request.POST or None, request.FILES or None, initial=initial)
     _scope_form(form, request.user, entity)
     if form.is_valid():
         if entity == "contract-allowances" and form.cleaned_data["contract"].status == EmploymentContract.Status.ACTIVE:
@@ -2542,6 +2557,8 @@ def entity_edit(request, entity, pk):
         return _edit_employment_contract(request, config, scoped_queryset, pk)
     if entity == "employee-change-requests" and request.method == "POST":
         return _edit_employee_change_request(request, config, scoped_queryset, pk)
+    if entity == "employee-change-requests":
+        scoped_queryset = scoped_queryset.prefetch_related("change_lines", "change_history")
     instance = get_object_or_404(scoped_queryset, pk=pk)
     if entity in DOCUMENT_CONFIG:
         context, response = _document_context(request, entity, config, instance=instance, mode="Edit")
@@ -2551,6 +2568,9 @@ def entity_edit(request, entity, pk):
     workflow_locked = (entity == "attendance" and instance.from_raw_attendance) or (
         entity == "contract-allowances"
         and instance.contract.status == EmploymentContract.Status.ACTIVE
+    ) or (
+        entity == "employee-change-request-lines"
+        and instance.request.status != "draft"
     ) or (
         bool(config.get("workflow")) and current_status in locked_statuses
     )
@@ -2692,7 +2712,7 @@ def _edit_employee_change_request(request, config, scoped_queryset, pk):
     _scope_form(form, request.user, "employee-change-requests")
     if form.is_valid():
         employee = Employee.objects.select_for_update().get(pk=form.cleaned_data["employee"].pk)
-        actual_value = getattr(employee, form.cleaned_data["field_name"])
+        actual_value = serialize_employee_value(getattr(employee, form.cleaned_data["field_name"]))
         if actual_value != form.cleaned_data["current_value"]:
             form.add_error("employee", "The employee profile changed while this draft was being edited. Please review and save again.")
         else:
@@ -2737,11 +2757,42 @@ def entity_delete(request, entity, pk):
     if entity == "attendance" and instance.from_raw_attendance:
         messages.error(request, "Raw-derived attendance must be changed through an attendance correction request.")
         return redirect("entity_list", entity=entity)
+    if entity == "employee-change-request-lines" and instance.request.status != "draft":
+        messages.error(request, "Employee change details can only be deleted while the request is a draft.")
+        return redirect("entity_list", entity=entity)
     if request.method == "POST":
         instance.delete()
         messages.success(request, f"{config['singular']} deleted.")
         return redirect("entity_list", entity=entity)
     return render(request, "core/entity_confirm_delete.html", {"object": instance, "config": config, "entity": entity})
+
+
+@require_GET
+@login_required
+def employee_change_request_attachment(request, pk):
+    if not _can(request.user, "view", EmployeeChangeRequest, "employee-change-requests"):
+        raise Http404("Attachment not found.")
+    queryset = _scope_queryset(
+        request.user,
+        "employee-change-requests",
+        EmployeeChangeRequest.objects.only(
+            "id",
+            "employee_id",
+            "attachment_name",
+            "attachment_content_type",
+            "attachment_content",
+        ),
+    )
+    change_request = get_object_or_404(queryset, pk=pk)
+    if not change_request.attachment_content or not change_request.attachment_name:
+        raise Http404("Attachment not found.")
+    response = HttpResponse(
+        bytes(change_request.attachment_content),
+        content_type=change_request.attachment_content_type or "application/octet-stream",
+    )
+    response["Content-Disposition"] = content_disposition_header(True, change_request.attachment_name)
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @require_GET

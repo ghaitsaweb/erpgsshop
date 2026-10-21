@@ -54,7 +54,7 @@
         <details class="list-action-menu">
           <summary>Action</summary>
           <div class="list-action-popover">
-            <button type="submit"><span aria-hidden="true">×</span> Delete</button>
+            <button type="button" data-open-delete-wizard><span aria-hidden="true">×</span> Delete</button>
           </div>
         </details>
         <button class="list-clear-selection" type="button" data-clear-selection>Clear</button>
@@ -90,5 +90,26 @@
       </div>
     {% endif %}
   </div>
+  {% if can_delete %}
+    <dialog class="delete-wizard" data-delete-wizard aria-labelledby="delete-wizard-title">
+      <div class="delete-wizard-head">
+        <span class="delete-wizard-icon" aria-hidden="true">×</span>
+        <div>
+          <p class="eyebrow danger-text">Delete selected records</p>
+          <h2 id="delete-wizard-title">Review your selection</h2>
+        </div>
+        <button class="delete-wizard-close" type="button" data-close-delete-wizard aria-label="Close">×</button>
+      </div>
+      <p>You are about to delete <strong><span data-delete-wizard-count>0</span> {{ config.title|lower }}</strong>. The server will validate permission, access scope, and related business records before deleting anything.</p>
+      <div class="delete-wizard-inventory">
+        <ol data-delete-wizard-records></ol>
+      </div>
+      <p class="delete-wizard-note">All selected records are processed in one transaction. If one record is protected, none will be deleted.</p>
+      <div class="delete-wizard-actions">
+        <button class="btn btn-secondary" type="button" data-close-delete-wizard>Cancel</button>
+        <button class="btn btn-danger" type="submit" form="bulk-delete-form" name="confirmation" value="delete-selected-records" data-confirm-delete>Delete selected</button>
+      </div>
+    </dialog>
+  {% endif %}
   <script src="{% static 'js/entity-list.js' %}"></script>
 {% endblock %}

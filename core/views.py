@@ -1,6 +1,5 @@
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.core import signing
 from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
 from django.db import IntegrityError, transaction
@@ -2098,8 +2097,6 @@ def _config(entity):
 
 
 BULK_DELETE_MAX_SELECTION = 25
-BULK_DELETE_TOKEN_MAX_AGE = 10 * 60
-BULK_DELETE_TOKEN_SALT = "core.entity-bulk-delete.v1"
 
 
 def _delete_return_to(request, entity, candidate=None):
@@ -2907,91 +2904,36 @@ def entity_bulk_delete(request, entity):
         messages.error(request, "These records cannot be deleted or you do not have permission.")
         return redirect(return_to)
 
-    confirmation_token = request.POST.get("confirmation_token", "").strip()
-    if confirmation_token:
-        try:
-            payload = signing.loads(
-                confirmation_token,
-                salt=BULK_DELETE_TOKEN_SALT,
-                max_age=BULK_DELETE_TOKEN_MAX_AGE,
-            )
-            if payload.get("entity") != entity or payload.get("user_id") != request.user.pk:
-                raise signing.BadSignature("Bulk delete confirmation does not match this request.")
-            selected_ids = _parse_bulk_delete_ids(payload.get("selected_ids", ()))
-            return_to = _delete_return_to(request, entity, payload.get("return_to"))
-        except signing.SignatureExpired:
-            messages.error(request, "The delete confirmation expired. Select the records again.")
-            return redirect(return_to)
-        except (signing.BadSignature, ValidationError, AttributeError) as error:
-            message = (
-                _delete_error_message(error)
-                if isinstance(error, ValidationError)
-                else "The delete confirmation is invalid. Select the records again."
-            )
-            messages.error(request, message)
-            return redirect(return_to)
-
-        try:
-            with transaction.atomic():
-                targets = _load_delete_targets(
-                    request.user,
-                    entity,
-                    config,
-                    selected_ids,
-                    for_update=True,
-                )
-                blocked = [
-                    reason
-                    for target in targets
-                    if (reason := _delete_block_reason(entity, config, target))
-                ]
-                if blocked:
-                    raise ValidationError(blocked[0])
-                # scale-guard: allow SG001 — per-instance delete guards must run; selection is capped at 25 records.
-                for target in targets:
-                    target.delete()
-        except (ValidationError, ProtectedError, RestrictedError, IntegrityError) as error:
-            messages.error(request, _delete_error_message(error))
-            return redirect(return_to)
-
-        messages.success(request, f"{len(selected_ids)} {config['title'].lower()} deleted.")
+    if request.POST.get("confirmation") != "delete-selected-records":
+        messages.error(request, "Confirm deletion from the selection wizard.")
         return redirect(return_to)
 
     try:
         selected_ids = _parse_bulk_delete_ids(request.POST.getlist("selected_ids"))
-        targets = _load_delete_targets(request.user, entity, config, selected_ids)
-        blocked = [
-            reason
-            for target in targets
-            if (reason := _delete_block_reason(entity, config, target))
-        ]
-        if blocked:
-            raise ValidationError(blocked[0])
-    except ValidationError as error:
+        with transaction.atomic():
+            targets = _load_delete_targets(
+                request.user,
+                entity,
+                config,
+                selected_ids,
+                for_update=True,
+            )
+            blocked = [
+                reason
+                for target in targets
+                if (reason := _delete_block_reason(entity, config, target))
+            ]
+            if blocked:
+                raise ValidationError(blocked[0])
+            # scale-guard: allow SG001 — per-instance delete guards must run; selection is capped at 25 records.
+            for target in targets:
+                target.delete()
+    except (ValidationError, ProtectedError, RestrictedError, IntegrityError) as error:
         messages.error(request, _delete_error_message(error))
         return redirect(return_to)
 
-    confirmation_token = signing.dumps(
-        {
-            "entity": entity,
-            "selected_ids": selected_ids,
-            "user_id": request.user.pk,
-            "return_to": return_to,
-        },
-        salt=BULK_DELETE_TOKEN_SALT,
-        compress=True,
-    )
-    return render(
-        request,
-        "core/entity_bulk_confirm_delete.html",
-        {
-            "config": config,
-            "entity": entity,
-            "objects": targets,
-            "confirmation_token": confirmation_token,
-            "return_to": return_to,
-        },
-    )
+    messages.success(request, f"{len(selected_ids)} {config['title'].lower()} deleted.")
+    return redirect(return_to)
 
 
 @require_GET

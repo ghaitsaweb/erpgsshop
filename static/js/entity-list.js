@@ -37,6 +37,10 @@
   const selectionInputs = Array.from(table.querySelectorAll('[data-select-record]'));
   const bulkDeleteForm = document.querySelector('[data-bulk-delete-form]');
   const selectedCount = bulkDeleteForm?.querySelector('[data-selected-count]');
+  const deleteWizard = document.querySelector('[data-delete-wizard]');
+  const wizardCount = deleteWizard?.querySelector('[data-delete-wizard-count]');
+  const wizardRecords = deleteWizard?.querySelector('[data-delete-wizard-records]');
+  const confirmDelete = deleteWizard?.querySelector('[data-confirm-delete]');
 
   const updateSelection = () => {
     const selected = selectionInputs.filter((input) => input.checked);
@@ -144,6 +148,37 @@
     const actionMenu = bulkDeleteForm.querySelector('details');
     if (actionMenu) actionMenu.open = false;
     updateSelection();
+  });
+  bulkDeleteForm?.querySelector('[data-open-delete-wizard]')?.addEventListener('click', () => {
+    const selected = selectionInputs.filter((input) => input.checked);
+    if (!selected.length || !deleteWizard || !wizardRecords) return;
+    wizardRecords.replaceChildren();
+    selected.forEach((input) => {
+      const row = input.closest('[data-list-row]');
+      const item = document.createElement('li');
+      const id = document.createElement('span');
+      const name = document.createElement('strong');
+      id.textContent = `#${input.value}`;
+      name.textContent = row?.dataset.devObjectName || `Record ${input.value}`;
+      item.append(id, name);
+      wizardRecords.appendChild(item);
+    });
+    if (wizardCount) wizardCount.textContent = String(selected.length);
+    const actionMenu = bulkDeleteForm.querySelector('details');
+    if (actionMenu) actionMenu.open = false;
+    deleteWizard.showModal();
+  });
+  deleteWizard?.querySelectorAll('[data-close-delete-wizard]').forEach((button) => {
+    button.addEventListener('click', () => deleteWizard.close());
+  });
+  deleteWizard?.addEventListener('click', (event) => {
+    if (event.target === deleteWizard) deleteWizard.close();
+  });
+  bulkDeleteForm?.addEventListener('submit', () => {
+    if (confirmDelete) {
+      confirmDelete.disabled = true;
+      confirmDelete.textContent = 'Deleting…';
+    }
   });
 
   controls?.querySelector('[data-list-filter-clear]')?.addEventListener('click', () => {

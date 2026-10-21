@@ -470,10 +470,24 @@ input[type="checkbox"].form-control { width: 20px; min-height: 20px; }
 .form-help > p:last-of-type { color: #a9b9d6; font-size: 13px; line-height: 1.65; }
 .form-help .info-strip { margin-top: 20px; }
 .danger-panel { max-width: 660px; padding: 28px; }
-.bulk-delete-confirm { max-width: 760px; }
-.bulk-delete-inventory { max-height: 330px; margin-top: 20px; border: 1px solid var(--line); border-radius: 10px; overflow: auto; }
-.bulk-delete-inventory th:first-child, .bulk-delete-inventory td:first-child { width: 90px; }
-.bulk-delete-warning { margin: 16px 0 0; padding: 11px 13px; border: 1px solid #f1c2bd; border-radius: 9px; color: #8f312c; background: #fff4f2; font-size: 11px; line-height: 1.5; }
+.delete-wizard { width: min(620px, calc(100vw - 32px)); padding: 0; border: 0; border-radius: 16px; color: var(--ink); background: white; box-shadow: 0 28px 80px rgba(15,23,42,.3); }
+.delete-wizard::backdrop { background: rgba(15,23,42,.48); backdrop-filter: blur(2px); }
+.delete-wizard-head { display: grid; grid-template-columns: 42px minmax(0, 1fr) 32px; align-items: center; gap: 12px; padding: 20px 22px 16px; border-bottom: 1px solid var(--line); }
+.delete-wizard-head h2 { margin: 2px 0 0; font-size: 18px; }
+.delete-wizard-head p { margin: 0; }
+.delete-wizard-icon { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 12px; color: #a43731; background: #fff0ee; font-size: 25px; }
+.delete-wizard-close { width: 32px; height: 32px; border: 0; border-radius: 8px; color: #667085; background: transparent; cursor: pointer; font-size: 20px; }
+.delete-wizard-close:hover { background: #f2f4f7; }
+.delete-wizard > p { margin: 0; padding: 17px 22px 0; color: #596579; font-size: 12px; line-height: 1.6; }
+.delete-wizard-inventory { max-height: 280px; margin: 16px 22px 0; border: 1px solid var(--line); border-radius: 10px; overflow: auto; }
+.delete-wizard-inventory ol { margin: 0; padding: 0; list-style: none; }
+.delete-wizard-inventory li { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px; padding: 11px 13px; border-top: 1px solid #edf1f7; font-size: 11px; }
+.delete-wizard-inventory li:first-child { border-top: 0; }
+.delete-wizard-inventory span { color: #7a8699; font-variant-numeric: tabular-nums; }
+.delete-wizard-inventory strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.delete-wizard > .delete-wizard-note { margin: 14px 22px 0; padding: 10px 12px; border: 1px solid #f1c2bd; border-radius: 9px; color: #8f312c; background: #fff4f2; font-size: 10px; }
+.delete-wizard-actions { display: flex; justify-content: flex-end; gap: 9px; padding: 18px 22px 22px; }
+.delete-wizard-actions .btn:disabled { cursor: wait; opacity: .65; }
 
 .document-shell { max-width: 1280px; margin: 0 auto; }
 .document-commandbar { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 13px 13px 0 0; background: #f8faf9; }

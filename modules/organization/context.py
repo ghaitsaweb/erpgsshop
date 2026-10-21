@@ -322,6 +322,31 @@ def _filter_by_lookups(queryset, lookups, values):
     return queryset.filter(filters)
 
 
+def _filter_by_branch_lookups(queryset, lookups, context):
+    """Keep nullable legacy branch rows visible from their company main branch."""
+    selected_branch_ids = tuple(context.active_branch_ids or ())
+    if not lookups or not selected_branch_ids:
+        return queryset.none() if lookups else queryset
+    filters = Q()
+    for lookup in lookups:
+        filters |= Q(**{f"{lookup}__in": selected_branch_ids})
+
+    main_company_ids = Branch.objects.filter(
+        pk__in=selected_branch_ids,
+        is_main=True,
+    ).values("company_id")
+    company_lookups = _relation_lookups(queryset.model, "core.company")
+    for branch_lookup in lookups:
+        for company_lookup in company_lookups:
+            filters |= Q(
+                **{
+                    f"{branch_lookup}__isnull": True,
+                    f"{company_lookup}__in": main_company_ids,
+                }
+            )
+    return queryset.filter(filters)
+
+
 @lru_cache(maxsize=None)
 def _company_anchor(model):
     """Resolve the nearest forward-related model that directly owns Company."""
@@ -387,11 +412,16 @@ def scope_queryset(queryset, context=None, *, include_branch=True, use_allowed_c
             return queryset.none()
         queryset = _filter_by_lookups(queryset, company_lookups, company_ids)
 
-    branch_lookups = _relation_lookups(queryset.model, "organization.branch")
+    configured_branch_lookup = getattr(queryset.model, "organization_branch_lookup", None)
+    branch_lookups = (
+        (configured_branch_lookup,)
+        if configured_branch_lookup
+        else _relation_lookups(queryset.model, "organization.branch")
+    )
     if include_branch and branch_lookups:
         if not context.active_branch_ids:
             return queryset.none()
-        queryset = _filter_by_lookups(queryset, branch_lookups, context.active_branch_ids)
+        queryset = _filter_by_branch_lookups(queryset, branch_lookups, context)
     elif include_branch and company_lookups:
         queryset = _filter_by_record_branch_scope(queryset, context)
     return queryset

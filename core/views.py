@@ -165,10 +165,12 @@ from modules.hr.models import (
     WorkSchedule,
 )
 from modules.hr.change_requests import transition_employee_change_request
+from modules.hr.career_transitions import transition_career_request
 from modules.hr.attendance_changes import transition_attendance_change_request
 from modules.hr.contracts import add_contract_allowance_version, transition_employment_contract
 from modules.hr.forms import (
     AttendanceChangeRequestForm,
+    CareerTransitionRequestForm,
     ContractAllowanceForm,
     EmployeeChangeRequestForm,
     EmploymentContractForm,
@@ -388,8 +390,10 @@ ENTITY_CONFIG = {
         "form": EmployeeForm,
         "title": "Employees",
         "singular": "Employee",
-        "columns": [("employee_id", "Employee ID"), ("name", "Name"), ("department", "Department"), ("position", "Position"), ("status", "Status")],
-        "search": ["employee_id", "name", "department", "position"],
+        "columns": [("employee_id", "Employee ID"), ("name", "Name"), ("branch", "Branch"), ("department_record", "Department"), ("job_position", "Position"), ("supervisor", "Manager"), ("status", "Status")],
+        "search": ["employee_id", "name", "department", "position", "branch__name", "department_record__name", "job_position__name"],
+        "select_related": ["branch", "department_record", "job_position", "supervisor"],
+        "deletable": False,
     },
     "attendance": {
         "model": Attendance,
@@ -772,10 +776,10 @@ ENTITY_CONFIG = {
         "model": CareerTransitionRequest,
         "title": "Career Transition Requests",
         "singular": "Career Transition Request",
-        "columns": [("number", "Number"), ("employee", "Employee"), ("transition_type", "Type"), ("effective_date", "Effective Date"), ("new_position", "New Position"), ("status", "Status")],
+        "columns": [("number", "Number"), ("employee", "Employee"), ("transition_type", "Type"), ("effective_date", "Effective Date"), ("target_department", "Department"), ("target_job_position", "Position"), ("status", "Status")],
         "search": ["number", "employee__employee_id", "employee__name", "transition_type__name", "new_position"],
-        "form_fields": ["employee", "number", "transition_type", "effective_date", "current_position", "new_position", "reason", "approver"],
-        "select_related": ["employee", "transition_type", "approver"],
+        "form": CareerTransitionRequestForm,
+        "select_related": ["employee", "transition_type", "target_branch", "target_department", "target_job_position", "target_supervisor", "approver"],
         "workflow": APPROVAL_WORKFLOW,
     },
     "travel-packages": {
@@ -2895,6 +2899,29 @@ def document_action(request, entity, pk, action):
                         return redirect("entity_edit", entity=entity, pk=pk)
                     instance = locked
                     updated = 1
+            elif entity == "career-transition-requests":
+                locked = get_object_or_404(
+                    scoped_queryset.select_for_update().select_related(
+                        "employee",
+                        "transition_type",
+                        "target_branch",
+                        "target_department",
+                        "target_job_position__department",
+                        "target_supervisor",
+                    ),
+                    pk=pk,
+                )
+                if locked.status != current_status:
+                    updated = 0
+                else:
+                    try:
+                        transition_career_request(locked, action, request.user)
+                    except ValidationError as exc:
+                        messages.error(request, "; ".join(exc.messages))
+                        return redirect("entity_edit", entity=entity, pk=pk)
+                    instance = locked
+                    actual_status = locked.status
+                    updated = 1
             elif entity == "employee-change-requests":
                 locked = get_object_or_404(scoped_queryset.select_for_update(), pk=pk)
                 if locked.status != current_status:
@@ -2905,6 +2932,7 @@ def document_action(request, entity, pk, action):
                     except ValidationError as exc:
                         messages.error(request, "; ".join(exc.messages))
                         return redirect("entity_edit", entity=entity, pk=pk)
+                    instance = locked
                     updated = 1
             elif definition.get("service_controls_state") and model._meta.app_label in {
                 "gsshop_construction", "gsshop_finance", "gsshop_pos", "gsshop_hr", "gsshop_purchase"

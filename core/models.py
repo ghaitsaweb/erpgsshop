@@ -329,6 +329,41 @@ class Employee(TimeStampedModel):
         INACTIVE = "inactive", "Inactive"
 
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="employees")
+    branch = models.ForeignKey(
+        "organization.Branch",
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="employees",
+    )
+    department_record = models.ForeignKey(
+        "gsshop_hr.Department",
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="employees",
+    )
+    job_position = models.ForeignKey(
+        "gsshop_hr.JobPosition",
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="employees",
+    )
+    work_location = models.ForeignKey(
+        "gsshop_hr.WorkLocation",
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="employees",
+    )
+    grade = models.ForeignKey(
+        "gsshop_hr.EmployeeGrade",
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="employees",
+    )
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -350,11 +385,50 @@ class Employee(TimeStampedModel):
     department = models.CharField(max_length=100, blank=True)
     position = models.CharField(max_length=100, blank=True)
     join_date = models.DateField(default=timezone.localdate)
-    status = models.CharField(max_length=16, choices=Status.choices, default=Status.ACTIVE)
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+        editable=False,
+    )
+    inactive_date = models.DateField(blank=True, null=True, editable=False)
+    inactive_reason = models.TextField(blank=True, editable=False)
 
     class Meta:
         ordering = ["name"]
         constraints = [models.UniqueConstraint(fields=["company", "employee_id"], name="unique_employee_id_per_company")]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.supervisor_id:
+            if self.pk and self.supervisor_id == self.pk:
+                errors["supervisor"] = "An employee cannot supervise themselves."
+            elif self.company_id and self.supervisor.company_id != self.company_id:
+                errors["supervisor"] = "Supervisor must belong to the employee company."
+        for field_name, label in (
+            ("branch", "Branch"),
+            ("department_record", "Department"),
+            ("job_position", "Job position"),
+            ("work_location", "Work location"),
+            ("grade", "Employee grade"),
+        ):
+            related_id = getattr(self, f"{field_name}_id")
+            if not related_id:
+                continue
+            related = getattr(self, field_name)
+            if related.company_id != self.company_id:
+                errors[field_name] = f"{label} must belong to the employee company."
+            elif hasattr(related, "active") and not related.active:
+                errors[field_name] = f"Select an active {label.lower()}."
+        if self.job_position_id and self.department_record_id:
+            position_department_id = self.job_position.department_id
+            if position_department_id and position_department_id != self.department_record_id:
+                errors["job_position"] = "Job position must belong to the selected department."
+        if self.status == self.Status.ACTIVE and self.inactive_date:
+            errors["inactive_date"] = "An active employee cannot have an inactive date."
+        if errors:
+            raise ValidationError(errors)
 
     def __str__(self):
         return f"{self.employee_id} - {self.name}"

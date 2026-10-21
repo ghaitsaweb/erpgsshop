@@ -5,6 +5,7 @@ from core.forms import StyledModelForm
 from .change_requests import CHANGE_REQUEST_FIELDS
 from .models import (
     AttendanceChangeRequest,
+    CareerTransitionRequest,
     ContractAllowance,
     EmployeeChangeRequest,
     EmploymentContract,
@@ -82,6 +83,31 @@ class ContractAllowanceForm(StyledModelForm):
             if len(reason) < 8:
                 self.add_error("change_reason", "Enter a concrete change reason of at least 8 characters.")
         cleaned["change_reason"] = reason
+        return cleaned
+
+
+class CareerTransitionRequestForm(StyledModelForm):
+    class Meta:
+        model = CareerTransitionRequest
+        fields = [
+            "employee",
+            "number",
+            "transition_type",
+            "effective_date",
+            "target_branch",
+            "target_department",
+            "target_job_position",
+            "target_supervisor",
+            "reason",
+        ]
+
+    def clean(self):
+        cleaned = super().clean()
+        employee = cleaned.get("employee")
+        if employee:
+            self.instance.current_position = employee.position
+            target_job = cleaned.get("target_job_position")
+            self.instance.new_position = target_job.name if target_job else employee.position
         return cleaned
 
 

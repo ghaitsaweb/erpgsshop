@@ -824,18 +824,99 @@ class CareerTransitionLetter(TimeStampedModel):
 
 
 class CareerTransitionRequest(TimeStampedModel):
+    organization_branch_lookup = "employee__branch"
+
     employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="career_transition_requests")
     number = models.CharField(max_length=40, unique=True)
     transition_type = models.ForeignKey(CareerTransitionType, on_delete=models.PROTECT, related_name="requests")
     effective_date = models.DateField()
     current_position = models.CharField(max_length=120, blank=True)
     new_position = models.CharField(max_length=120, blank=True)
+    target_branch = models.ForeignKey(
+        "organization.Branch",
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="career_transition_requests",
+    )
+    target_department = models.ForeignKey(
+        Department,
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="career_transition_requests",
+    )
+    target_job_position = models.ForeignKey(
+        JobPosition,
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="career_transition_requests",
+    )
+    target_supervisor = models.ForeignKey(
+        Employee,
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="incoming_career_transition_requests",
+    )
     reason = models.TextField(blank=True)
     status = models.CharField(max_length=16, choices=ApprovalStatus.choices, default=ApprovalStatus.DRAFT)
     approver = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, blank=True, null=True, related_name="career_transition_approvals")
+    applied_at = models.DateTimeField(blank=True, null=True, editable=False)
+    applied_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        editable=False,
+        related_name="applied_career_transitions",
+    )
 
     class Meta:
         ordering = ["-effective_date", "number"]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.employee_id and self.transition_type_id:
+            company_id = self.employee.company_id
+            if self.transition_type.company_id != company_id:
+                errors["transition_type"] = "Transition type must belong to the employee company."
+            elif not self.transition_type.active:
+                errors["transition_type"] = "Select an active transition type."
+            for field_name, label in (
+                ("target_branch", "Branch"),
+                ("target_department", "Department"),
+                ("target_job_position", "Job position"),
+                ("target_supervisor", "Supervisor"),
+            ):
+                related_id = getattr(self, f"{field_name}_id")
+                if related_id and getattr(self, field_name).company_id != company_id:
+                    errors[field_name] = f"{label} must belong to the employee company."
+            if self.target_supervisor_id and self.target_supervisor_id == self.employee_id:
+                errors["target_supervisor"] = "An employee cannot supervise themselves."
+            internal_categories = {
+                CareerTransitionType.Category.PROMOTION,
+                CareerTransitionType.Category.TRANSFER,
+                CareerTransitionType.Category.DEMOTION,
+            }
+            if self.transition_type.category in internal_categories and not any(
+                (self.target_branch_id, self.target_department_id, self.target_job_position_id, self.target_supervisor_id)
+            ):
+                errors["target_job_position"] = "Choose at least one target organization value."
+            if self.transition_type.category not in internal_categories and any(
+                (self.target_branch_id, self.target_department_id, self.target_job_position_id, self.target_supervisor_id)
+            ):
+                errors["target_branch"] = "Exit transitions cannot contain target organization values."
+            if self.target_job_position_id and self.target_department_id:
+                position_department_id = self.target_job_position.department_id
+                if position_department_id and position_department_id != self.target_department_id:
+                    errors["target_job_position"] = "Job position must belong to the target department."
+            if self.effective_date and self.effective_date < self.employee.join_date:
+                errors["effective_date"] = "Effective date cannot be before the employee join date."
+        if errors:
+            raise ValidationError(errors)
 
     def __str__(self):
         return self.number

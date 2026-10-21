@@ -182,7 +182,29 @@ class InvoiceForm(StyledModelForm):
 class EmployeeForm(StyledModelForm):
     class Meta:
         model = Employee
-        fields = ["company", "user", "supervisor", "employee_id", "name", "email", "phone", "department", "position", "join_date", "status"]
+        fields = [
+            "company",
+            "branch",
+            "user",
+            "supervisor",
+            "employee_id",
+            "name",
+            "email",
+            "phone",
+            "department_record",
+            "job_position",
+            "work_location",
+            "grade",
+            "join_date",
+        ]
+
+    def clean(self):
+        cleaned = super().clean()
+        department = cleaned.get("department_record")
+        job_position = cleaned.get("job_position")
+        self.instance.department = department.name if department else ""
+        self.instance.position = job_position.name if job_position else ""
+        return cleaned
 
 
 class AttendanceForm(StyledModelForm):

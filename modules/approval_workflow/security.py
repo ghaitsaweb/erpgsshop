@@ -11,6 +11,10 @@ def ensure_approval_roles(**_kwargs):
         "approvalworkflow",
         "approvalworkflowperimeter",
         "approvalrule",
+        "approvalruleconditiongroup",
+        "approvalruleconditionline",
+        "approvalrulelevel",
+        "approvalrulelevelassignee",
         "approvaltimeoutwhitelist",
     }
     runtime_models = {

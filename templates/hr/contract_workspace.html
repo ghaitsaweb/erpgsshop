@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}{% if is_new %}New Employment Contract{% else %}{{ contract.number }} · Employment Contract{% endif %}{% endblock %}
+{% block page_title %}{% if is_new %}New Employment Contract{% else %}Employment Contract · {{ contract.number }}{% endif %}{% endblock %}
+{% block content %}
+  <section class="contract-workspace">
+    <header class="contract-workspace-head panel">
+      {% if is_new %}
+        <div><p class="eyebrow">Employee lifecycle · Contract workspace</p><h2>New employment contract <small>· draft setup</small></h2><p>Save the core terms first. The same editor will then unlock related Contract records.</p></div>
+        <div class="contract-head-state"><span class="document-state status-draft">Not saved</span><a class="btn btn-secondary" href="{% url 'entity_list' 'contracts' %}">Back to contracts</a></div>
+      {% else %}
+        <div><p class="eyebrow">Employee lifecycle · Contract workspace</p><h2>{{ contract.employee.name }} <small>· {{ contract.employee.employee_id }}</small></h2><p>{{ contract.get_contract_type_display }} · {{ contract.start_date }}{% if contract.end_date %} to {{ contract.end_date }}{% else %} · Open ended{% endif %}</p></div>
+        <div class="contract-head-state"><span class="document-state status-{{ contract.status }}">{{ contract.get_status_display }}</span><a class="btn btn-secondary" href="{% url 'entity_list' 'contracts' %}">Back to contracts</a></div>
+      {% endif %}
+    </header>
+
+    <nav class="contract-tabbar" aria-label="Contract detail sections">
+      {% for key, label in tabs %}{% if is_new %}<span class="{% if key == 'overview' %}active{% else %}contract-tab-disabled{% endif %}">{{ label }}</span>{% else %}<a href="?tab={{ key }}" class="{% if active_tab == key %}active{% endif %}">{{ label }}</a>{% endif %}{% endfor %}
+    </nav>
+
+    {% if active_tab == 'overview' %}
+      {% if is_new %}
+      <div class="contract-main-grid">
+        <section class="panel contract-section">
+          <header class="panel-head"><div><p class="eyebrow">Core terms</p><h2>Employment agreement</h2></div><span class="status">Draft setup</span></header>
+          <form method="post" class="contract-form">
+            {% csrf_token %}
+            {% if contract_form.non_field_errors %}<div class="message error">{{ contract_form.non_field_errors }}</div>{% endif %}
+            <div class="form-grid">
+              {% for field in contract_form %}<div class="field {% if field.field.widget.input_type == 'checkbox' %}field-checkbox{% endif %}"><label for="{{ field.id_for_label }}">{{ field.label }}{% if field.field.required %}<span class="required">*</span>{% endif %}</label>{{ field }}{% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}{% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>{% endfor %}
+            </div>
+            <div class="form-actions"><a class="btn btn-secondary" href="{% url 'entity_list' 'contracts' %}">Cancel</a><button class="btn btn-primary" type="submit">Save draft terms</button></div>
+          </form>
+        </section>
+        <aside class="contract-sidebar">
+          <section class="panel contract-section compact"><p class="eyebrow">Contract health</p><div class="contract-health-row"><span>Status</span><strong>Not saved</strong></div><div class="contract-health-row"><span>Compensation snapshots</span><strong>Available after activation</strong></div><div class="contract-health-row"><span>Approval route</span><strong>Available after save</strong></div><div class="contract-health-row"><span>Payroll impact</span><strong>Available after save</strong></div></section>
+          <section class="panel contract-section compact"><p class="eyebrow">Next after save</p><span class="contract-shortcut">Add allowance versions <span>→</span></span><span class="contract-shortcut">Attach supporting documents <span>→</span></span><span class="contract-shortcut">Submit for approval <span>→</span></span></section>
+        </aside>
+      </div>
+      {% else %}
+      <div class="contract-main-grid">
+        <section class="panel contract-section">
+          <header class="panel-head"><div><p class="eyebrow">Core terms</p><h2>Employment agreement</h2></div>{% if can_edit_contract %}<span class="status">Draft editable</span>{% else %}<span class="status">Workflow locked</span>{% endif %}</header>
+          {% if can_edit_contract %}
+            <form method="post" class="contract-form">
+              {% csrf_token %}<input type="hidden" name="workspace_action" value="save_contract">
+              {% if contract_form.non_field_errors %}<div class="message error">{{ contract_form.non_field_errors }}</div>{% endif %}
+              <div class="form-grid">
+                {% for field in contract_form %}
+                  <div class="field {% if field.field.widget.input_type == 'checkbox' %}field-checkbox{% endif %}"><label for="{{ field.id_for_label }}">{{ field.label }}{% if field.field.required %}<span class="required">*</span>{% endif %}</label>{{ field }}{% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}{% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>
+                {% endfor %}
+              </div>
+              <div class="form-actions"><button class="btn btn-primary" type="submit">Save draft terms</button></div>
+            </form>
+          {% else %}
+            <dl class="contract-facts">
+              <div><dt>Employee</dt><dd>{{ contract.employee }}</dd></div><div><dt>Contract number</dt><dd>{{ contract.number }}</dd></div>
+              <div><dt>Type</dt><dd>{{ contract.get_contract_type_display }}</dd></div><div><dt>Effective period</dt><dd>{{ contract.start_date }}{% if contract.end_date %} — {{ contract.end_date }}{% else %} — Open ended{% endif %}</dd></div>
+              <div><dt>Salary package</dt><dd>{{ contract.salary_package|default:"—" }}</dd></div><div><dt>Letter template</dt><dd>{{ contract.letter_template|default:"—" }}</dd></div>
+              <div><dt>Base salary</dt><dd>{{ contract.base_salary|floatformat:2 }}</dd></div><div><dt>Notes</dt><dd>{{ contract.notes|default:"—"|linebreaksbr }}</dd></div>
+            </dl>
+          {% endif %}
+        </section>
+        <aside class="contract-sidebar">
+          <section class="panel contract-section compact">
+            <p class="eyebrow">Contract health</p>
+            <div class="contract-health-row"><span>Status</span><strong>{{ contract.get_status_display }}</strong></div>
+            <div class="contract-health-row"><span>Expiry</span><strong>{% if contract.end_date %}{{ contract.end_date }}{% else %}Open ended{% endif %}</strong></div>
+            {% if days_to_expiry != None %}<div class="contract-health-row"><span>Days to expiry</span><strong>{% if days_to_expiry < 0 %}Expired{% else %}{{ days_to_expiry }}{% endif %}</strong></div>{% endif %}
+            <div class="contract-health-row"><span>Compensation snapshots</span><strong>{{ compensation_snapshots|length }}</strong></div>
+            <div class="contract-health-row"><span>Letters / attachments</span><strong>{{ letters|length }} / {{ attachments|length }}</strong></div>
+          </section>
+          <section class="panel contract-section compact">
+            <p class="eyebrow">Related records</p>
+            <a class="contract-shortcut" href="?tab=compensation">Compensation <span>{{ compensation_snapshots|length }}</span></a>
+            <a class="contract-shortcut" href="?tab=allowances">Allowance versions <span>{{ allowances|length }}</span></a>
+            <a class="contract-shortcut" href="?tab=letters">Letters <span>{{ letters|length }}</span></a>
+            <a class="contract-shortcut" href="?tab=approval">Approval <span>{% if approval %}{{ approval.get_status_display }}{% else %}Not submitted{% endif %}</span></a>
+          </section>
+        </aside>
+      </div>
+      {% endif %}
+    {% elif active_tab == 'compensation' %}
+      <section class="panel contract-section">
+        <header class="panel-head"><div><p class="eyebrow">Effective-dated snapshots</p><h2>Compensation & benefits</h2><p>Every generated snapshot retains its own component breakdown.</p></div>{% if contract.status == 'active' and can_change %}<form method="post">{% csrf_token %}<input type="hidden" name="workspace_action" value="refresh_compensation"><button class="btn btn-primary" type="submit">Refresh current snapshot</button></form>{% endif %}</header>
+        <div class="table-wrap"><table><thead><tr><th>Effective</th><th>Basic salary</th><th>Allowances</th><th>Deductions</th><th>Total</th><th>Generated by</th></tr></thead><tbody>
+          {% for snapshot in compensation_snapshots %}
+            <tr><td>{{ snapshot.effective_date }}</td><td>{{ snapshot.basic_salary|floatformat:2 }}</td><td>{{ snapshot.allowance_amount|floatformat:2 }}</td><td>{{ snapshot.deduction_amount|floatformat:2 }}</td><td><strong>{{ snapshot.total_compensation|floatformat:2 }}</strong></td><td>{{ snapshot.approver|default:"—" }}</td></tr>
+            <tr class="contract-components"><td colspan="6"><strong>Frozen component lines</strong><ul>{% for line in snapshot.component_lines.all %}<li><span>{{ line.get_category_display }}{% if line.component %} · {{ line.component }}{% else %} · {{ line.label }}{% endif %}</span><b>{{ line.amount|floatformat:2 }}</b></li>{% empty %}<li>No component detail was captured for this legacy snapshot.</li>{% endfor %}</ul></td></tr>
+          {% empty %}<tr><td class="empty" colspan="6">No compensation snapshot yet. It is generated when the Contract is approved and activated.</td></tr>{% endfor %}
+        </tbody></table></div>
+      </section>
+    {% elif active_tab == 'allowances' %}
+      <div class="contract-main-grid">
+        <section class="panel contract-section">
+          <header class="panel-head"><div><p class="eyebrow">Effective-dated earnings</p><h2>Allowance versions</h2></div></header>
+          <div class="table-wrap"><table><thead><tr><th>Component</th><th>Amount</th><th>Effective</th><th>Ends</th><th>State</th></tr></thead><tbody>{% for allowance in allowances %}<tr><td>{{ allowance.component }}</td><td>{{ allowance.amount|floatformat:2 }}</td><td>{{ allowance.effective_date }}</td><td>{{ allowance.end_date|default:"—" }}</td><td>{% if allowance.active %}Active{% else %}Inactive{% endif %}</td></tr>{% empty %}<tr><td class="empty" colspan="5">No allowance line is attached to this Contract.</td></tr>{% endfor %}</tbody></table></div>
+          {% if allowance_history %}<h3 class="contract-subheading">Change history</h3><div class="table-wrap"><table><thead><tr><th>Effective</th><th>Component</th><th>Before</th><th>After</th><th>By</th><th>Reason</th></tr></thead><tbody>{% for history in allowance_history %}<tr><td>{{ history.effective_date }}</td><td>{{ history.allowance.component }}</td><td>{{ history.previous_amount|floatformat:2 }}</td><td>{{ history.new_amount|floatformat:2 }}</td><td>{{ history.changed_by }}</td><td>{{ history.reason }}</td></tr>{% endfor %}</tbody></table></div>{% endif %}
+        </section>
+        {% if can_manage_terms %}<aside class="panel contract-section compact"><p class="eyebrow">New allowance version</p><h2>Add effective term</h2><form method="post" class="contract-form">{% csrf_token %}<input type="hidden" name="workspace_action" value="add_allowance">{% if allowance_form.non_field_errors %}<div class="message error">{{ allowance_form.non_field_errors }}</div>{% endif %}{% for field in allowance_form %}<div class="field"><label for="{{ field.id_for_label }}">{{ field.label }}{% if field.field.required %}<span class="required">*</span>{% endif %}</label>{{ field }}{% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}{% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>{% endfor %}<button class="btn btn-primary btn-block" type="submit">Add allowance</button></form></aside>{% endif %}
+      </div>
+    {% elif active_tab == 'overtime' %}
+      <div class="contract-main-grid">
+        <section class="panel contract-section"><header class="panel-head"><div><p class="eyebrow">Effective-dated setup</p><h2>Overtime components</h2></div></header><div class="table-wrap"><table><thead><tr><th>Component</th><th>Multiplier</th><th>Effective</th><th>Ends</th><th>State</th><th>Notes</th></tr></thead><tbody>{% for item in overtime_components %}<tr><td>{{ item.component }}</td><td>{{ item.rate_multiplier }}×</td><td>{{ item.effective_date }}</td><td>{{ item.end_date|default:"—" }}</td><td>{% if item.active %}Active{% else %}Inactive{% endif %}</td><td>{{ item.notes|default:"—" }}</td></tr>{% empty %}<tr><td class="empty" colspan="6">No overtime component is configured for this Contract.</td></tr>{% endfor %}</tbody></table></div></section>
+        {% if can_manage_terms %}<aside class="panel contract-section compact"><p class="eyebrow">New configuration</p><h2>Add overtime component</h2><form method="post" class="contract-form">{% csrf_token %}<input type="hidden" name="workspace_action" value="add_overtime_component">{% if overtime_form.non_field_errors %}<div class="message error">{{ overtime_form.non_field_errors }}</div>{% endif %}{% for field in overtime_form %}<div class="field"><label for="{{ field.id_for_label }}">{{ field.label }}{% if field.field.required %}<span class="required">*</span>{% endif %}</label>{{ field }}{% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}{% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>{% endfor %}<button class="btn btn-primary btn-block" type="submit">Add overtime component</button></form></aside>{% endif %}
+      </div>
+    {% elif active_tab == 'letters' %}
+      <section class="panel contract-section"><header class="panel-head"><div><p class="eyebrow">Issued documents</p><h2>Contract letters</h2><p>Letters are immutable rendered copies of the selected template.</p></div>{% if contract.status == 'active' and contract.letter_template and can_change %}<form method="post">{% csrf_token %}<input type="hidden" name="workspace_action" value="generate_letter"><button class="btn btn-primary" type="submit">Generate letter</button></form>{% endif %}</header><div class="contract-letter-list">{% for letter in letters %}<article><header><div><strong>{{ letter.letter_number }}</strong><small>{{ letter.letter_type }} · Issued {{ letter.issued_date }} · {{ letter.generated_by|default:"System" }}</small></div>{% if letter.attachment_url %}<a class="btn btn-secondary" rel="noopener" target="_blank" href="{{ letter.attachment_url }}">Open attachment</a>{% endif %}</header><details><summary>Rendered letter content</summary><pre>{{ letter.content|default:"No rendered content retained." }}</pre></details>{% if letter.notes %}<p>{{ letter.notes }}</p>{% endif %}</article>{% empty %}<p class="empty">No contract letter has been generated yet.</p>{% endfor %}</div></section>
+    {% elif active_tab == 'attachments' %}
+      <div class="contract-main-grid">
+        <section class="panel contract-section">
+          <header class="panel-head"><div><p class="eyebrow">Evidence & compliance</p><h2>Attachments</h2></div></header>
+          <div class="table-wrap"><table><thead><tr><th>Document</th><th>Category</th><th>Issued</th><th>Expires</th><th>Verified</th><th>Added by</th></tr></thead><tbody>
+            {% for attachment in attachments %}<tr><td>{% if attachment.attachment_content %}<a href="{% url 'contract_attachment_download' contract.pk attachment.pk %}">Download {{ attachment.title }}</a><small>{{ attachment.attachment_name }}</small>{% elif attachment.file_url %}<a href="{{ attachment.file_url }}" target="_blank" rel="noopener">Open {{ attachment.title }}</a>{% else %}{{ attachment.title }}{% endif %}{% if attachment.notes %}<small>{{ attachment.notes }}</small>{% endif %}</td><td>{{ attachment.get_category_display }}</td><td>{{ attachment.issued_date|default:"—" }}</td><td>{{ attachment.expiry_date|default:"—" }}</td><td>{% if attachment.verified %}Yes{% else %}No{% endif %}</td><td>{{ attachment.uploaded_by|default:"—" }}</td></tr>{% empty %}<tr><td class="empty" colspan="6">No linked evidence or compliance document.</td></tr>{% endfor %}
+          </tbody></table></div>
+        </section>
+        {% if can_change %}<aside class="panel contract-section compact"><p class="eyebrow">Stored upload or external link</p><h2>Add attachment</h2><form method="post" enctype="multipart/form-data" class="contract-form">{% csrf_token %}<input type="hidden" name="workspace_action" value="add_attachment">{% if attachment_form.non_field_errors %}<div class="message error">{{ attachment_form.non_field_errors }}</div>{% endif %}{% for field in attachment_form %}<div class="field"><label for="{{ field.id_for_label }}">{{ field.label }}{% if field.field.required %}<span class="required">*</span>{% endif %}</label>{{ field }}{% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}{% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>{% endfor %}<button class="btn btn-primary btn-block" type="submit">Add attachment</button></form></aside>{% endif %}
+      </div>
+    {% elif active_tab == 'approval' %}
+      <div class="contract-main-grid"><section class="panel contract-section">{% if approval %}<header class="panel-head"><div><p class="eyebrow">Frozen transaction</p><h2>{{ approval.rule }}</h2><p>Submitted by {{ approval.submitted_by }} on {{ approval.submitted_at }}.</p></div><span class="document-state status-{{ approval.status }}">{{ approval.get_status_display }}</span></header><div class="table-wrap"><table><thead><tr><th>Level</th><th>State</th><th>Quorum</th><th>Approvers</th><th>Delegates</th></tr></thead><tbody>{% for level in approval_levels %}<tr><td>{{ level.number }} · {{ level.name }}</td><td><span class="status status-{{ level.state }}">{{ level.state|title }}</span></td><td>{{ level.approved_count }} / {{ level.minimum_approvals }}</td><td>{{ level.approvers|join:", "|default:"—" }}</td><td>{{ level.delegates|join:", "|default:"—" }}</td></tr>{% endfor %}</tbody></table></div><h3 class="contract-subheading">Approval history</h3><div class="table-wrap"><table><thead><tr><th>Action</th><th>Level</th><th>Actor</th><th>Reason</th><th>Time</th></tr></thead><tbody>{% for item in approval.actions.all %}<tr><td>{{ item.get_action_display }}</td><td>{% if item.level != None %}{{ item.level|add:1 }}{% else %}—{% endif %}</td><td>{{ item.effective_approver|default:item.performed_by }}</td><td>{{ item.reason|default:"—" }}</td><td>{{ item.performed_at }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<header class="panel-head"><div><p class="eyebrow">Approval</p><h2>Not submitted</h2><p>Submit the draft to create a frozen approval route and approver snapshot.</p></div></header>{% endif %}</section><aside class="panel contract-section compact"><p class="eyebrow">Lifecycle actions</p><h2>Contract workflow</h2>{% for action in workflow_actions %}<form method="post" action="{% url 'document_action' 'contracts' contract.pk action.key %}" class="workflow-action-form">{% csrf_token %}{% if action.key == 'approve' or action.key == 'reject' %}<div class="field"><label for="workflow-reason-{{ action.key }}">{% if action.key == 'reject' %}Rejection{% else %}Approval{% endif %} reason{% if action.key == 'reject' %}<span class="required">*</span>{% endif %}</label><textarea id="workflow-reason-{{ action.key }}" class="form-control" name="reason" rows="3" {% if action.key == 'reject' %}required{% endif %}></textarea></div>{% endif %}<button class="btn {% if action.primary %}btn-primary{% else %}btn-secondary{% endif %} btn-block" type="submit">{{ action.label }}</button></form>{% empty %}<p class="muted">No lifecycle action is available to your account at the current status.</p>{% endfor %}{% if approval %}<a class="btn btn-secondary btn-block" href="{% url 'approval_detail' approval.pk %}">Open approval transaction</a>{% endif %}</aside></div>
+    {% elif active_tab == 'payroll' %}
+      <section class="panel contract-section">
+        <header class="panel-head"><div><p class="eyebrow">Direct payroll traceability</p><h2>Payroll impact</h2><p>Linked payslips and payroll runs are the auditable record for this Contract. Date-only matches are shown separately and are never treated as a confirmed link.</p></div></header>
+        <h3 class="contract-subheading">Linked payslips</h3>
+        <div class="table-wrap"><table><thead><tr><th>Payslip</th><th>Payroll run</th><th>Period</th><th>Basic</th><th>Allowances</th><th>Deductions</th><th>Net</th><th>Status</th></tr></thead><tbody>{% for payslip in payslips %}<tr><td><a href="{% url 'entity_edit' 'payslips' payslip.pk %}">{{ payslip.number }}</a></td><td>{% if payslip.payroll_run %}<a href="{% url 'entity_edit' 'payroll-runs' payslip.payroll_run.pk %}">{{ payslip.payroll_run }}</a>{% else %}—{% endif %}</td><td>{{ payslip.period_start }} — {{ payslip.period_end }}</td><td>{{ payslip.basic_salary|floatformat:2 }}</td><td>{{ payslip.allowances|floatformat:2 }}</td><td>{{ payslip.deductions|floatformat:2 }}</td><td>{{ payslip.net_salary|floatformat:2 }}</td><td>{{ payslip.get_status_display }}</td></tr>{% empty %}<tr><td class="empty" colspan="8">No payslip has been linked to this Contract.</td></tr>{% endfor %}</tbody></table></div>
+        {% if can_link_payslips and linkable_payslips %}<form method="post" class="contract-link-form">{% csrf_token %}<input type="hidden" name="workspace_action" value="link_payslip"><label for="contract-link-payslip">Eligible unlinked payslip</label><select id="contract-link-payslip" class="form-control" name="payslip_id" required><option value="">Choose payslip…</option>{% for payslip in linkable_payslips %}<option value="{{ payslip.pk }}">{{ payslip.number }} · {{ payslip.period_start }} — {{ payslip.period_end }}{% if payslip.payroll_run %} · {{ payslip.payroll_run }}{% endif %}</option>{% endfor %}</select><button class="btn btn-primary" type="submit">Link payslip to Contract</button></form>{% endif %}
+        <h3 class="contract-subheading">Directly linked payroll runs</h3>
+        <div class="table-wrap"><table><thead><tr><th>Run</th><th>Period</th><th>Employees</th><th>Gross</th><th>Deductions</th><th>Net</th><th>Status</th></tr></thead><tbody>{% for run in payroll_runs %}<tr><td><a href="{% url 'entity_edit' 'payroll-runs' run.pk %}">{{ run.number }}</a></td><td>{{ run.period }}</td><td>{{ run.employee_count }}</td><td>{{ run.gross_amount|floatformat:2 }}</td><td>{{ run.deduction_amount|floatformat:2 }}</td><td>{{ run.net_amount|floatformat:2 }}</td><td>{{ run.get_status_display }}</td></tr>{% empty %}<tr><td class="empty" colspan="7">No payroll run is linked through a Contract payslip.</td></tr>{% endfor %}</tbody></table></div>
+        {% if period_matched_payroll_runs %}<h3 class="contract-subheading">Period matches awaiting a direct payslip link</h3><div class="table-wrap"><table><thead><tr><th>Run</th><th>Period</th><th>Employees</th><th>Status</th></tr></thead><tbody>{% for run in period_matched_payroll_runs %}<tr><td><a href="{% url 'entity_edit' 'payroll-runs' run.pk %}">{{ run.number }}</a></td><td>{{ run.period }}</td><td>{{ run.employee_count }}</td><td>{{ run.get_status_display }}</td></tr>{% endfor %}</tbody></table></div>{% endif %}
+      </section>
+    {% else %}
+      <section class="panel contract-section"><header class="panel-head"><div><p class="eyebrow">Immutable record of activity</p><h2>Contract audit trail</h2></div></header><div class="table-wrap"><table><thead><tr><th>Time</th><th>Action</th><th>Previous state</th><th>New state</th><th>Actor</th><th>Details</th></tr></thead><tbody>{% for audit in audits %}<tr><td>{{ audit.occurred_at }}</td><td>{{ audit.action|title }}</td><td>{{ audit.previous_status|default:"—" }}</td><td>{{ audit.new_status|default:"—" }}</td><td>{{ audit.actor }}</td><td><code>{{ audit.details }}</code></td></tr>{% empty %}<tr><td class="empty" colspan="6">No audit event has been written yet.</td></tr>{% endfor %}</tbody></table></div></section>
+    {% endif %}
+  </section>
+{% endblock %}

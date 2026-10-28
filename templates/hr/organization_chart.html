@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}Organization Chart · ERP GSSHOP{% endblock %}
+{% block page_title %}Organization Chart{% endblock %}
+{% block content %}
+  <section class="org-chart-hero panel">
+    <div>
+      <p class="eyebrow">Human Resources · Organization</p>
+      <h2>Reporting structure</h2>
+      <p>{{ chart_employee_count }} active employee{{ chart_employee_count|pluralize }} in the current company and branch scope.</p>
+    </div>
+    <div class="org-chart-hero-actions">
+      <a class="btn btn-secondary" href="{% url 'entity_list' 'employees' %}">Open employees</a>
+      {% if can_manage_chart %}
+        {% if chart_edit_mode %}
+          <a class="btn org-chart-edit-toggle is-active" href="{% url 'hr_feature' 'organization-chart' %}" data-org-edit-toggle aria-pressed="true">Disable drag &amp; drop</a>
+          <span class="org-chart-editing-state" data-org-editor-status>Editing enabled</span>
+        {% else %}
+          <a class="btn org-chart-edit-toggle" href="{% url 'hr_feature' 'organization-chart' %}?edit=1" data-org-edit-toggle aria-pressed="false">Enable drag &amp; drop</a>
+          <span class="org-chart-editing-state" data-org-editor-status>Editing disabled</span>
+        {% endif %}
+      {% else %}<span class="org-chart-view-state">View only</span>{% endif %}
+    </div>
+  </section>
+
+  <section class="org-chart-guide panel">
+    {% if can_manage_chart %}
+      <span class="org-chart-guide-icon">↳</span><p><strong>Set reporting lines directly in the chart.</strong> Click <em>Enable drag &amp; drop</em>, then drag an employee card onto their manager. Drop it onto <em>Top level</em> to remove their manager. As a fallback, click the employee card, then click their manager, or use the Change manager form below. Every move is validated and written to the HR audit trail.</p>
+    {% else %}
+      <span class="org-chart-guide-icon">i</span><p><strong>View-only organization structure.</strong> Your role can browse reporting lines in the current scope, but cannot change them.</p>
+    {% endif %}
+  </section>
+
+  {% if can_manage_chart %}
+    <form id="organization-chart-move" method="post" action="{% url 'hr_feature' 'organization-chart' %}{% if chart_edit_mode %}?edit=1{% endif %}" data-editing="{% if chart_edit_mode %}true{% else %}false{% endif %}" hidden>
+      {% csrf_token %}
+      <input type="hidden" name="employee_id" value="">
+      <input type="hidden" name="supervisor_id" value="">
+    </form>
+    <details class="org-chart-fallback panel">
+      <summary>Change manager without drag-and-drop</summary>
+      <form method="post" action="{% url 'hr_feature' 'organization-chart' %}{% if chart_edit_mode %}?edit=1{% endif %}" class="org-chart-fallback-form">
+        {% csrf_token %}
+        <label>Employee<select class="form-control" name="employee_id" required><option value="">Choose employee…</option>{% for employee in chart_employees %}<option value="{{ employee.pk }}">{{ employee.name }} · {{ employee.employee_id }} · {{ employee.company.name }}</option>{% endfor %}</select></label>
+        <label>Reports to<select class="form-control" name="supervisor_id"><option value="">Top level (no manager)</option>{% for employee in chart_employees %}<option value="{{ employee.pk }}">{{ employee.name }} · {{ employee.employee_id }} · {{ employee.company.name }}</option>{% endfor %}</select></label>
+        <button class="btn btn-primary" type="submit">Save reporting line</button>
+      </form>
+    </details>
+  {% endif %}
+
+  {% for group in chart_groups %}
+    <section class="org-chart-company panel" data-org-company="{{ group.company.pk }}">
+      <header class="panel-head">
+        <div><p class="eyebrow">Company scope</p><h2>{{ group.company.name }}</h2></div>
+        <span class="status">{{ group.roots|length }} top-level role{{ group.roots|length|pluralize }}</span>
+      </header>
+      {% if can_manage_chart and chart_edit_mode %}
+        <div class="org-chart-root-drop" data-org-drop-zone data-org-company="{{ group.company.pk }}" data-org-manager="" tabindex="0">
+          <span>⇧</span><strong>Top level</strong><small>Drop here to remove an employee’s manager</small>
+        </div>
+      {% endif %}
+      {% if group.roots %}
+        <div class="org-chart-canvas" aria-label="{{ group.company.name }} organization hierarchy">
+          <ul class="org-chart-tree">{% for node in group.roots %}{% include "hr/_organization_chart_node.html" with node=node chart_edit_mode=chart_edit_mode only %}{% endfor %}</ul>
+        </div>
+      {% else %}
+        <p class="empty">No active employees are available in this organization scope.</p>
+      {% endif %}
+    </section>
+  {% empty %}
+    <section class="panel"><p class="empty">No active employees are available in the selected organization context.</p></section>
+  {% endfor %}
+  <script defer src="{% static 'js/organization-chart.js' %}?v=20261028-organization-chart-editor-4"></script>
+{% endblock %}

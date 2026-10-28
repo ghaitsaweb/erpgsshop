@@ -1,4 +1,5 @@
 from django.contrib import messages
+from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
 from django.db.models import Q
@@ -14,6 +15,56 @@ from .services import can_user_act, delegation_available, perform_approval_actio
 
 INBOX_SCAN_LIMIT = 500
 MAX_MASS_SELECTION = 100
+
+
+def _level_progress(instance):
+    """Render-ready, snapshot-based level status for the approval detail page."""
+    actions = list(instance.actions.all())
+    user_ids = {
+        user_id
+        for level in instance.approval_levels_snapshot or []
+        for key in ("resolved_user_ids", "resolved_delegate_user_ids")
+        for user_id in level.get(key, [])
+    }
+    names = {
+        user.pk: user.get_full_name() or user.get_username()
+        for user in get_user_model().objects.filter(pk__in=user_ids).only("id", "username", "first_name", "last_name")
+    }
+    levels = []
+    for index, level in enumerate(instance.approval_levels_snapshot or []):
+        approvals = {
+            action.effective_approver_id or action.performed_by_id
+            for action in actions
+            if action.level == index and action.action in {"approve", "master_approve", "auto_approve"}
+        }
+        rejected = any(
+            action.level == index and action.action in {"reject", "master_reject", "auto_reject"}
+            for action in actions
+        )
+        if rejected:
+            state = "rejected"
+        elif instance.status == ApprovalInstance.Status.APPROVED or index < instance.current_level:
+            state = "approved"
+        elif instance.status == ApprovalInstance.Status.REJECTED and index == instance.current_level:
+            state = "rejected"
+        elif instance.status == ApprovalInstance.Status.PENDING and index == instance.current_level:
+            state = "pending"
+        else:
+            state = "waiting"
+        approver_names = [names.get(user_id, f"User #{user_id}") for user_id in level.get("resolved_user_ids", [])]
+        delegate_names = [names.get(user_id, f"User #{user_id}") for user_id in level.get("resolved_delegate_user_ids", [])]
+        levels.append(
+            {
+                "number": index + 1,
+                "name": level.get("name") or level.get("layer_name") or f"Level {index + 1}",
+                "state": state,
+                "approved_count": len(approvals),
+                "minimum_approvals": int(level.get("minimum_approvals", 1)),
+                "approvers": approver_names,
+                "delegates": delegate_names,
+            }
+        )
+    return levels
 
 
 def _company_scope(user):
@@ -133,6 +184,7 @@ def approval_detail(request, pk):
         "approval_workflow/detail.html",
         {
             "approval": instance,
+            "levels": _level_progress(instance),
             "can_act": can_user_act(instance, request.user),
             "approve_form": ApprovalActionForm(initial={"action": "approve"}, prefix="approve"),
             "reject_form": ApprovalActionForm(initial={"action": "reject"}, prefix="reject"),

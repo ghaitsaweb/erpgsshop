@@ -30,6 +30,8 @@ def can_access_app(user, app_slug):
         # submitter checks per transaction. Any role-bearing ERP user may open
         # the module even when they do not administer its configuration.
         return True
+    if app_slug == "erpshop-moduleai-assistant":
+        return user.has_perm("erpshop_moduleai_assistant.view_assistantsession")
 
     from core.views import ENTITY_CONFIG, _can
 

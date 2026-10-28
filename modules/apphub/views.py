@@ -4,10 +4,11 @@ import csv
 from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
+from django.core.exceptions import ValidationError
 from django.core.management import CommandError, call_command
 from django.db import DatabaseError, transaction
 from django.db.models import Count, Q
-from django.http import Http404, HttpResponse
+from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -38,6 +39,7 @@ from modules.construction.dashboard import build_construction_analytics
 from modules.finance.dashboard import build_accounting_analytics
 from modules.finance.report_exports import render_analytics_excel, render_analytics_pdf
 from modules.hr.dashboard import build_hr_analytics
+from modules.hr.organization_chart import organization_chart_context, reassign_chart_supervisor
 from modules.pos.dashboard import build_fnb_analytics, build_pos_analytics
 from modules.purchase.dashboard import build_purchase_analytics
 
@@ -328,6 +330,54 @@ def hr_feature(request, feature):
     if not app.enabled:
         messages.info(request, "Install Human Resources to open this feature.")
         return redirect("app_workspace", slug="hr")
+
+    if feature == "organization-chart":
+        if request.method == "POST":
+            wants_json = request.headers.get("X-Requested-With") == "XMLHttpRequest"
+            try:
+                employee, _previous_manager, manager, changed = reassign_chart_supervisor(
+                    request.user,
+                    request.POST.get("employee_id"),
+                    request.POST.get("supervisor_id"),
+                )
+            except PermissionError as exc:
+                if wants_json:
+                    return JsonResponse({"ok": False, "message": str(exc)}, status=403)
+                messages.error(request, str(exc))
+            except ValidationError as exc:
+                if wants_json:
+                    return JsonResponse({"ok": False, "message": "; ".join(exc.messages)}, status=400)
+                messages.error(request, "; ".join(exc.messages))
+            else:
+                destination = manager.name if manager else "Top level"
+                if wants_json:
+                    return JsonResponse(
+                        {
+                            "ok": True,
+                            "changed": changed,
+                            "employee": employee.name,
+                            "destination": destination,
+                        }
+                    )
+                if changed:
+                    messages.success(request, f"{employee.name} now reports to {destination}.")
+                else:
+                    messages.info(request, "That reporting line is already set.")
+            chart_url = reverse("hr_feature", kwargs={"feature": "organization-chart"})
+            if request.GET.get("edit") == "1":
+                chart_url = f"{chart_url}?edit=1"
+            return redirect(chart_url)
+        chart_context = organization_chart_context(request.user)
+        return render(
+            request,
+            "hr/organization_chart.html",
+            {
+                "app": app,
+                "feature": definition,
+                **chart_context,
+                "chart_edit_mode": chart_context["can_manage_chart"] and request.GET.get("edit") == "1",
+            },
+        )
 
     analytics = build_hr_analytics(feature, request.user)
     template = "apphub/hr_analytics.html" if analytics is not None else "apphub/hr_feature.html"

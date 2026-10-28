@@ -1,0 +1,23 @@
+<li class="org-chart-node">
+  <article
+    class="org-chart-card{% if chart_edit_mode %} is-draggable{% endif %}"
+    data-org-card
+    data-org-drop-zone
+    data-org-employee="{{ node.employee.pk }}"
+    data-org-manager="{{ node.employee.pk }}"
+    data-org-company="{{ node.employee.company_id }}"
+    draggable="false"
+    tabindex="0"
+  >
+    <header>
+      <span class="org-chart-avatar">{{ node.employee.name|slice:":1"|upper }}</span>
+      <span><strong>{{ node.employee.name }}</strong><small>{{ node.employee.employee_id }}</small></span>
+      {% if chart_edit_mode %}<span class="org-chart-drag-handle" aria-label="Drag to change manager">⠿</span>{% endif %}
+    </header>
+    <p>{{ node.employee.job_position.name|default:node.employee.position|default:"Position not set" }}</p>
+    <footer><span>{{ node.employee.department_record.name|default:node.employee.department|default:"No department" }}</span><a href="{% url 'entity_edit' 'employees' node.employee.pk %}">Open</a></footer>
+  </article>
+  {% if node.children %}
+    <ul class="org-chart-tree">{% for child in node.children %}{% include "hr/_organization_chart_node.html" with node=child chart_edit_mode=chart_edit_mode only %}{% endfor %}</ul>
+  {% endif %}
+</li>

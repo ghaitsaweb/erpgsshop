@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 from django.conf import settings
+from django.contrib.auth.models import Group
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
@@ -124,6 +125,11 @@ class ApprovalRule(TimeStampedModel):
     priority = models.PositiveSmallIntegerField(default=100)
     trigger_conditions = models.JSONField(default=list, blank=True)
     approval_levels = models.JSONField(default=list)
+    # The JSON fields remain as a read-compatible fallback for rules created
+    # before line configuration was introduced. New rules use the relational
+    # configuration below, while pending instances always use their snapshot.
+    use_relational_conditions = models.BooleanField(default=True)
+    use_relational_levels = models.BooleanField(default=True)
     master_approver = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -148,20 +154,21 @@ class ApprovalRule(TimeStampedModel):
         super().clean()
         if self.perimeter_id and self.perimeter.workflow_id != self.workflow_id:
             raise ValidationError({"perimeter": "The perimeter must belong to the selected workflow."})
-        if not isinstance(self.approval_levels, list) or not self.approval_levels:
-            raise ValidationError({"approval_levels": "Define at least one approval level."})
-        for index, level in enumerate(self.approval_levels, start=1):
-            if not isinstance(level, dict):
-                raise ValidationError({"approval_levels": f"Level {index} must be an object."})
-            minimum = level.get("minimum_approvals", level.get("min_approval", 1))
-            try:
-                minimum = int(minimum)
-            except (TypeError, ValueError) as exc:
-                raise ValidationError({"approval_levels": f"Level {index} has an invalid minimum approval count."}) from exc
-            if minimum < 1:
-                raise ValidationError({"approval_levels": f"Level {index} requires at least one approval."})
-            if not level.get("approvers") and not level.get("user_ids") and not level.get("group_names"):
-                raise ValidationError({"approval_levels": f"Level {index} has no approver source."})
+        if not self.use_relational_levels:
+            if not isinstance(self.approval_levels, list) or not self.approval_levels:
+                raise ValidationError({"approval_levels": "Define at least one approval level."})
+            for index, level in enumerate(self.approval_levels, start=1):
+                if not isinstance(level, dict):
+                    raise ValidationError({"approval_levels": f"Level {index} must be an object."})
+                minimum = level.get("minimum_approvals", level.get("min_approval", 1))
+                try:
+                    minimum = int(minimum)
+                except (TypeError, ValueError) as exc:
+                    raise ValidationError({"approval_levels": f"Level {index} has an invalid minimum approval count."}) from exc
+                if minimum < 1:
+                    raise ValidationError({"approval_levels": f"Level {index} requires at least one approval."})
+                if not level.get("approvers") and not level.get("user_ids") and not level.get("group_names"):
+                    raise ValidationError({"approval_levels": f"Level {index} has no approver source."})
         if self.use_delegate and (not self.delegate_after or not self.delegate_period):
             raise ValidationError("Delegate timing is required when delegation is enabled.")
         if self.timeout_action != self.TimeoutAction.NONE and (not self.timeout_value or not self.timeout_period):
@@ -175,8 +182,172 @@ class ApprovalRule(TimeStampedModel):
                 {"timeout_action": "Add this workflow model to the Approval Timeout Whitelist first."}
             )
 
+    def save(self, *args, **kwargs):
+        """Keep older integrations working when they explicitly update JSON."""
+        update_fields = kwargs.get("update_fields")
+        if update_fields:
+            update_fields = set(update_fields)
+            if "approval_levels" in update_fields and "use_relational_levels" not in update_fields:
+                self.use_relational_levels = False
+                update_fields.add("use_relational_levels")
+            if "trigger_conditions" in update_fields and "use_relational_conditions" not in update_fields:
+                self.use_relational_conditions = False
+                update_fields.add("use_relational_conditions")
+            kwargs["update_fields"] = update_fields
+        return super().save(*args, **kwargs)
+
     def __str__(self):
         return self.name
+
+
+class ApprovalRuleConditionGroup(TimeStampedModel):
+    """A relational AND/OR group used when selecting an approval rule."""
+
+    class Operator(models.TextChoices):
+        AND = "and", "All conditions"
+        OR = "or", "Any condition"
+
+    rule = models.ForeignKey(ApprovalRule, on_delete=models.CASCADE, related_name="condition_groups")
+    name = models.CharField(max_length=120, blank=True)
+    sequence = models.PositiveSmallIntegerField(default=10)
+    operator = models.CharField(max_length=3, choices=Operator.choices, default=Operator.AND)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["sequence", "pk"]
+        constraints = [
+            models.UniqueConstraint(fields=["rule", "sequence"], name="approval_condition_group_sequence"),
+        ]
+
+    def __str__(self):
+        return self.name or f"{self.rule} · condition group {self.sequence}"
+
+
+class ApprovalRuleConditionLine(TimeStampedModel):
+    """One typed comparison inside an approval-rule condition group."""
+
+    group = models.ForeignKey(ApprovalRuleConditionGroup, on_delete=models.CASCADE, related_name="lines")
+    field_name = models.CharField(max_length=160)
+    operator = models.CharField(max_length=20, default="eq")
+    value = models.JSONField(blank=True, null=True)
+    sequence = models.PositiveSmallIntegerField(default=10)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["sequence", "pk"]
+        constraints = [
+            models.UniqueConstraint(fields=["group", "sequence"], name="approval_condition_line_sequence"),
+        ]
+
+    def clean(self):
+        super().clean()
+        if not self.group_id or not self.field_name:
+            return
+        workflow = self.group.rule.workflow
+        allowed = set(workflow.primary_perimeter or [])
+        allowed.update(
+            field_name
+            for perimeter in workflow.optional_perimeters or []
+            if isinstance(perimeter, dict)
+            for field_name in perimeter.get("field_names", [])
+        )
+        if self.field_name not in allowed:
+            raise ValidationError({"field_name": "Choose a field from the rule workflow perimeter."})
+
+    def __str__(self):
+        return f"{self.field_name} {self.operator}"
+
+
+class ApprovalRuleLevel(TimeStampedModel):
+    """A separately addressable approval layer belonging to one rule."""
+
+    class ApprovalType(models.TextChoices):
+        USER = "user", "Users"
+        ACCESS_PROFILE = "access_profile", "Access Profile"
+        HIERARCHY = "hierarchy", "Hierarchy"
+        FUNCTIONAL_HIERARCHY = "functional_hierarchy", "Functional Hierarchy"
+
+    rule = models.ForeignKey(ApprovalRule, on_delete=models.CASCADE, related_name="levels")
+    sequence = models.PositiveSmallIntegerField(default=10)
+    name = models.CharField(max_length=120, blank=True)
+    approval_type = models.CharField(max_length=24, choices=ApprovalType.choices, default=ApprovalType.USER)
+    minimum_approvals = models.PositiveSmallIntegerField(default=1)
+    maximum_hierarchy = models.PositiveSmallIntegerField(blank=True, null=True)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["sequence", "pk"]
+        constraints = [
+            models.UniqueConstraint(fields=["rule", "sequence"], name="approval_rule_level_sequence"),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.minimum_approvals < 1:
+            raise ValidationError({"minimum_approvals": "A level requires at least one approval."})
+        if self.maximum_hierarchy and self.maximum_hierarchy > 5:
+            raise ValidationError({"maximum_hierarchy": "At most five hierarchy levels are supported."})
+
+    def __str__(self):
+        return self.name or f"{self.rule} · level {self.sequence}"
+
+
+class ApprovalRuleLevelAssignee(TimeStampedModel):
+    """One approver or delegate source attached to a relational approval level."""
+
+    class Role(models.TextChoices):
+        APPROVER = "approver", "Approver"
+        DELEGATE = "delegate", "Delegate"
+
+    class Source(models.TextChoices):
+        USER = "user", "Specific User"
+        GROUP = "group", "Access Profile / Group"
+        RECORD_FIELD = "record_field", "Record User Field"
+        RECORD_SUPERVISOR = "record_supervisor", "Employee Supervisor"
+
+    level = models.ForeignKey(ApprovalRuleLevel, on_delete=models.CASCADE, related_name="assignees")
+    role = models.CharField(max_length=12, choices=Role.choices, default=Role.APPROVER)
+    source = models.CharField(max_length=20, choices=Source.choices)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="approval_rule_level_assignments",
+        blank=True,
+        null=True,
+    )
+    group = models.ForeignKey(
+        Group,
+        on_delete=models.PROTECT,
+        related_name="approval_rule_level_assignments",
+        blank=True,
+        null=True,
+    )
+    # Kept for migrations and configurations that reference a group by its
+    # business name before the group has been provisioned in Django.
+    group_name = models.CharField(max_length=150, blank=True)
+    field_path = models.CharField(max_length=160, blank=True)
+    sequence = models.PositiveSmallIntegerField(default=10)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["sequence", "pk"]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.source == self.Source.USER and not self.user_id:
+            errors["user"] = "Choose a user for this source."
+        if self.source == self.Source.GROUP and not (self.group_id or self.group_name):
+            errors["group"] = "Choose a group or provide its configured group name."
+        if self.source == self.Source.RECORD_FIELD and not self.field_path:
+            errors["field_path"] = "Provide the record user-field path."
+        if self.source in {self.Source.RECORD_FIELD, self.Source.RECORD_SUPERVISOR} and self.role == self.Role.DELEGATE:
+            errors["role"] = "Delegates must be users or groups."
+        if errors:
+            raise ValidationError(errors)
+
+    def __str__(self):
+        return f"{self.level} · {self.get_role_display()}"
 
 
 class ApprovalDelegation(TimeStampedModel):

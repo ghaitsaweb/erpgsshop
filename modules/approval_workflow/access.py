@@ -10,6 +10,10 @@ APPROVAL_ENTITIES = {
     "approval-workflows",
     "approval-perimeters",
     "approval-rules",
+    "approval-condition-groups",
+    "approval-condition-lines",
+    "approval-rule-levels",
+    "approval-level-assignees",
     "approval-delegations",
     "approval-instances",
     "approval-actions",
@@ -20,6 +24,10 @@ CONFIGURATION_ENTITIES = {
     "approval-workflows",
     "approval-perimeters",
     "approval-rules",
+    "approval-condition-groups",
+    "approval-condition-lines",
+    "approval-rule-levels",
+    "approval-level-assignees",
     "approval-timeout-whitelist",
 }
 

@@ -47,7 +47,10 @@ class EmploymentContract(TimeStampedModel):
 
     class Status(models.TextChoices):
         DRAFT = "draft", "Draft"
+        SUBMITTED = "submitted", "Submitted for Approval"
         ACTIVE = "active", "Active"
+        REJECTED = "rejected", "Rejected"
+        CANCELLED = "cancelled", "Cancelled"
         EXPIRED = "expired", "Expired"
         TERMINATED = "terminated", "Terminated"
 
@@ -150,6 +153,22 @@ class Payslip(TimeStampedModel):
         CANCELLED = "cancelled", "Cancelled"
 
     employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="payslips")
+    contract = models.ForeignKey(
+        EmploymentContract,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="payslips",
+        help_text="The effective employment contract used for this payslip.",
+    )
+    payroll_run = models.ForeignKey(
+        "PayrollRun",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="payslips",
+        help_text="The payroll run that produced or includes this payslip.",
+    )
     number = models.CharField(max_length=40, unique=True)
     period_start = models.DateField()
     period_end = models.DateField()
@@ -161,6 +180,32 @@ class Payslip(TimeStampedModel):
 
     class Meta:
         ordering = ["-period_end", "employee__name"]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.period_start and self.period_end and self.period_end < self.period_start:
+            errors["period_end"] = "Period end must be on or after period start."
+        if self.contract_id and self.employee_id:
+            if self.contract.employee_id != self.employee_id:
+                errors["contract"] = "The selected contract must belong to the selected employee."
+            elif self.period_start and self.period_end and (
+                self.contract.start_date > self.period_end
+                or (self.contract.end_date and self.contract.end_date < self.period_start)
+            ):
+                errors["contract"] = "The payslip period must overlap the selected contract period."
+        if self.payroll_run_id and self.employee_id:
+            period = self.payroll_run.period
+            if self.payroll_run.company_id != self.employee.company_id:
+                errors["payroll_run"] = "The payroll run must belong to the employee company."
+            elif self.period_start and self.period_end and (
+                self.period_start < period.date_start or self.period_end > period.date_end
+            ):
+                errors["payroll_run"] = "The payslip period must be inside the payroll run period."
+        if self.contract_id and self.payroll_run_id and self.contract.employee.company_id != self.payroll_run.company_id:
+            errors["payroll_run"] = "The payroll run must belong to the contract company."
+        if errors:
+            raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
         self.net_salary = self.basic_salary + self.allowances - self.deductions
@@ -1501,6 +1546,36 @@ class CompensationBenefit(TimeStampedModel):
         return f"{self.employee} - {self.effective_date}"
 
 
+class CompensationBenefitLine(TimeStampedModel):
+    """A frozen, inspectable component breakdown for one compensation snapshot."""
+
+    class Category(models.TextChoices):
+        BASIC = "basic", "Basic Salary"
+        ALLOWANCE = "allowance", "Allowance"
+        DEDUCTION = "deduction", "Deduction"
+        OVERTIME = "overtime", "Overtime Component"
+
+    benefit = models.ForeignKey(CompensationBenefit, on_delete=models.CASCADE, related_name="component_lines")
+    component = models.ForeignKey(
+        "SalaryComponent",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="compensation_benefit_lines",
+    )
+    category = models.CharField(max_length=16, choices=Category.choices)
+    label = models.CharField(max_length=120)
+    amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    sequence = models.PositiveSmallIntegerField(default=10)
+
+    class Meta:
+        ordering = ["sequence", "pk"]
+        indexes = [models.Index(fields=["benefit", "sequence"], name="hr_comp_benefit_line_idx")]
+
+    def __str__(self):
+        return f"{self.benefit} · {self.label}"
+
+
 # Extended HR foundation and operational surfaces audited from the HMX HR PRD.
 # These models are intentionally additive so existing GS Shop demo data and URLs
 # remain compatible while the missing domains become usable through generic CRUD.
@@ -1848,6 +1923,49 @@ class ContractAllowance(TimeStampedModel):
         return f"{self.contract} - {self.component}"
 
 
+class ContractOvertimeComponent(TimeStampedModel):
+    """Effective-dated overtime component settings for one employment contract."""
+
+    contract = models.ForeignKey(EmploymentContract, on_delete=models.CASCADE, related_name="overtime_components")
+    component = models.ForeignKey(SalaryComponent, on_delete=models.PROTECT, related_name="contract_overtime_components")
+    rate_multiplier = models.DecimalField(max_digits=7, decimal_places=3, default=1)
+    effective_date = models.DateField(default=timezone.localdate)
+    end_date = models.DateField(blank=True, null=True)
+    active = models.BooleanField(default=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-effective_date", "component__name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["contract", "component", "effective_date"],
+                name="unique_contract_overtime_effective_date",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(rate_multiplier__gt=0),
+                name="contract_overtime_multiplier_positive",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.end_date and self.end_date < self.effective_date:
+            errors["end_date"] = "End date must be on or after effective date."
+        if self.contract_id and self.component_id:
+            if self.component.company_id != self.contract.employee.company_id:
+                errors["component"] = "The overtime component must belong to the contract company."
+            if self.effective_date < self.contract.start_date:
+                errors["effective_date"] = "An overtime component cannot start before the contract."
+            if self.contract.end_date and self.effective_date > self.contract.end_date:
+                errors["effective_date"] = "An overtime component cannot start after the contract ends."
+        if errors:
+            raise ValidationError(errors)
+
+    def __str__(self):
+        return f"{self.contract} - {self.component}"
+
+
 class ContractLetter(TimeStampedModel):
     contract = models.ForeignKey(EmploymentContract, on_delete=models.CASCADE, related_name="letters")
     template = models.ForeignKey(
@@ -1882,6 +2000,52 @@ class ContractLetter(TimeStampedModel):
 
     def __str__(self):
         return self.letter_number
+
+
+class ContractAttachment(TimeStampedModel):
+    """Compliance and amendment evidence retained against one employment contract."""
+
+    class Category(models.TextChoices):
+        OFFER = "offer", "Offer"
+        AMENDMENT = "amendment", "Amendment"
+        COMPLIANCE = "compliance", "Compliance"
+        IDENTITY = "identity", "Identity"
+        OTHER = "other", "Other"
+
+    contract = models.ForeignKey(EmploymentContract, on_delete=models.CASCADE, related_name="attachments")
+    title = models.CharField(max_length=160)
+    category = models.CharField(max_length=16, choices=Category.choices, default=Category.OTHER)
+    file_url = models.URLField(blank=True)
+    attachment_name = models.CharField(max_length=255, blank=True, editable=False)
+    attachment_content_type = models.CharField(max_length=120, blank=True, editable=False)
+    attachment_content = models.BinaryField(blank=True, null=True, editable=False)
+    issued_date = models.DateField(blank=True, null=True)
+    expiry_date = models.DateField(blank=True, null=True)
+    verified = models.BooleanField(default=False)
+    notes = models.TextField(blank=True)
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="contract_attachments_uploaded",
+    )
+
+    class Meta:
+        ordering = ["-expiry_date", "title"]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.issued_date and self.expiry_date and self.expiry_date < self.issued_date:
+            errors["expiry_date"] = "Expiry must be on or after the issued date."
+        if not self.file_url and not (self.attachment_name and self.attachment_content):
+            errors["file_url"] = "Upload a file or provide an external document URL."
+        if errors:
+            raise ValidationError(errors)
+
+    def __str__(self):
+        return f"{self.contract} · {self.title}"
 
 
 class DisciplinaryStage(TimeStampedModel):

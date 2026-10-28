@@ -12,6 +12,12 @@
         <dt>Submitted at</dt><dd>{{ approval.submitted_at }}</dd>
         <dt>Current level</dt><dd>{{ approval.current_level|add:1 }}</dd>
       </dl>
+      <h3>Approval levels</h3>
+      <div class="table-wrap"><table><thead><tr><th>Level</th><th>State</th><th>Quorum</th><th>Approvers</th><th>Delegates</th></tr></thead><tbody>
+        {% for level in levels %}
+          <tr><td>{{ level.number }} · {{ level.name }}</td><td><span class="document-state status-{{ level.state }}">{{ level.state|title }}</span></td><td>{{ level.approved_count }} / {{ level.minimum_approvals }}</td><td>{{ level.approvers|join:", "|default:"—" }}</td><td>{{ level.delegates|join:", "|default:"—" }}</td></tr>
+        {% empty %}<tr><td class="empty" colspan="5">No approval levels were frozen for this transaction.</td></tr>{% endfor %}
+      </tbody></table></div>
       <h3>History</h3>
       <div class="table-wrap"><table><thead><tr><th>Action</th><th>Level</th><th>Actor</th><th>Reason</th><th>Time</th></tr></thead><tbody>
         {% for item in approval.actions.all %}<tr><td>{{ item.get_action_display }}</td><td>{% if item.level != None %}{{ item.level|add:1 }}{% else %}—{% endif %}</td><td>{{ item.performed_by }}</td><td>{{ item.reason|default:"—" }}</td><td>{{ item.performed_at }}</td></tr>{% endfor %}

@@ -2,7 +2,16 @@ from django import forms
 
 from core.forms import StyledModelForm
 
-from .models import ApprovalDelegation, ApprovalRule, ApprovalWorkflow, ApprovalWorkflowPerimeter
+from .models import (
+    ApprovalDelegation,
+    ApprovalRule,
+    ApprovalRuleConditionGroup,
+    ApprovalRuleConditionLine,
+    ApprovalRuleLevel,
+    ApprovalRuleLevelAssignee,
+    ApprovalWorkflow,
+    ApprovalWorkflowPerimeter,
+)
 
 
 class ApprovalWorkflowForm(StyledModelForm):
@@ -36,8 +45,8 @@ class ApprovalRuleForm(StyledModelForm):
             "companies",
             "state",
             "priority",
-            "trigger_conditions",
-            "approval_levels",
+            "use_relational_conditions",
+            "use_relational_levels",
             "master_approver",
             "use_delegate",
             "delegate_after",
@@ -47,6 +56,48 @@ class ApprovalRuleForm(StyledModelForm):
             "timeout_value",
             "timeout_period",
             "notification_settings",
+        ]
+
+
+class ApprovalRuleConditionGroupForm(StyledModelForm):
+    class Meta:
+        model = ApprovalRuleConditionGroup
+        fields = ["rule", "name", "sequence", "operator", "active"]
+
+
+class ApprovalRuleConditionLineForm(StyledModelForm):
+    class Meta:
+        model = ApprovalRuleConditionLine
+        fields = ["group", "field_name", "operator", "value", "sequence", "active"]
+
+
+class ApprovalRuleLevelForm(StyledModelForm):
+    class Meta:
+        model = ApprovalRuleLevel
+        fields = [
+            "rule",
+            "sequence",
+            "name",
+            "approval_type",
+            "minimum_approvals",
+            "maximum_hierarchy",
+            "active",
+        ]
+
+
+class ApprovalRuleLevelAssigneeForm(StyledModelForm):
+    class Meta:
+        model = ApprovalRuleLevelAssignee
+        fields = [
+            "level",
+            "role",
+            "source",
+            "user",
+            "group",
+            "group_name",
+            "field_path",
+            "sequence",
+            "active",
         ]
 
 

@@ -7,6 +7,10 @@ from .models import (
     ApprovalNotification,
     ApprovalOutbox,
     ApprovalRule,
+    ApprovalRuleConditionGroup,
+    ApprovalRuleConditionLine,
+    ApprovalRuleLevel,
+    ApprovalRuleLevelAssignee,
     ApprovalTimeoutWhitelist,
     ApprovalWorkflow,
     ApprovalWorkflowPerimeter,
@@ -24,6 +28,32 @@ class ApprovalRuleAdmin(admin.ModelAdmin):
     list_display = ("name", "workflow", "state", "priority", "master_approver")
     list_filter = ("state", "workflow")
     filter_horizontal = ("companies",)
+
+
+@admin.register(ApprovalRuleLevel)
+class ApprovalRuleLevelAdmin(admin.ModelAdmin):
+    list_display = ("rule", "sequence", "name", "approval_type", "minimum_approvals", "active")
+    list_filter = ("approval_type", "active")
+    search_fields = ("name", "rule__name")
+
+
+@admin.register(ApprovalRuleLevelAssignee)
+class ApprovalRuleLevelAssigneeAdmin(admin.ModelAdmin):
+    list_display = ("level", "role", "source", "user", "group", "group_name", "sequence", "active")
+    list_filter = ("role", "source", "active")
+    search_fields = ("level__name", "level__rule__name", "user__username", "group__name", "group_name")
+
+
+@admin.register(ApprovalRuleConditionGroup)
+class ApprovalRuleConditionGroupAdmin(admin.ModelAdmin):
+    list_display = ("rule", "name", "sequence", "operator", "active")
+    list_filter = ("operator", "active")
+
+
+@admin.register(ApprovalRuleConditionLine)
+class ApprovalRuleConditionLineAdmin(admin.ModelAdmin):
+    list_display = ("group", "field_name", "operator", "sequence", "active")
+    list_filter = ("operator", "active")
 
 
 @admin.register(ApprovalInstance)

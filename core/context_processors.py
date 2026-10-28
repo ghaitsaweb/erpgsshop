@@ -49,6 +49,18 @@ def navigation(request):
     except (OperationalError, ProgrammingError):
         pass
 
+    # Add-ons own their direct routes (rather than a generic entity URL).  Map
+    # those routes back to the installed application so the normal ERP shell,
+    # switcher, and active-app navigation remain intact.
+    if not active_app_slug:
+        active_app_slug = next(
+            (
+                app.slug
+                for app in installed_apps
+                if app.route.startswith("/") and request.path.startswith(app.route)
+            ),
+            None,
+        )
     current_nav_app = apps_by_slug.get(active_app_slug)
     if current_nav_app:
         menu_groups = app_menu_groups(current_nav_app.slug)

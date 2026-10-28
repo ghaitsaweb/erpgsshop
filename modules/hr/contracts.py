@@ -14,6 +14,7 @@ from core.models import Employee
 from .models import (
     ApprovalStatus,
     CompensationBenefit,
+    CompensationBenefitLine,
     ContractAllowance,
     ContractAllowanceHistory,
     ContractLetter,
@@ -23,7 +24,11 @@ from .models import (
 
 
 CONTRACT_TRANSITIONS = {
-    "activate": (EmploymentContract.Status.DRAFT, EmploymentContract.Status.ACTIVE),
+    "submit": ({EmploymentContract.Status.DRAFT}, EmploymentContract.Status.SUBMITTED),
+    "activate": ({EmploymentContract.Status.SUBMITTED}, EmploymentContract.Status.ACTIVE),
+    "reject": ({EmploymentContract.Status.SUBMITTED}, EmploymentContract.Status.REJECTED),
+    "cancel": ({EmploymentContract.Status.DRAFT, EmploymentContract.Status.SUBMITTED}, EmploymentContract.Status.CANCELLED),
+    "reset": ({EmploymentContract.Status.REJECTED, EmploymentContract.Status.CANCELLED}, EmploymentContract.Status.DRAFT),
     "expire": (EmploymentContract.Status.ACTIVE, EmploymentContract.Status.EXPIRED),
     "terminate": (EmploymentContract.Status.ACTIVE, EmploymentContract.Status.TERMINATED),
 }
@@ -51,21 +56,58 @@ def _basic_salary(contract):
 
 
 def refresh_contract_compensation(contract, actor, effective_date=None):
-    """Create or refresh the effective compensation snapshot for one contract."""
+    """Create a traceable compensation snapshot from the effective contract terms."""
     effective_date = effective_date or contract.start_date
+    allowances = list(
+        ContractAllowance.objects.filter(
+            contract=contract,
+            component__component_type=SalaryComponent.ComponentType.EARNING,
+            active=True,
+            effective_date__lte=effective_date,
+        )
+        .filter(Q(end_date__isnull=True) | Q(end_date__gte=effective_date))
+        .select_related("component")
+        .order_by("component__name", "pk")
+    )
+    basic_salary = _basic_salary(contract)
+    allowance_total = sum((line.amount for line in allowances), Decimal("0.00"))
     snapshot, _created = CompensationBenefit.objects.update_or_create(
         contract=contract,
         effective_date=effective_date,
         defaults={
             "employee_id": contract.employee_id,
-            "basic_salary": _basic_salary(contract),
-            "allowance_amount": _allowance_total(contract, effective_date),
+            "basic_salary": basic_salary,
+            "allowance_amount": allowance_total,
             "deduction_amount": Decimal("0.00"),
             "status": ApprovalStatus.APPROVED,
             "approver": actor,
             "notes": f"Generated from active contract {contract.number}.",
         },
     )
+    # A snapshot has its own frozen rows, so later allowance revisions do not
+    # rewrite the component trail for a previous effective date.
+    snapshot.component_lines.all().delete()
+    component_lines = [
+        CompensationBenefitLine(
+            benefit=snapshot,
+            category=CompensationBenefitLine.Category.BASIC,
+            label="Basic salary",
+            amount=basic_salary,
+            sequence=10,
+        )
+    ]
+    component_lines.extend(
+        CompensationBenefitLine(
+            benefit=snapshot,
+            component=line.component,
+            category=CompensationBenefitLine.Category.ALLOWANCE,
+            label=line.component.name,
+            amount=line.amount,
+            sequence=20 + index,
+        )
+        for index, line in enumerate(allowances, start=1)
+    )
+    CompensationBenefitLine.objects.bulk_create(component_lines)
     return snapshot
 
 
@@ -164,10 +206,10 @@ def add_contract_allowance_version(*, contract, component, amount, effective_dat
 def transition_employment_contract(contract, action, actor=None):
     """Change one locked contract after checking dates and employee overlap."""
     transition = CONTRACT_TRANSITIONS.get(action)
-    if transition is None or contract.status != transition[0]:
+    if transition is None or contract.status not in transition[0]:
         raise ValidationError("That contract action is not available for the current status.")
 
-    if action == "activate":
+    if action in {"submit", "activate"}:
         employee = Employee.objects.select_for_update().get(pk=contract.employee_id)
         contract.full_clean()
         if employee.status != Employee.Status.ACTIVE:

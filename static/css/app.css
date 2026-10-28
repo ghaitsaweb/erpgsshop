@@ -258,6 +258,71 @@ button, input, select, textarea { font: inherit; }
 .metric-card.blue { --tone: #dceeff; --dot: #458ccc; }
 .metric-card.violet { --tone: #eee4ff; --dot: #8056c8; }
 
+/* Interactive HR organization chart */
+.org-chart-hero { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 25px 28px; margin-bottom: 16px; background: radial-gradient(circle at 91% 9%, rgba(42, 190, 145, .22), transparent 25%), linear-gradient(135deg, #11213b, #173c53); color: white; }
+.org-chart-hero h2 { margin: 4px 0 7px; font-size: 26px; }
+.org-chart-hero p { margin: 0; color: #c7d7e6; font-size: 13px; }
+.org-chart-hero .eyebrow { color: #91e2cc; }
+.org-chart-hero-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 9px; }
+.org-chart-hero .btn-secondary { border-color: rgba(255,255,255,.3); color: white; background: rgba(255,255,255,.08); }
+.org-chart-editing-state, .org-chart-view-state { display: inline-flex; align-items: center; min-height: 34px; padding: 0 11px; border-radius: 8px; font-size: 10px; font-weight: 850; }
+.org-chart-editing-state { color: #063b2c; background: #98f0d0; }
+.org-chart-view-state { color: #e0e8f4; border: 1px solid rgba(255,255,255,.22); background: rgba(255,255,255,.08); }
+.org-chart-edit-toggle { min-height: 34px; border-color: #98f0d0; color: #083f2f; background: #98f0d0; font-size: 11px; }
+.org-chart-edit-toggle[aria-pressed="true"] { border-color: #ffc66e; color: #fff4d8; background: rgba(255,255,255,.12); }
+.org-chart-fallback { margin-bottom: 16px; padding: 0; overflow: hidden; }
+.org-chart-fallback summary { padding: 13px 17px; color: #24445c; cursor: pointer; font-size: 12px; font-weight: 800; }
+.org-chart-fallback-form { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto; align-items: end; gap: 12px; padding: 15px 17px 18px; border-top: 1px solid #e5ebf0; background: #f8fafc; }
+.org-chart-fallback-form label { display: grid; gap: 6px; color: #58697d; font-size: 10px; font-weight: 800; }
+.org-chart-fallback-form .btn { min-height: 38px; }
+.org-chart-guide { display: flex; align-items: center; gap: 12px; padding: 14px 17px; margin-bottom: 16px; border-color: #c7e5da; background: #f3fbf7; }
+.org-chart-guide-icon { width: 29px; height: 29px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 9px; color: white; background: #15956e; font-size: 15px; font-weight: 900; }
+.org-chart-guide p { margin: 0; color: #456457; font-size: 12px; line-height: 1.55; }
+.org-chart-guide strong { color: #174a3b; }
+.org-chart-guide em { color: #08795a; font-style: normal; font-weight: 850; }
+.org-chart-company { padding: 0; margin-bottom: 18px; overflow: hidden; }
+.org-chart-company > .panel-head { min-height: 75px; padding: 17px 21px; border-bottom: 1px solid #e5ebf0; }
+.org-chart-company > .panel-head h2 { margin: 2px 0 0; font-size: 18px; }
+.org-chart-company > .empty { padding: 26px; }
+.org-chart-root-drop { display: flex; align-items: center; gap: 8px; margin: 17px 20px 3px; padding: 10px 13px; border: 1px dashed #97cdbc; border-radius: 10px; color: #3f7465; background: #f4fbf8; transition: .16s ease; }
+.org-chart-root-drop > span { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 7px; color: white; background: #27a77e; font-size: 14px; font-weight: 900; }
+.org-chart-root-drop strong { font-size: 11px; }
+.org-chart-root-drop small { color: #688679; font-size: 10px; }
+.org-chart-root-drop.is-drop-target { border-style: solid; border-color: #168e69; color: #075f47; background: #dff8ee; box-shadow: 0 0 0 3px rgba(22,142,105,.13); transform: translateY(-1px); }
+.org-chart-canvas { min-height: 215px; padding: 19px 22px 31px; overflow: auto; background: radial-gradient(circle at 50% 0, #f5f9fc, transparent 56%), #fbfcfe; }
+.org-chart-tree, .org-chart-tree ul { display: flex; justify-content: center; gap: 20px; margin: 0; padding: 0; list-style: none; }
+.org-chart-tree { min-width: max-content; }
+.org-chart-node { position: relative; display: flex; flex: 0 0 224px; flex-direction: column; align-items: center; }
+.org-chart-node > .org-chart-tree { position: relative; width: 100%; margin-top: 26px; padding-top: 25px; }
+.org-chart-node > .org-chart-tree::before { content: ""; position: absolute; top: 0; left: 50%; height: 25px; border-left: 1px solid #b8c8d8; }
+.org-chart-node > .org-chart-tree::after { content: ""; position: absolute; top: 0; left: 50%; width: calc(100% - 112px); transform: translateX(-50%); border-top: 1px solid #b8c8d8; }
+.org-chart-node > .org-chart-tree:has(> .org-chart-node:only-child)::after { display: none; }
+.org-chart-node > .org-chart-tree > .org-chart-node::before { content: ""; position: absolute; top: -25px; left: 50%; height: 25px; border-left: 1px solid #b8c8d8; }
+.org-chart-card { width: 100%; box-sizing: border-box; padding: 13px; border: 1px solid #d9e3ed; border-radius: 13px; color: #243449; background: #fff; box-shadow: 0 7px 16px rgba(37,53,75,.06); transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease, opacity .16s ease; }
+.org-chart-card header { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 9px; }
+.org-chart-avatar { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 10px; color: #0d6a52; background: #dbf4ea; font-size: 13px; font-weight: 900; }
+.org-chart-card header > span:nth-child(2) { min-width: 0; display: flex; flex-direction: column; }
+.org-chart-card header strong { overflow: hidden; color: #1d2a3c; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.org-chart-card header small { overflow: hidden; margin-top: 2px; color: #8492a2; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.org-chart-drag-handle { padding: 2px 3px; color: #8b9aaa; cursor: grab; font-size: 18px; line-height: 1; }
+.org-chart-card > p { min-height: 28px; margin: 12px 0 8px; color: #506176; font-size: 10px; line-height: 1.4; }
+.org-chart-card footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 8px; border-top: 1px solid #edf1f5; }
+.org-chart-card footer span { overflow: hidden; color: #718197; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.org-chart-card footer a { color: #137959; font-size: 10px; font-weight: 850; }
+.org-chart-card.is-draggable { cursor: grab; }
+.org-chart-card.is-draggable:hover { border-color: #63bfa4; box-shadow: 0 10px 22px rgba(18,116,83,.13); transform: translateY(-2px); }
+.org-chart-card.is-draggable:active { cursor: grabbing; }
+.org-chart-card.is-selected-for-move { border-color: #d98514; background: #fff9e8; box-shadow: 0 0 0 3px rgba(217,133,20,.17), 0 10px 22px rgba(109,67,11,.12); }
+.org-chart-card.is-dragging { opacity: .42; }
+.org-chart-card.is-drop-target { border-color: #0a936a; background: #edfbf5; box-shadow: 0 0 0 3px rgba(10,147,106,.16), 0 12px 24px rgba(18,116,83,.14); transform: translateY(-3px); }
+@media (max-width: 760px) {
+  .org-chart-hero { align-items: flex-start; flex-direction: column; padding: 20px; }
+  .org-chart-hero-actions { justify-content: flex-start; }
+  .org-chart-canvas { padding: 16px; }
+  .org-chart-guide { align-items: flex-start; }
+  .org-chart-fallback-form { grid-template-columns: 1fr; }
+}
+
 .dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(280px, .75fr); gap: 18px; }
 .panel { border: 1px solid var(--line); border-radius: 15px; background: var(--panel); box-shadow: 0 6px 22px rgba(30, 64, 175, .045); }
 .panel-head { padding: 20px 22px 14px; }
@@ -551,6 +616,103 @@ input[type="checkbox"].form-control { width: 20px; min-height: 20px; }
 .workflow-actions-panel small { color: var(--muted); }
 .workflow-actions-panel strong { font-size: 11px; }
 .workflow-actions-panel form { margin: 0; }
+
+/* Employment Contract: related records stay in one employee-lifecycle workspace. */
+.contract-workspace { width: 100%; max-width: 1380px; margin: 0 auto; }
+.contract-create-shell { width: 100%; max-width: 1080px; margin: 0 auto; }
+.contract-create-card { overflow: hidden; border: 1px solid #d7e0ec; border-radius: 18px; background: white; box-shadow: 0 14px 38px rgba(30,64,175,.09); }
+.contract-create-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 22px; padding: 27px 30px 24px; color: white; background: radial-gradient(circle at 92% 10%, rgba(96,165,250,.33), transparent 35%), linear-gradient(135deg, #152856, #1d4e9a); }
+.contract-create-head .eyebrow { color: #b8cdf7; }
+.contract-create-head h2 { margin: 5px 0 7px; font-size: 26px; letter-spacing: -.045em; }
+.contract-create-head p:last-child { max-width: 620px; margin: 0; color: #d8e6ff; font-size: 12px; line-height: 1.6; }
+.contract-create-actions { display: flex; flex: 0 0 auto; gap: 9px; }
+.contract-create-actions .btn-secondary { color: #eaf2ff; border-color: rgba(255,255,255,.3); background: rgba(255,255,255,.1); }
+.contract-create-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; margin: 0; padding: 17px 29px; border-bottom: 1px solid #e3eaf4; background: #f7faff; list-style: none; }
+.contract-create-steps li { display: flex; align-items: center; gap: 10px; padding: 0 14px; border-left: 1px solid #dfe7f2; }
+.contract-create-steps li:first-child { padding-left: 0; border-left: 0; }
+.contract-create-steps span, .contract-create-section > header > span { display: grid; flex: 0 0 auto; place-items: center; width: 25px; height: 25px; border-radius: 50%; color: #1f4a92; background: #dceaff; font-size: 10px; font-weight: 850; }
+.contract-create-steps strong, .contract-create-steps small { display: block; }
+.contract-create-steps strong { color: #334155; font-size: 10px; }
+.contract-create-steps small { margin-top: 2px; color: #7a8799; font-size: 9px; }
+.contract-create-body { padding: 6px 30px 10px; }
+.contract-create-section { padding: 25px 0; border-top: 1px solid #e8edf5; }
+.contract-create-section:first-child { border-top: 0; }
+.contract-create-section > header { display: flex; align-items: flex-start; gap: 11px; margin-bottom: 17px; }
+.contract-create-section h3 { margin: 1px 0 3px; color: #25364f; font-size: 15px; }
+.contract-create-section p { margin: 0; color: #78859a; font-size: 11px; }
+.contract-create-footer { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 17px 30px; border-top: 1px solid #dce5f0; background: #f8fafc; }
+.contract-create-footer p { margin: 0; color: #66758b; font-size: 11px; line-height: 1.55; }
+.contract-workspace-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 24px; }
+.contract-workspace-head h2 { margin: 4px 0 5px; font-size: 25px; letter-spacing: -.04em; }
+.contract-workspace-head h2 small { color: var(--muted); font-size: 13px; font-weight: 650; letter-spacing: 0; }
+.contract-workspace-head p { margin: 0; color: var(--muted); font-size: 12px; }
+.contract-head-state { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.contract-tabbar { display: flex; gap: 5px; margin: 15px 0 18px; padding: 6px; overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: #f7f9fc; }
+.contract-tabbar a { flex: 0 0 auto; padding: 9px 12px; border-radius: 8px; color: #617086; font-size: 11px; font-weight: 800; white-space: nowrap; }
+.contract-tabbar a:hover { color: #1d4ed8; background: #edf3ff; }
+.contract-tabbar a.active { color: #173b82; background: white; box-shadow: 0 2px 7px rgba(30,64,175,.1); }
+.contract-tabbar > span { flex: 0 0 auto; padding: 9px 12px; border-radius: 8px; color: #a0aabd; font-size: 11px; font-weight: 800; white-space: nowrap; }
+.contract-tabbar > span.active { color: #173b82; background: white; box-shadow: 0 2px 7px rgba(30,64,175,.1); }
+.contract-tab-disabled { cursor: not-allowed; }
+.contract-main-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(280px, .7fr); gap: 18px; align-items: start; }
+.contract-sidebar { display: grid; gap: 18px; }
+.contract-section { overflow: hidden; }
+.contract-section.compact { padding: 20px; }
+.contract-section.compact > h2 { margin: 4px 0 16px; font-size: 16px; }
+.contract-section .panel-head p { margin: 6px 0 0; color: var(--muted); font-size: 11px; }
+.contract-section .panel-head form { margin: 0; }
+.contract-form { padding: 0 22px 22px; }
+.contract-form .field + .field { margin-top: 14px; }
+.contract-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; margin: 0; }
+.contract-facts > div { padding: 15px 22px; border-top: 1px solid #e9eef7; }
+.contract-facts dt { margin-bottom: 5px; color: #7a8799; font-size: 9px; font-weight: 850; letter-spacing: .06em; text-transform: uppercase; }
+.contract-facts dd { margin: 0; color: #344054; font-size: 12px; }
+.contract-health-row, .contract-shortcut { display: flex; justify-content: space-between; gap: 10px; padding: 10px 0; border-top: 1px solid #edf1f7; font-size: 11px; }
+.contract-health-row:first-of-type { border-top: 0; }
+.contract-health-row span, .contract-shortcut { color: var(--muted); }
+.contract-health-row strong, .contract-shortcut span { color: var(--ink); font-size: 11px; }
+.contract-shortcut { color: #46556b; font-weight: 750; }
+.contract-shortcut:hover { color: #1d4ed8; }
+.contract-subheading { margin: 25px 22px 11px; font-size: 13px; }
+.contract-components td { padding: 0 16px 13px; background: #fbfcfe; }
+.contract-components strong { display: block; padding-top: 10px; color: #667085; font-size: 9px; letter-spacing: .06em; text-transform: uppercase; }
+.contract-components ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 20px; margin: 8px 0 0; padding: 0; list-style: none; }
+.contract-components li { display: flex; justify-content: space-between; gap: 9px; color: #536174; font-size: 11px; }
+.contract-components b { color: #25364f; font-variant-numeric: tabular-nums; }
+.contract-letter-list { display: grid; gap: 12px; padding: 0 22px 22px; }
+.contract-letter-list article { padding: 15px; border: 1px solid #e4e9f2; border-radius: 10px; background: #fbfcfe; }
+.contract-letter-list article > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.contract-letter-list article strong, .contract-letter-list article small { display: block; }
+.contract-letter-list article small { margin-top: 4px; color: var(--muted); font-size: 10px; }
+.contract-letter-list details { margin-top: 13px; }
+.contract-letter-list summary { color: #31599c; cursor: pointer; font-size: 11px; font-weight: 750; }
+.contract-letter-list pre { max-height: 280px; padding: 12px; overflow: auto; white-space: pre-wrap; border: 1px solid #e6eaf1; border-radius: 8px; color: #3d4b5e; background: white; font: 11px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.contract-letter-list article > p { margin: 12px 0 0; color: var(--muted); font-size: 11px; }
+.contract-link-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px 14px; margin: 14px 22px 0; padding: 14px; border: 1px solid #cddcf6; border-radius: 10px; background: #f7faff; }
+.contract-link-form label { grid-column: 1 / -1; color: #344054; font-size: 11px; font-weight: 750; }
+.contract-link-form .form-control { min-width: 0; }
+.workflow-action-form + .workflow-action-form { margin-top: 10px; padding-top: 10px; border-top: 1px solid #edf1f7; }
+.workflow-action-form .field { margin-bottom: 8px; }
+
+@media (max-width: 900px) {
+  .contract-main-grid { grid-template-columns: 1fr; }
+  .contract-workspace-head { flex-direction: column; }
+  .contract-head-state { justify-content: flex-start; }
+  .contract-link-form { grid-template-columns: 1fr; }
+  .contract-create-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px 0; }
+  .contract-create-steps li:nth-child(3) { padding-left: 0; border-left: 0; }
+}
+
+@media (max-width: 620px) {
+  .contract-facts, .contract-components ul { grid-template-columns: 1fr; }
+  .contract-workspace-head { padding: 18px; }
+  .contract-create-head, .contract-create-footer { flex-direction: column; padding: 22px; }
+  .contract-create-actions { width: 100%; }
+  .contract-create-actions .btn { flex: 1; }
+  .contract-create-steps { grid-template-columns: 1fr; padding: 17px 22px; }
+  .contract-create-steps li, .contract-create-steps li:nth-child(3) { padding-left: 0; border-left: 0; }
+  .contract-create-body { padding: 5px 22px 8px; }
+}
 
 /* Training Conduct: purpose-built clean-room workspace. */
 .tc-list-shell, .tc-form-shell { width: 100%; max-width: none; margin: 0; }

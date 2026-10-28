@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}New Employment Contract · ERP GSSHOP{% endblock %}
+{% block page_title %}New Employment Contract{% endblock %}
+{% block content %}
+  <section class="contract-create-shell">
+    <form method="post" class="contract-create-card">
+      {% csrf_token %}
+      <header class="contract-create-head">
+        <div>
+          <p class="eyebrow">Human resources · employee lifecycle</p>
+          <h2>Create employment contract</h2>
+          <p>Save a complete draft first. Allowances, attachments, approval, and payroll links continue in the Contract workspace.</p>
+        </div>
+        <div class="contract-create-actions"><a class="btn btn-secondary" href="{% url 'entity_list' 'contracts' %}">Cancel</a><button class="btn btn-primary" type="submit">Save draft contract</button></div>
+      </header>
+
+      <ol class="contract-create-steps" aria-label="Contract creation sections">
+        <li><span>1</span><div><strong>Employee</strong><small>Identify the employee and agreement</small></div></li>
+        <li><span>2</span><div><strong>Terms</strong><small>Set type and effective period</small></div></li>
+        <li><span>3</span><div><strong>Compensation</strong><small>Choose package and salary</small></div></li>
+        <li><span>4</span><div><strong>Documents</strong><small>Set letter template and notes</small></div></li>
+      </ol>
+
+      {% if form.non_field_errors %}<div class="message error">{{ form.non_field_errors }}</div>{% endif %}
+      <div class="contract-create-body">
+        <section class="contract-create-section">
+          <header><span>01</span><div><h3>Employee & agreement</h3><p>Use a unique contract number for the employee record.</p></div></header>
+          <div class="form-grid">
+            <div class="field"><label for="{{ form.employee.id_for_label }}">{{ form.employee.label }}<span class="required">*</span></label>{{ form.employee }}{% for error in form.employee.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>
+            <div class="field"><label for="{{ form.number.id_for_label }}">{{ form.number.label }}<span class="required">*</span></label>{{ form.number }}{% for error in form.number.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>
+          </div>
+        </section>
+
+        <section class="contract-create-section">
+          <header><span>02</span><div><h3>Contract terms</h3><p>Fixed-term contracts require an end date. The record begins as a draft.</p></div></header>
+          <div class="form-grid">
+            <div class="field"><label for="{{ form.contract_type.id_for_label }}">{{ form.contract_type.label }}<span class="required">*</span></label>{{ form.contract_type }}{% for error in form.contract_type.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>
+            <div class="field"><label for="{{ form.start_date.id_for_label }}">{{ form.start_date.label }}<span class="required">*</span></label>{{ form.start_date }}{% for error in form.start_date.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>
+            <div class="field"><label for="{{ form.end_date.id_for_label }}">{{ form.end_date.label }}</label>{{ form.end_date }}{% for error in form.end_date.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>
+          </div>
+        </section>
+
+        <section class="contract-create-section">
+          <header><span>03</span><div><h3>Compensation</h3><p>A salary package may prefill basic salary. Allowance versions are added after the draft is saved.</p></div></header>
+          <div class="form-grid">
+            <div class="field"><label for="{{ form.salary_package.id_for_label }}">{{ form.salary_package.label }}</label>{{ form.salary_package }}{% if form.salary_package.help_text %}<small>{{ form.salary_package.help_text }}</small>{% endif %}{% for error in form.salary_package.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>
+            <div class="field"><label for="{{ form.base_salary.id_for_label }}">{{ form.base_salary.label }}<span class="required">*</span></label>{{ form.base_salary }}{% for error in form.base_salary.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>
+          </div>
+        </section>
+
+        <section class="contract-create-section">
+          <header><span>04</span><div><h3>Documents & notes</h3><p>The selected template renders an immutable Contract letter after approval and activation.</p></div></header>
+          <div class="form-grid">
+            <div class="field"><label for="{{ form.letter_template.id_for_label }}">{{ form.letter_template.label }}</label>{{ form.letter_template }}{% for error in form.letter_template.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>
+            <div class="field"><label for="{{ form.notes.id_for_label }}">{{ form.notes.label }}</label>{{ form.notes }}{% for error in form.notes.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>
+          </div>
+        </section>
+      </div>
+      <footer class="contract-create-footer"><p><strong>Next:</strong> add allowance, overtime, and supporting documents from the saved Contract, then submit for approval.</p><button class="btn btn-primary" type="submit">Save draft contract</button></footer>
+    </form>
+  </section>
+{% endblock %}

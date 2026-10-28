@@ -212,13 +212,23 @@ from modules.approval_workflow.access import (
     scope_approval_queryset,
 )
 from modules.approval_workflow.models import ApprovalInstance
+from modules.approval_workflow.adapters import (
+    apply_approval_lifecycle,
+    apply_approval_result,
+    apply_approval_submit,
+    uses_approval_engine,
+)
 from modules.approval_workflow.services import (
+    cancel_pending_approval,
     ensure_legacy_pending_approval,
     perform_approval_action,
     submit_for_approval,
 )
 from modules.hr.access import can_hr_entity_action, can_hr_workflow_action, scope_hr_form, scope_hr_queryset
 from modules.hr.detail_config import HR_DETAIL_ENTITY_CONFIG
+from modules.hr.contract_views import contract_attachment_download as serve_contract_attachment
+from modules.hr.contract_views import contract_create
+from modules.hr.contract_views import contract_workspace
 from modules.hr.training_views import training_conduct_form, training_conduct_list
 from modules.purchase.access import (
     can_purchase_entity_action,
@@ -264,7 +274,11 @@ APPROVAL_WORKFLOW = {
 }
 
 EMPLOYMENT_CONTRACT_WORKFLOW = {
-    "activate": {"label": "Activate", "from": ["draft"], "to": "active", "primary": True},
+    "submit": {"label": "Submit for Approval", "from": ["draft"], "to": "submitted", "primary": True},
+    "approve": {"label": "Approve & Activate", "from": ["submitted"], "to": "active", "primary": True},
+    "reject": {"label": "Reject", "from": ["submitted"], "to": "rejected"},
+    "cancel": {"label": "Cancel", "from": ["draft", "submitted"], "to": "cancelled"},
+    "reset": {"label": "Reset to Draft", "from": ["rejected", "cancelled"], "to": "draft"},
     "expire": {"label": "Expire", "from": ["active"], "to": "expired"},
     "terminate": {"label": "Terminate", "from": ["active"], "to": "terminated"},
 }
@@ -471,10 +485,10 @@ ENTITY_CONFIG = {
         "model": Payslip,
         "title": "Payslips",
         "singular": "Payslip",
-        "columns": [("number", "Number"), ("employee", "Employee"), ("period_start", "Period Start"), ("period_end", "Period End"), ("net_salary", "Net Salary"), ("status", "Status")],
-        "search": ["number", "employee__employee_id", "employee__name"],
-        "form_fields": ["employee", "number", "period_start", "period_end", "basic_salary", "allowances", "deductions", "status"],
-        "select_related": ["employee"],
+        "columns": [("number", "Number"), ("employee", "Employee"), ("contract", "Contract"), ("payroll_run", "Payroll Run"), ("period_start", "Period Start"), ("period_end", "Period End"), ("net_salary", "Net Salary"), ("status", "Status")],
+        "search": ["number", "employee__employee_id", "employee__name", "contract__number", "payroll_run__number"],
+        "form_fields": ["employee", "contract", "payroll_run", "number", "period_start", "period_end", "basic_salary", "allowances", "deductions", "status"],
+        "select_related": ["employee", "contract", "payroll_run"],
     },
     "candidates": {
         "model": Candidate,
@@ -2157,6 +2171,8 @@ def _load_delete_targets(user, entity, config, selected_ids, *, for_update=False
 
 
 def _delete_block_reason(entity, config, instance):
+    if entity == "employees":
+        return "Employee records are retained for HR, payroll, and approval audit history; archive the employee instead."
     if entity == "attendance" and instance.from_raw_attendance:
         return "Raw-derived attendance must be changed through an attendance correction request."
     if (
@@ -2560,6 +2576,12 @@ def entity_create(request, entity):
         return redirect("entity_list", entity=entity)
     if entity == "training-conducts":
         return training_conduct_form(request, config, can_change=True)
+    if entity == "contracts":
+        return contract_create(
+            request,
+            config,
+            scope_form=lambda form: _scope_form(form, request.user, "contracts"),
+        )
     if entity in DOCUMENT_CONFIG:
         context, response = _document_context(request, entity, config)
         return response or render(request, "core/document_form.html", context)
@@ -2654,12 +2676,20 @@ def entity_edit(request, entity, pk):
         messages.error(request, "This record is immutable or you do not have permission to edit it.")
         return redirect("entity_list", entity=entity)
     scoped_queryset = _scope_queryset(request.user, entity, model.objects.all())
+    if entity == "contracts":
+        return contract_workspace(
+            request,
+            config,
+            scoped_queryset,
+            pk,
+            can_change=True,
+            can_workflow=lambda action, instance: _can_workflow(request.user, "contracts", action, instance),
+            scope_form=lambda form: _scope_form(form, request.user, "contracts"),
+        )
     if entity == "raw-attendance" and request.method == "POST":
         return _edit_raw_attendance(request, config, scoped_queryset, pk)
     if entity == "attendance-change-requests" and request.method == "POST":
         return _edit_attendance_change_request(request, config, scoped_queryset, pk)
-    if entity == "contracts" and request.method == "POST":
-        return _edit_employment_contract(request, config, scoped_queryset, pk)
     if entity == "employee-change-requests" and request.method == "POST":
         return _edit_employee_change_request(request, config, scoped_queryset, pk)
     if entity == "employee-change-requests":
@@ -2807,7 +2837,7 @@ def _edit_employment_contract(request, config, scoped_queryset, pk):
             "mode": "Edit",
             "object": instance,
             "current_status": instance.status,
-            "workflow_actions": [{"key": "activate", **EMPLOYMENT_CONTRACT_WORKFLOW["activate"]}],
+            "workflow_actions": [{"key": "submit", **EMPLOYMENT_CONTRACT_WORKFLOW["submit"]}],
             "workflow_locked": False,
             "developer_meta": developer_metadata(EmploymentContract, entity="contracts", instance=instance),
         },
@@ -2966,6 +2996,15 @@ def employee_change_request_attachment(request, pk):
 
 @require_GET
 @login_required
+def contract_attachment_download(request, pk, attachment_pk):
+    if not _can(request.user, "view", EmploymentContract, "contracts"):
+        raise Http404("Attachment not found.")
+    queryset = _scope_queryset(request.user, "contracts", EmploymentContract.objects.all())
+    return serve_contract_attachment(request, queryset, pk, attachment_pk)
+
+
+@require_GET
+@login_required
 def document_pdf(request, entity, pk):
     config = _config(entity)
     unavailable = _unavailable_application(request, entity)
@@ -3062,7 +3101,8 @@ def document_action(request, entity, pk, action):
             return redirect("entity_list", entity=entity)
         scoped_queryset = _scope_queryset(request.user, entity, model.objects.all())
         instance = get_object_or_404(scoped_queryset, pk=pk)
-        if not _can_workflow(request.user, entity, action, instance):
+        approval_engine_decision = uses_approval_engine(instance) and action in {"approve", "reject"}
+        if not approval_engine_decision and not _can_workflow(request.user, entity, action, instance):
             messages.error(request, "Your role cannot perform that workflow approval action.")
             return redirect("entity_edit", entity=entity, pk=pk)
         workflow_field = config.get("workflow_field", "status")
@@ -3082,6 +3122,8 @@ def document_action(request, entity, pk, action):
         if action in {"approve", "reject"} and hasattr(instance, "approver_id"):
             update_values["approver_id"] = request.user.pk
         actual_status = definition["to"]
+        approval_advanced = False
+        workflow_audit_details = {}
         with transaction.atomic():
             if entity == "raw-attendance":
                 locked = get_object_or_404(scoped_queryset.select_related("employee"), pk=pk)
@@ -3095,17 +3137,68 @@ def document_action(request, entity, pk, action):
                         return redirect("entity_edit", entity=entity, pk=pk)
                     instance = locked
                     updated = 1
-            elif entity == "attendance-change-requests":
+            elif uses_approval_engine(instance):
                 locked = get_object_or_404(scoped_queryset.select_for_update(), pk=pk)
                 if locked.status != current_status:
                     updated = 0
                 else:
                     try:
-                        transition_attendance_change_request(locked, action, request.user)
+                        if action == "submit":
+                            submit_for_approval(
+                                locked,
+                                request.user,
+                                entity=entity,
+                                apply_submit=lambda target: apply_approval_submit(target, request.user),
+                            )
+                        elif action in {"approve", "reject"}:
+                            approval_instance = (
+                                ApprovalInstance.objects.filter(
+                                    workflow__content_type__app_label=locked._meta.app_label,
+                                    workflow__content_type__model=locked._meta.model_name,
+                                    object_id=locked.pk,
+                                    status=ApprovalInstance.Status.PENDING,
+                                )
+                                .select_related("rule", "workflow", "content_type")
+                                .first()
+                            )
+                            if approval_instance is None:
+                                approval_instance = ensure_legacy_pending_approval(
+                                    locked,
+                                    request.user,
+                                    entity=entity,
+                                )
+                            outcome = perform_approval_action(
+                                approval_instance,
+                                request.user,
+                                action,
+                                reason=request.POST.get("reason", ""),
+                                apply_result=lambda target, result_action: apply_approval_result(
+                                    target, result_action, request.user
+                                ),
+                            )
+                            workflow_audit_details = outcome.audit_details
+                            if not outcome.completed:
+                                approval_advanced = True
+                                workflow_audit_details = {
+                                    "approval_instance_id": approval_instance.pk,
+                                    "approval_level_advanced": True,
+                                }
+                        elif action == "cancel" and locked.status == "submitted":
+                            cancel_pending_approval(
+                                locked,
+                                request.user,
+                                apply_cancel=lambda target: apply_approval_lifecycle(target, "cancel", request.user),
+                            )
+                        else:
+                            apply_approval_lifecycle(locked, action, request.user)
                     except ValidationError as exc:
                         messages.error(request, "; ".join(exc.messages))
                         return redirect("entity_edit", entity=entity, pk=pk)
+                    locked.refresh_from_db()
+                    if workflow_audit_details:
+                        locked._workflow_audit_details = workflow_audit_details
                     instance = locked
+                    actual_status = locked.status
                     updated = 1
             elif entity == "contracts":
                 locked = get_object_or_404(scoped_queryset.select_for_update(), pk=pk)
@@ -3141,65 +3234,6 @@ def document_action(request, entity, pk, action):
                         return redirect("entity_edit", entity=entity, pk=pk)
                     instance = locked
                     actual_status = locked.status
-                    updated = 1
-            elif entity == "employee-change-requests":
-                locked = get_object_or_404(scoped_queryset.select_for_update(), pk=pk)
-                if locked.status != current_status:
-                    updated = 0
-                else:
-                    try:
-                        if action == "submit":
-                            submit_for_approval(
-                                locked,
-                                request.user,
-                                entity=entity,
-                                apply_submit=lambda target: transition_employee_change_request(
-                                    target,
-                                    "submit",
-                                    request.user,
-                                ),
-                            )
-                        elif action in {"approve", "reject"}:
-                            approval_instance = (
-                                ApprovalInstance.objects.filter(
-                                    workflow__content_type__app_label=locked._meta.app_label,
-                                    workflow__content_type__model=locked._meta.model_name,
-                                    object_id=locked.pk,
-                                    status=ApprovalInstance.Status.PENDING,
-                                )
-                                .select_related("rule", "workflow", "content_type")
-                                .first()
-                            )
-                            if approval_instance is None:
-                                approval_instance = ensure_legacy_pending_approval(
-                                    locked,
-                                    request.user,
-                                    entity=entity,
-                                )
-                            outcome = perform_approval_action(
-                                approval_instance,
-                                request.user,
-                                action,
-                                reason=request.POST.get("reason", ""),
-                                apply_result=lambda target, result_action: transition_employee_change_request(
-                                    target,
-                                    result_action,
-                                    request.user,
-                                ),
-                            )
-                            locked.refresh_from_db(fields=["status", "approver", "approved_at", "updated_at"])
-                            actual_status = locked.status
-                            if not outcome.completed:
-                                locked._workflow_audit_details = {
-                                    "approval_instance_id": approval_instance.pk,
-                                    "approval_level_advanced": True,
-                                }
-                        else:
-                            transition_employee_change_request(locked, action, request.user)
-                    except ValidationError as exc:
-                        messages.error(request, "; ".join(exc.messages))
-                        return redirect("entity_edit", entity=entity, pk=pk)
-                    instance = locked
                     updated = 1
             elif definition.get("service_controls_state") and model._meta.app_label in {
                 "gsshop_construction", "gsshop_finance", "gsshop_pos", "gsshop_hr", "gsshop_purchase"
@@ -3245,6 +3279,8 @@ def document_action(request, entity, pk, action):
             messages.error(request, "The record changed while this action was running. Please review it again.")
         elif entity == "raw-attendance":
             messages.success(request, "Raw punches processed into one daily attendance record.")
+        elif approval_advanced:
+            messages.success(request, "Approval recorded and advanced to the next level.")
         elif actual_status is None and definition["to"] is None:
             messages.success(request, f"{config['singular']} action {definition['label']} completed.")
         elif actual_status != definition["to"]:

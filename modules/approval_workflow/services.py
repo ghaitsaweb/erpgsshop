@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -32,6 +32,7 @@ class ApprovalOutcome:
     instance: ApprovalInstance
     completed: bool
     approved: bool
+    audit_details: dict = field(default_factory=dict)
 
 
 def _json_safe(value):
@@ -100,10 +101,73 @@ def _condition_matches(record, condition):
 
 
 def _rule_matches(record, rule):
-    conditions = rule.trigger_conditions or []
+    conditions = _runtime_conditions(rule)
     if isinstance(conditions, dict):
         return _condition_matches(record, conditions)
     return all(_condition_matches(record, item) for item in conditions)
+
+
+def _runtime_conditions(rule):
+    """Return relational conditions in the legacy engine shape.
+
+    Existing rules deliberately retain their JSON fallback until they are
+    migrated. Approval instances store a resolved snapshot, so later changes
+    to either representation cannot alter an in-flight decision.
+    """
+    if not rule.use_relational_conditions:
+        return rule.trigger_conditions or []
+    groups = [group for group in rule.condition_groups.all() if group.active]
+    conditions = []
+    for group in groups:
+        lines = [
+            {"field": line.field_name, "operator": line.operator, "value": line.value}
+            for line in group.lines.all()
+            if line.active
+        ]
+        if lines:
+            conditions.append({"operator": group.operator, "conditions": lines})
+    return conditions
+
+
+def _runtime_levels(rule):
+    """Translate relational configuration to the stable runtime snapshot shape."""
+    if not rule.use_relational_levels:
+        return rule.approval_levels or []
+    levels = [level for level in rule.levels.all() if level.active]
+    if not levels:
+        raise ValidationError("This approval rule has no active approval levels.")
+    configured = []
+    for level in levels:
+        item = {
+            "name": level.name,
+            "layer_name": level.name,
+            "approval_type": level.approval_type,
+            "minimum_approvals": level.minimum_approvals,
+            "maximum_hierarchy": level.maximum_hierarchy,
+            "approvers": [],
+        }
+        for source in (source for source in level.assignees.all() if source.active):
+            if source.role == source.Role.APPROVER:
+                if source.source == source.Source.USER:
+                    item.setdefault("user_ids", []).append(source.user_id)
+                elif source.source == source.Source.GROUP:
+                    if source.group_id:
+                        item.setdefault("group_ids", []).append(source.group_id)
+                    elif source.group_name:
+                        item.setdefault("group_names", []).append(source.group_name)
+                elif source.source == source.Source.RECORD_FIELD:
+                    item["approvers"].append({"type": "record_field", "field": source.field_path})
+                elif source.source == source.Source.RECORD_SUPERVISOR:
+                    item["approvers"].append({"type": "record_supervisor"})
+            elif source.source == source.Source.USER:
+                item.setdefault("delegate_user_ids", []).append(source.user_id)
+            elif source.source == source.Source.GROUP:
+                if source.group_id:
+                    item.setdefault("delegate_group_ids", []).append(source.group_id)
+                elif source.group_name:
+                    item.setdefault("delegate_group_names", []).append(source.group_name)
+        configured.append(item)
+    return configured
 
 
 def _company_id_for(record):
@@ -131,6 +195,7 @@ def resolve_workflow_and_rule(record, company_id=None):
         ApprovalRule.objects.filter(workflow=workflow, state=ApprovalRule.State.ASSOCIATED)
         .filter(Q(companies__isnull=True) | Q(companies__pk=company_id))
         .select_related("master_approver", "workflow", "perimeter")
+        .prefetch_related("condition_groups__lines", "levels__assignees__user", "levels__assignees__group")
         .distinct()
         .order_by("priority", "pk")[: MAX_RULE_CANDIDATES + 1]
     )
@@ -338,7 +403,7 @@ def submit_for_approval(record, actor, *, entity, apply_submit):
     if existing:
         raise ValidationError("This record already has a pending approval.")
     workflow, rule, company_id = resolve_workflow_and_rule(locked)
-    levels = _resolve_levels(locked, rule.approval_levels, company_id)
+    levels = _resolve_levels(locked, _runtime_levels(rule), company_id)
     apply_submit(locked)
     submitted_at = timezone.now()
     instance = ApprovalInstance.objects.create(
@@ -379,7 +444,7 @@ def ensure_legacy_pending_approval(record, actor, *, entity):
     if existing:
         return existing
     workflow, rule, company_id = resolve_workflow_and_rule(record)
-    levels = _resolve_levels(record, rule.approval_levels, company_id)
+    levels = _resolve_levels(record, _runtime_levels(rule), company_id)
     submitted_at = timezone.now()
     instance = ApprovalInstance.objects.create(
         workflow=workflow,
@@ -403,6 +468,40 @@ def ensure_legacy_pending_approval(record, actor, *, entity):
         performed_by=actor,
         metadata={"legacy_backfill": True},
     )
+    return instance
+
+
+@transaction.atomic
+def cancel_pending_approval(record, actor, *, apply_cancel):
+    """Cancel one pending approval and its target in the same transaction."""
+    content_type = ContentType.objects.get_for_model(record, for_concrete_model=False)
+    instance = (
+        ApprovalInstance.objects.select_for_update()
+        .select_related("rule")
+        .filter(
+            content_type=content_type,
+            object_id=record.pk,
+            status=ApprovalInstance.Status.PENDING,
+        )
+        .first()
+    )
+    if instance is None:
+        raise ValidationError("This submitted record has no pending approval to cancel.")
+    if not (actor.is_superuser or instance.submitted_by_id == actor.pk or instance.rule.master_approver_id == actor.pk):
+        raise ValidationError("Only the requester or workflow owner can cancel this pending approval.")
+    target_model = instance.content_type.model_class()
+    target = target_model._default_manager.select_for_update().get(pk=instance.object_id)
+    apply_cancel(target)
+    instance.status = ApprovalInstance.Status.CANCELLED
+    instance.completed_at = timezone.now()
+    instance.save(update_fields=["status", "completed_at", "updated_at"])
+    ApprovalAction.objects.create(
+        instance=instance,
+        action=ApprovalAction.Action.CANCEL,
+        level=instance.current_level,
+        performed_by=actor,
+    )
+    _queue_event(instance, "cancelled", [instance.submitted_by_id])
     return instance
 
 
@@ -529,15 +628,22 @@ def perform_approval_action(instance, actor, action, *, reason="", apply_result)
                     "level_advanced",
                     instance.active_level.get("resolved_user_ids", []),
                 )
+    audit_details = {}
     if completed:
         apply_result(target, action)
+        audit_details = dict(getattr(target, "_workflow_audit_details", {}) or {})
         instance.status = ApprovalInstance.Status.APPROVED if action == "approve" else ApprovalInstance.Status.REJECTED
         instance.completed_at = timezone.now()
         if action == "reject":
             instance.rejection_reason = reason
         instance.save(update_fields=["status", "completed_at", "rejection_reason", "updated_at"])
         _queue_event(instance, instance.status, [instance.submitted_by_id])
-    return ApprovalOutcome(instance=instance, completed=completed, approved=completed and action == "approve")
+    return ApprovalOutcome(
+        instance=instance,
+        completed=completed,
+        approved=completed and action == "approve",
+        audit_details=audit_details,
+    )
 
 
 def pending_for_user(user, queryset=None):

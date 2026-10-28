@@ -10,6 +10,8 @@ from .models import (
     AttendanceChangeRequest,
     CareerTransitionRequest,
     ContractAllowance,
+    ContractAttachment,
+    ContractOvertimeComponent,
     EmployeeChangeRequest,
     EmployeeChangeRequestLine,
     EmploymentContract,
@@ -75,7 +77,9 @@ class ContractAllowanceForm(StyledModelForm):
 
     def clean(self):
         cleaned = super().clean()
-        contract = cleaned.get("contract")
+        contract = cleaned.get("contract") or (
+            self.instance.contract if self.instance and self.instance.contract_id else None
+        )
         reason = (cleaned.get("change_reason") or "").strip()
         if contract and contract.status == EmploymentContract.Status.ACTIVE:
             if self.instance.pk:
@@ -87,6 +91,54 @@ class ContractAllowanceForm(StyledModelForm):
             if len(reason) < 8:
                 self.add_error("change_reason", "Enter a concrete change reason of at least 8 characters.")
         cleaned["change_reason"] = reason
+        return cleaned
+
+
+class ContractAllowanceWorkspaceForm(ContractAllowanceForm):
+    """Allowance entry scoped by the Contract workspace instead of a free FK."""
+
+    class Meta(ContractAllowanceForm.Meta):
+        fields = ["component", "amount", "effective_date", "end_date", "active"]
+
+
+class ContractOvertimeComponentForm(StyledModelForm):
+    class Meta:
+        model = ContractOvertimeComponent
+        fields = ["component", "rate_multiplier", "effective_date", "end_date", "active", "notes"]
+
+
+class ContractAttachmentForm(StyledModelForm):
+    attachment = forms.FileField(
+        required=False,
+        help_text="PDF, image, Word, or Excel file; maximum 10 MB. Alternatively, add an external document URL.",
+    )
+
+    class Meta:
+        model = ContractAttachment
+        fields = ["title", "category", "file_url", "issued_date", "expiry_date", "verified", "notes"]
+
+    def clean(self):
+        cleaned = super().clean()
+        attachment = cleaned.get("attachment")
+        file_url = (cleaned.get("file_url") or "").strip()
+        if attachment and file_url:
+            self.add_error("file_url", "Use either an upload or an external URL, not both.")
+        if not attachment and not file_url:
+            self.add_error("attachment", "Upload a file or provide an external document URL.")
+        if attachment:
+            allowed_extensions = {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".doc", ".docx", ".xls", ".xlsx"}
+            extension = Path(attachment.name).suffix.lower()
+            if extension not in allowed_extensions:
+                self.add_error("attachment", "Attachment type is not allowed.")
+            if attachment.size == 0:
+                self.add_error("attachment", "Attachment cannot be empty.")
+            if attachment.size > 10 * 1024 * 1024:
+                self.add_error("attachment", "Attachment cannot exceed 10 MB.")
+            if not self.errors.get("attachment"):
+                self.instance.attachment_name = Path(attachment.name).name[:255]
+                self.instance.attachment_content_type = (attachment.content_type or "application/octet-stream")[:120]
+                attachment.seek(0)
+                self.instance.attachment_content = attachment.read()
         return cleaned
 
 

@@ -2,6 +2,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.core.exceptions import ValidationError
 from django.db import connection
 from django.test import TestCase, override_settings
@@ -114,6 +115,68 @@ class EmployeeOrganizationWorkflowTests(TestCase):
 
     def _action(self, transition, action):
         return self.client.post(f"/app/career-transition-requests/{transition.pk}/action/{action}/")
+
+    def test_organization_chart_reassigns_reporting_line_and_blocks_cycles(self):
+        call_command("sync_apps", verbosity=0)
+        response = self.client.get("/apps/hr/feature/organization-chart/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Reporting structure")
+        self.assertContains(response, "Enable drag &amp; drop")
+        self.assertContains(response, "Enable drag &amp; drop")
+        self.assertContains(response, "Change manager without drag-and-drop")
+        self.assertContains(response, "organization-chart-editor-4")
+        self.assertContains(response, 'data-org-card')
+        self.assertContains(response, self.employee.name)
+
+        edit_response = self.client.get("/apps/hr/feature/organization-chart/?edit=1")
+        self.assertContains(edit_response, "Disable drag &amp; drop")
+        self.assertContains(edit_response, 'data-editing="true"')
+
+        response = self.client.post(
+            "/apps/hr/feature/organization-chart/",
+            {"employee_id": self.employee.pk, "supervisor_id": self.manager_b.pk},
+        )
+        self.assertRedirects(response, "/apps/hr/feature/organization-chart/")
+        self.employee.refresh_from_db()
+        self.assertEqual(self.employee.supervisor, self.manager_b)
+        audit = HRWorkflowAudit.objects.get(
+            entity="employees",
+            record_id=self.employee.pk,
+            action="organization_chart_reassign",
+        )
+        self.assertEqual(audit.details["previous_supervisor_id"], self.manager_a.pk)
+        self.assertEqual(audit.details["supervisor_id"], self.manager_b.pk)
+
+        response = self.client.post(
+            "/apps/hr/feature/organization-chart/",
+            {"employee_id": self.employee.pk, "supervisor_id": ""},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertJSONEqual(
+            response.content,
+            {
+                "ok": True,
+                "changed": True,
+                "employee": self.employee.name,
+                "destination": "Top level",
+            },
+        )
+        self.employee.refresh_from_db()
+        self.assertIsNone(self.employee.supervisor)
+
+        self.employee.supervisor = self.manager_b
+        self.employee.save(update_fields=["supervisor", "updated_at"])
+
+        response = self.client.post(
+            "/apps/hr/feature/organization-chart/",
+            {"employee_id": self.manager_b.pk, "supervisor_id": self.employee.pk},
+            follow=True,
+        )
+        self.assertContains(response, "circular reporting line")
+        self.manager_b.refresh_from_db()
+        self.assertIsNone(self.manager_b.supervisor)
+
 
     def test_employee_form_uses_master_organization_and_blocks_direct_status_change(self):
         self.assertNotIn("status", EmployeeForm().fields)

@@ -12,6 +12,11 @@ urlpatterns = [
         views.employee_change_request_attachment,
         name="employee_change_request_attachment",
     ),
+    path(
+        "app/contracts/<int:pk>/attachments/<int:attachment_pk>/download/",
+        views.contract_attachment_download,
+        name="contract_attachment_download",
+    ),
     path("app/<slug:entity>/", views.entity_list, name="entity_list"),
     path("app/<slug:entity>/new/", views.entity_create, name="entity_create"),
     path("app/<slug:entity>/bulk-delete/", views.entity_bulk_delete, name="entity_bulk_delete"),

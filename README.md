@@ -1,6 +1,6 @@
 # ERP GSSHOP
 
-Clean-room modular ERP for GSSHOP. The application uses Django, PostgreSQL, Redis, Celery, environment-based configuration, and Docker Compose. It does not copy HMX source code, assets, packages, or licensing components.
+Clean-room modular ERP for GSSHOP. The application uses Django, PostgreSQL, Redis, Celery, environment-based configuration, and Docker Compose. source code, assets, packages, or licensing components.
 
 ## Application suite
 

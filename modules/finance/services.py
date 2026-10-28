@@ -1781,7 +1781,8 @@ def run_due_asset_disposals(run_date=None, actor=None, batch_size=100):
         ).order_by("disposal_date", "id").values("id", "disposal_type", "customer_invoice_id")[:batch_size]
     )
     result = {"selected": len(due), "posted": 0, "failed": 0, "errors": []}
-    # scale-guard: allow SG001 — each due disposal needs an isolated atomic posting and failure record
+    # scale-guard: allow SG001 — at most 500 candidates are reread for isolated posting transactions.
+    # scale-guard: allow SG003 — at most 500 isolated postings need independent failure records.
     for candidate in due:
         try:
             disposal = AssetDisposal.objects.get(pk=candidate["id"])
@@ -3525,6 +3526,9 @@ def _post_simple_bridge(*, company_id, source, event_type, reference, event_date
 @transaction.atomic
 def post_cash_advance_accounting(cash_advance, actor=None):
     locked = cash_advance.__class__.objects.select_for_update().select_related("employee").get(pk=cash_advance.pk)
+    from modules.hr.cash_advances import validate_cash_advance_lines
+
+    validate_cash_advance_lines(locked)
     company_id = locked.employee.company_id
     try:
         config = ExpenseAdvanceAccountingSettings.objects.get(company_id=company_id)
@@ -3549,6 +3553,10 @@ def post_expense_claim_accounting(expense, action, actor=None):
     locked = ExpenseClaim.objects.select_for_update().select_related("cash_advance__employee", "product").get(
         pk=expense.pk
     )
+    if action == "approve":
+        from .expense_lines import validate_expense_claim_lines
+
+        validate_expense_claim_lines(locked)
     try:
         config = ExpenseAdvanceAccountingSettings.objects.get(company_id=locked.company_id)
     except ExpenseAdvanceAccountingSettings.DoesNotExist as exc:

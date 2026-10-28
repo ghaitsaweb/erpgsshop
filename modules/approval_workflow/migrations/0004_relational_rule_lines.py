@@ -35,6 +35,7 @@ def _backfill_relational_configuration(apps, schema_editor):
     for rule in ApprovalRule.objects.order_by("pk").iterator():
         level_payloads = rule.approval_levels if isinstance(rule.approval_levels, list) else []
         levels_convertible = bool(level_payloads)
+        # scale-guard: allow SG003 — one-time migration iterates configured approval levels, not business records.
         for level_index, payload in enumerate(level_payloads, start=1):
             if not isinstance(payload, dict):
                 levels_convertible = False
@@ -101,6 +102,7 @@ def _backfill_relational_configuration(apps, schema_editor):
         raw_conditions = rule.trigger_conditions
         raw_conditions = [raw_conditions] if isinstance(raw_conditions, dict) else raw_conditions
         conditions_convertible = isinstance(raw_conditions, list)
+        # scale-guard: allow SG003 — one-time migration iterates configured condition groups, not tenant records.
         for group_index, payload in enumerate(raw_conditions or [], start=1):
             if not isinstance(payload, dict):
                 conditions_convertible = False
@@ -117,6 +119,7 @@ def _backfill_relational_configuration(apps, schema_editor):
                 operator=str(payload.get("operator", "and")).lower() if nested is not None else "and",
                 active=True,
             )
+            # scale-guard: allow SG003 — condition lines are bounded by each rule's administrator configuration.
             for line_index, line in enumerate(line_payloads, start=1):
                 ConditionLine.objects.create(
                     group=group,
@@ -137,7 +140,7 @@ def _backfill_relational_configuration(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("approval_workflow", "0003_approvalnotification_and_more"),
+        ("approval_workflow", "0004_ensure_employee_change_request_workflow"),
         ("auth", "0012_alter_user_first_name_max_length"),
         ("gsshop_hr", "0014_employeeaddress_phone_and_more"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),

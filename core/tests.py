@@ -128,7 +128,8 @@ class ERPIntegrityTests(TestCase):
         self.assertGreater(len(response.content), 2500)
 
     def test_every_document_menu_has_a_pdf_report_definition(self):
-        self.assertEqual(set(DOCUMENT_CONFIG), set(REPORT_CONFIG))
+        pdf_documents = {name for name, config in DOCUMENT_CONFIG.items() if config.get("has_pdf", True)}
+        self.assertEqual(pdf_documents, set(REPORT_CONFIG))
         self.assertEqual(REPORT_CONFIG["sales"]["title"], "PESANAN")
 
     def test_product_master_search_is_bounded_and_query_count_is_constant(self):
@@ -405,6 +406,7 @@ class ERPIntegrityTests(TestCase):
             {
                 "company": self.company.pk,
                 "number": "PR-INLINE-001",
+                "organization_branch": self.company.branches.get(is_main=True).pk,
                 "requestor": self.user.pk,
                 "request_date": today,
                 "required_date": today,
@@ -425,6 +427,7 @@ class ERPIntegrityTests(TestCase):
             },
         )
 
+        self.assertEqual(response.status_code, 302, str(response.context["form"].errors) if response.context else "")
         request = PurchaseRequest.objects.get(number="PR-INLINE-001")
         line = PurchaseRequestLine.objects.get(request=request)
         pdf_response = self.client.get(f"/app/purchase-requests/{request.pk}/print.pdf")
@@ -800,6 +803,18 @@ class ERPIntegrityTests(TestCase):
                 ),
                 encoding="utf-8",
             )
+            grouped_directory = Path(temporary_root) / "ai" / "assistant-extension"
+            grouped_directory.mkdir(parents=True)
+            (grouped_directory / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "name": "Assistant Extension",
+                        "category": "AI",
+                        "summary": "Grouped assistant controls.",
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             catalog = discover_app_catalog(paths=[Path(temporary_root)])
 
@@ -807,6 +822,7 @@ class ERPIntegrityTests(TestCase):
         self.assertEqual(discovered["dependencies"], ["inventory"])
         self.assertEqual(discovered["status"], "beta")
         self.assertEqual(discovered["route"], "")
+        self.assertIn("assistant-extension", {item["slug"] for item in catalog})
 
     def test_app_install_uninstall_is_reversible_and_enforces_access(self):
         call_command("sync_apps", verbosity=0)
@@ -832,6 +848,7 @@ class ERPIntegrityTests(TestCase):
             {
                 "company": self.company.pk,
                 "number": "SO-LINES-1",
+                "organization_branch": self.company.branches.get(is_main=True).pk,
                 "customer": self.customer.pk,
                 "order_date": timezone.localdate(),
                 "notes": "Header and lines test",
@@ -846,6 +863,7 @@ class ERPIntegrityTests(TestCase):
                 "document_lines-0-discount_percent": "",
             },
         )
+        self.assertEqual(response.status_code, 302, str(response.context["form"].errors) if response.context else "")
         order = SaleOrder.objects.get(number="SO-LINES-1")
         self.assertRedirects(response, f"/app/sales/{order.pk}/edit/")
         order.refresh_from_db()

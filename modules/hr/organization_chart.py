@@ -3,7 +3,7 @@
 from collections import defaultdict
 
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import connection, transaction
 
 from core.models import Employee
 from modules.organization.context import scope_queryset as scope_organization_queryset
@@ -25,22 +25,38 @@ def _visible_employees(user):
     return scope_organization_queryset(queryset, include_branch=True).order_by("company__name", "name", "pk")
 
 
-def _chart_node(employee, children_by_manager, rendered, ancestry=()):
+CHART_PAGE_SIZE = 200
+
+
+def _chart_node(employee, children_by_manager, rendered, visible_ids, ancestry=()):
     """Make a serializable tree and remain readable if legacy data contains a cycle."""
     if employee.pk in ancestry:
         return None
     rendered.add(employee.pk)
     children = []
     for child in children_by_manager.get(employee.pk, []):
-        child_node = _chart_node(child, children_by_manager, rendered, (*ancestry, employee.pk))
+        child_node = _chart_node(child, children_by_manager, rendered, visible_ids, (*ancestry, employee.pk))
         if child_node is not None:
             children.append(child_node)
-    return {"employee": employee, "children": children}
+    return {
+        "employee": employee,
+        "children": children,
+        "manager_not_shown": bool(employee.supervisor_id and employee.supervisor_id not in visible_ids),
+    }
 
 
-def organization_chart_context(user):
-    """Return a company-aware forest for the interactive chart template."""
-    employees = list(_visible_employees(user))
+def organization_chart_context(user, after=None):
+    """Return one bounded page of the company-aware chart."""
+    try:
+        cursor = max(0, int(after or 0))
+    except (TypeError, ValueError):
+        cursor = 0
+    queryset = _visible_employees(user).order_by("pk")
+    if cursor:
+        queryset = queryset.filter(pk__gt=cursor)
+    page = list(queryset[: CHART_PAGE_SIZE + 1])
+    has_more = len(page) > CHART_PAGE_SIZE
+    employees = page[:CHART_PAGE_SIZE]
     visible_ids = {employee.pk for employee in employees}
     children_by_manager = defaultdict(list)
     roots_by_company = defaultdict(list)
@@ -65,20 +81,45 @@ def organization_chart_context(user):
         roots = []
         for employee in roots_by_company.get(company_id, []):
             if employee.pk not in rendered:
-                roots.append(_chart_node(employee, children_by_manager, rendered))
+                roots.append(_chart_node(employee, children_by_manager, rendered, visible_ids))
         # A malformed legacy cycle has no natural root. Render it once so an HR
         # manager can repair it by dragging a member onto Top level.
         for employee in employees:
             if employee.company_id == company_id and employee.pk not in rendered:
-                roots.append(_chart_node(employee, children_by_manager, rendered))
+                roots.append(_chart_node(employee, children_by_manager, rendered, visible_ids))
         groups.append({"company": company, "roots": roots})
 
     return {
         "chart_groups": groups,
         "chart_employees": employees,
         "chart_employee_count": len(employees),
+        "chart_cursor": cursor,
+        "chart_has_more": has_more,
+        "chart_next_cursor": employees[-1].pk if has_more else None,
         "can_manage_chart": can_manage_organization_chart(user),
     }
+
+
+def _reporting_chain(company_id, manager_id):
+    """Fetch only a manager's ancestor chain; UNION terminates legacy cycles."""
+    employee_table = connection.ops.quote_name(Employee._meta.db_table)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"""
+            WITH RECURSIVE reporting_chain(id, supervisor_id) AS (
+                SELECT id, supervisor_id FROM {employee_table}
+                WHERE id = %s AND company_id = %s
+                UNION
+                SELECT employee.id, employee.supervisor_id
+                FROM {employee_table} employee
+                JOIN reporting_chain chain ON employee.id = chain.supervisor_id
+                WHERE employee.company_id = %s
+            )
+            SELECT id, supervisor_id FROM reporting_chain
+            """,
+            [manager_id, company_id, company_id],
+        )
+        return dict(cursor.fetchall())
 
 
 def reassign_chart_supervisor(user, employee_id, supervisor_id):
@@ -117,11 +158,8 @@ def reassign_chart_supervisor(user, employee_id, supervisor_id):
                 raise ValidationError("A manager must belong to the same company as the employee.")
 
             # The moved employee and destination manager are locked above.
-            # Reading the company graph without locking every employee keeps a
-            # chart move responsive even for a large organization.
-            reporting_lines = dict(
-                Employee.objects.filter(company_id=employee.company_id).values_list("pk", "supervisor_id")
-            )
+            # Ancestors are read in one recursive query, independent of company size.
+            reporting_lines = _reporting_chain(employee.company_id, manager.pk)
             ancestor_id = manager.pk
             visited = set()
             while ancestor_id:

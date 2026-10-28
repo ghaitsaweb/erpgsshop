@@ -121,6 +121,8 @@ def build_hr_analytics(feature_slug, user):
 
     entity, model, breakdown_title, amount_field = definitions[feature_slug]
     queryset = _scoped(user, entity, model)
+    if model is LeaveRequest:
+        queryset = queryset.defer("attachment_content")
     aggregate = queryset.aggregate(total=Count("id"), amount=Sum(amount_field) if amount_field else Count("id"))
     return {
         "metrics": [

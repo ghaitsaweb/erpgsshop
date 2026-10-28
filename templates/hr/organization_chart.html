@@ -7,7 +7,7 @@
     <div>
       <p class="eyebrow">Human Resources · Organization</p>
       <h2>Reporting structure</h2>
-      <p>{{ chart_employee_count }} active employee{{ chart_employee_count|pluralize }} in the current company and branch scope.</p>
+      <p>Showing {{ chart_employee_count }} active employee{{ chart_employee_count|pluralize }} on this page in the current company and branch scope.</p>
     </div>
     <div class="org-chart-hero-actions">
       <a class="btn btn-secondary" href="{% url 'entity_list' 'employees' %}">Open employees</a>
@@ -22,6 +22,13 @@
       {% else %}<span class="org-chart-view-state">View only</span>{% endif %}
     </div>
   </section>
+
+  {% if chart_has_more or chart_cursor %}
+    <nav class="panel" aria-label="Organization chart pages">
+      <p>Each page shows up to 200 employees. A manager outside this page is marked on their employee card. Use Employees to find or edit someone on another page.</p>
+      {% if chart_next_cursor %}<a class="btn btn-secondary" href="{% url 'hr_feature' 'organization-chart' %}?after={{ chart_next_cursor }}{% if chart_edit_mode %}&amp;edit=1{% endif %}">Next employees</a>{% endif %}
+    </nav>
+  {% endif %}
 
   <section class="org-chart-guide panel">
     {% if can_manage_chart %}
@@ -52,7 +59,7 @@
     <section class="org-chart-company panel" data-org-company="{{ group.company.pk }}">
       <header class="panel-head">
         <div><p class="eyebrow">Company scope</p><h2>{{ group.company.name }}</h2></div>
-        <span class="status">{{ group.roots|length }} top-level role{{ group.roots|length|pluralize }}</span>
+        <span class="status">{{ group.roots|length }} starting point{{ group.roots|length|pluralize }} on this page</span>
       </header>
       {% if can_manage_chart and chart_edit_mode %}
         <div class="org-chart-root-drop" data-org-drop-zone data-org-company="{{ group.company.pk }}" data-org-manager="" tabindex="0">

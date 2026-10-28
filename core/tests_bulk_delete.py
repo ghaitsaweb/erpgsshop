@@ -135,7 +135,7 @@ class EntityBulkDeleteTests(TestCase):
         self.assertRedirects(response, "/app/products/", fetch_redirect_response=False)
         self.assertTrue(Product.objects.filter(pk=self.first.pk).exists())
 
-    def test_employee_list_uses_the_same_guarded_bulk_delete(self):
+    def test_employee_list_does_not_offer_bulk_delete(self):
         employee = Employee.objects.create(
             company=self.company,
             employee_id="EMP-BULK-1",
@@ -147,8 +147,7 @@ class EntityBulkDeleteTests(TestCase):
         list_response = self.client.get(list_url)
 
         self.assertEqual(list_response.status_code, 200)
-        self.assertContains(list_response, 'data-select-all')
-        self.assertContains(list_response, f'value="{employee.pk}"')
+        self.assertNotContains(list_response, 'data-select-all')
 
         response = self.client.post(
             bulk_url,
@@ -160,4 +159,4 @@ class EntityBulkDeleteTests(TestCase):
         )
 
         self.assertRedirects(response, list_url, fetch_redirect_response=False)
-        self.assertFalse(Employee.objects.filter(pk=employee.pk).exists())
+        self.assertTrue(Employee.objects.filter(pk=employee.pk).exists())

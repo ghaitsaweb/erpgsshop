@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}{{ task.title }} · AI Coworker{% endblock %}
+{% block page_title %}AI Coworker task{% endblock %}
+
+{% block content %}
+<link rel="stylesheet" href="{% static 'erpshop_ai_coworker/coworker.css' %}">
+<div class="coworker-shell" {% if task.status == 'queued' or task.status == 'running' %}data-coworker-state-url="{% url 'erpshop_ai_coworker:task_state' task.pk %}"{% endif %}>
+  <header class="coworker-hero compact"><div><p class="eyebrow">{{ task.agent.name }} · {{ task.get_task_type_display }}</p><h2>{{ task.title }}</h2><p>{{ task.instruction }}</p></div><div class="coworker-actions"><span class="status status-{{ task.status }}">{{ task.get_status_display }}</span><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:home' %}">Work queue</a></div></header>
+  <section class="coworker-boundary"><strong>Execution facts</strong><span>Company {{ task.company.code }}{% if task.branch %} · branch {{ task.branch.code }}{% endif %} · {{ task.context_record_count }} context rows{% if task.context_truncated %} · context truncated{% endif %} · {{ task.input_tokens }} input / {{ task.output_tokens }} output tokens · {{ task.latency_ms }} ms</span></section>
+  {% if task.status == 'queued' or task.status == 'running' %}<form method="post" action="{% url 'erpshop_ai_coworker:cancel_task' task.pk %}" class="coworker-cancel">{% csrf_token %}<button class="btn btn-secondary" type="submit">Request cancellation</button></form>{% endif %}
+  {% if task.status == 'completed' %}<section class="panel coworker-result"><header><p class="eyebrow">Result</p><h3>Advisory response</h3></header><div>{{ task.result_text|linebreaksbr }}</div></section>{% elif task.status == 'failed' %}<section class="panel coworker-error"><h3>Task failed safely</h3><p>{{ task.error_message }}</p></section>{% else %}<section class="panel coworker-running"><h3>{% if task.status == 'cancelled' %}Task cancelled{% else %}Worker is processing this task…{% endif %}</h3><p>No ERP changes can be executed by this run.</p></section>{% endif %}
+  <div class="coworker-detail-grid"><section class="panel"><header><h3>Audit trail</h3></header><ol class="coworker-events">{% for event in events %}<li><strong>{{ event.event }}</strong><span>{{ event.created_at|date:"d M Y H:i:s" }}{% if event.actor %} · {{ event.actor.get_username }}{% endif %}</span></li>{% endfor %}</ol></section><section class="panel"><header><h3>Conversation record</h3></header>{% for message in conversation_messages %}<article class="coworker-message"><strong>{{ message.get_role_display }}</strong><p>{{ message.content|linebreaksbr }}</p></article>{% empty %}<p class="coworker-empty">No conversation record.</p>{% endfor %}</section></div>
+</div>
+<script src="{% static 'erpshop_ai_coworker/coworker.js' %}"></script>
+{% endblock %}

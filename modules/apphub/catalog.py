@@ -48,7 +48,6 @@ APP_CATALOG = [
     {"slug": "library", "name": "Library", "category": "Education", "summary": "Book catalog, copies, members, lending, returns, and overdue tracking.", "icon": "▥", "status": "beta", "enabled": True, "sequence": 30, "route": "entity_list:library-books"},
     {"slug": "school-portal", "name": "School Portal", "category": "Education", "summary": "Student and parent self-service for learning, billing, and announcements.", "icon": "◌", "status": "planned", "sequence": 40},
     # AI and data
-    {"slug": "ai-coworker", "name": "AI Coworker", "category": "AI & Data", "summary": "Workspace agents, conversations, governed tools, tasks, and channel configuration.", "icon": "✦", "status": "beta", "enabled": True, "sequence": 10, "route": "entity_list:ai-agents"},
     {"slug": "business-intelligence", "name": "Business Intelligence", "category": "AI & Data", "summary": "Operational metrics, dashboards, analysis datasets, and insight delivery.", "icon": "▥", "status": "planned", "sequence": 20},
     {"slug": "olap", "name": "OLAP", "category": "AI & Data", "summary": "Analytical cubes, dimensions, measures, refreshes, and query access.", "icon": "▦", "status": "planned", "sequence": 30},
     {"slug": "event-stream", "name": "Event Stream", "category": "AI & Data", "summary": "Reliable domain events for automation, analytics, and integration consumers.", "icon": "≈", "status": "planned", "sequence": 40},

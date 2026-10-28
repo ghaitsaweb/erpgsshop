@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 import uuid
 
 from django.conf import settings
@@ -5079,6 +5079,49 @@ class ExpenseClaim(TimeStampedModel):
 
     def __str__(self):
         return self.reference
+
+
+class ExpenseClaimLine(TimeStampedModel):
+    expense = models.ForeignKey(ExpenseClaim, on_delete=models.CASCADE, related_name="lines")
+    date = models.DateField(default=timezone.localdate)
+    description = models.TextField(blank=True)
+    product = models.ForeignKey("gsshop_hr.ExpenseProduct", on_delete=models.PROTECT, related_name="expense_claim_lines")
+    quantity = models.DecimalField(max_digits=12, decimal_places=2, default=1, validators=[MinValueValidator(Decimal("0.01"))])
+    unit_price = models.DecimalField(max_digits=18, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
+    subtotal = models.DecimalField(max_digits=18, decimal_places=2, default=0, editable=False)
+
+    class Meta:
+        ordering = ["date", "pk"]
+        indexes = [models.Index(fields=["expense", "date", "id"], name="fin_expense_line_order_idx")]
+        constraints = [
+            models.CheckConstraint(condition=models.Q(quantity__gt=0), name="fin_expense_line_positive_qty"),
+            models.CheckConstraint(condition=models.Q(unit_price__gt=0), name="fin_expense_line_positive_price"),
+        ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.product_id:
+            from modules.hr.models import ExpenseProduct
+
+            if not self.product.active or self.product.activity_type != ExpenseProduct.ActivityType.EXPENSE:
+                errors["product"] = "Select an active expense product."
+            expense = getattr(self, "expense", None)
+            if expense and expense.company_id and self.product.company_id != expense.company_id:
+                errors["product"] = "Expense product must belong to the claim company."
+        if self.quantity is not None and self.quantity <= 0:
+            errors["quantity"] = "Quantity must be greater than zero."
+        if self.unit_price is not None and self.unit_price <= 0:
+            errors["unit_price"] = "Unit price must be greater than zero."
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.subtotal = (self.quantity * self.unit_price).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.expense} · {self.product}"
 
 
 class ExpenseAdvanceSettlement(TimeStampedModel):

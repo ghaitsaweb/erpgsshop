@@ -37,9 +37,12 @@ PAYROLL_ENTITIES = {
     "salary-components",
     "salary-packages",
     "payroll-runs",
+    "payroll-run-checklist",
+    "payroll-run-preview",
     "compensation-benefits",
     "contract-allowance-history",
     "payroll-disbursements",
+    "payroll-disbursement-lines",
     "payroll-accounting-events",
 }
 FINANCE_ENTITIES = {
@@ -89,6 +92,7 @@ SELF_SERVICE_ENTITIES = {
     "employee-documents",
     "employee-onboarding",
     "employee-offboarding",
+    "employee-lifecycle-tasks",
     "leave-allocations",
     "travel-requests",
     "cash-advances",
@@ -107,7 +111,10 @@ SELF_SERVICE_ENTITIES = {
     "live-tracking-sessions",
     "leave-opening-balances",
     "leave-movements",
+    "leave-buckets",
+    "leave-bucket-consumptions",
     "leave-encashments",
+    "leave-encashment-buckets",
     "employee-loan-requests",
     "loan-installments",
     "loan-repayments",
@@ -173,11 +180,13 @@ HR_SCOPED_ENTITIES = {
     "employee-checklists",
     "employee-onboarding",
     "employee-offboarding",
+    "employee-lifecycle-tasks",
     "raw-attendance",
     "shifts",
     "work-schedules",
     "schedule-assignments",
     "leave-types",
+    "leave-blackout-periods",
     "leave-allocations",
     "overtime-rules",
     "payroll-periods",
@@ -202,6 +211,8 @@ HR_SCOPED_ENTITIES = {
     "career-transition-letters",
     "expense-products",
     "payroll-runs",
+    "payroll-run-checklist",
+    "payroll-run-preview",
     "compensation-benefits",
     "job-classifications",
     "job-experience-levels",
@@ -222,7 +233,10 @@ HR_SCOPED_ENTITIES = {
     "leave-structures",
     "leave-opening-balances",
     "leave-movements",
+    "leave-buckets",
+    "leave-bucket-consumptions",
     "leave-encashments",
+    "leave-encashment-buckets",
     "payroll-variables",
     "salary-packages",
     "payroll-report-templates",
@@ -247,6 +261,7 @@ HR_SCOPED_ENTITIES = {
     "attendance-recompute-transactions",
     "leave-bulk-operations",
     "payroll-disbursements",
+    "payroll-disbursement-lines",
     "payroll-accounting-events",
     "employee-loan-offers",
     "career-transition-change-history",
@@ -298,6 +313,12 @@ def can_hr_entity_action(user, entity, action):
 
 def can_hr_workflow_action(user, entity, action, instance):
     """Separate requester transitions from approval authority."""
+    if entity == "employee-documents" and action in {"verify", "expire", "replace", "archive", "unarchive"}:
+        return user.is_superuser or bool(_group_names(user) & FULL_HR_GROUPS)
+    if entity == "leave-opening-balances" and action == "finalize":
+        return user.is_superuser or bool(_group_names(user) & FULL_HR_GROUPS)
+    if entity == "leave-encashments" and action in {"approve", "reject", "cancel", "assign-payroll"}:
+        return user.is_superuser or bool(_group_names(user) & FULL_HR_GROUPS)
     if entity not in HR_SCOPED_ENTITIES or action not in {"approve", "reject"} or user.is_superuser:
         return True
     groups = _group_names(user)
@@ -369,6 +390,11 @@ def scope_hr_queryset(user, entity, queryset):
         return queryset.filter(contract__employee_id__in=employee_ids)
     if "loan" in fields:
         return queryset.filter(loan__employee_id__in=employee_ids)
+    if model._meta.model_name == "employeelifecycletask":
+        return queryset.filter(
+            Q(onboarding__employee_id__in=employee_ids)
+            | Q(offboarding__employee_id__in=employee_ids)
+        )
     model_lookup = {
         "employeechangerequestline": ("request__employee_id", employee_ids),
         "employeechangerequesthistory": ("request__employee_id", employee_ids),
@@ -380,8 +406,14 @@ def scope_hr_queryset(user, entity, queryset):
         "employeeeducationchange": ("request__employee_id", employee_ids),
         "employeedocumenthistory": ("document__employee_id", employee_ids),
         "payrolldisbursement": ("payroll_run__company_id", company_ids),
+        "payrolldisbursementline": ("disbursement__payroll_run__company_id", company_ids),
         "payrollaccountingevent": ("payroll_run__company_id", company_ids),
+        "payrollrunchecklistitem": ("run__company_id", company_ids),
+        "payrollrunpreviewline": ("run__company_id", company_ids),
         "careertransitionchangehistory": ("request__employee_id", employee_ids),
+        "leavebucketconsumption": ("leave_request__employee_id", employee_ids),
+        "leaveencashmentbucket": ("encashment__employee_id", employee_ids),
+        "leaveblackoutperiod": ("leave_type__company_id", company_ids),
     }.get(model._meta.model_name)
     if model_lookup:
         lookup, values = model_lookup
@@ -400,8 +432,17 @@ def scope_hr_form(form, user, entity):
     if entity not in HR_SCOPED_ENTITIES or user.is_superuser:
         return form
 
+    if entity == "employee-documents" and not (_group_names(user) & FULL_HR_GROUPS):
+        for name in ("verified", "status", "replaced_by"):
+            if name in form.fields:
+                form.fields[name].disabled = True
+        if form.instance.pk and form.instance.verified:
+            for field in form.fields.values():
+                field.disabled = True
+
     employee_queryset = accessible_employees(user, entity=entity)
     company_ids = _company_ids(user)
+    # scale-guard: allow SG001 — form fields are fixed by schema and never grow with tenant records.
     for field in form.fields.values():
         queryset = getattr(field, "queryset", None)
         if queryset is None:

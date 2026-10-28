@@ -35,7 +35,6 @@ INSTALLED_APPS = [
     "modules.operations.apps.OperationsConfig",
     "modules.education.apps.EducationConfig",
     "modules.pos.apps.POSConfig",
-    "modules.ai_workspace.apps.AIWorkspaceConfig",
     "modules.localization.apps.LocalizationConfig",
     "modules.database_manager.apps.DatabaseManagerConfig",
 ] + discover_django_apps()
@@ -146,6 +145,14 @@ CELERY_BEAT_SCHEDULE = {
     "finance-due-recurring-journals": {
         "task": "finance.run_due_recurring_journals",
         "schedule": 3600.0,
+    },
+    "hr-expire-leave-buckets": {
+        "task": "hr.expire_leave_buckets",
+        "schedule": 86400.0,
+    },
+    "hr-expire-employee-documents": {
+        "task": "hr.expire_employee_documents",
+        "schedule": 86400.0,
     },
 }
 

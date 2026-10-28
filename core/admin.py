@@ -111,6 +111,9 @@ class EmployeeAdmin(admin.ModelAdmin):
     list_filter = ("company", "department", "status")
     search_fields = ("employee_id", "name", "email")
 
+    def has_delete_permission(self, request, obj=None):
+        return False
+
 
 @admin.register(Attendance)
 class AttendanceAdmin(admin.ModelAdmin):

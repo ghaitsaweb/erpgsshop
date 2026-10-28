@@ -1,0 +1,15 @@
+{
+  "slug": "ai-coworker",
+  "name": "ERPShop AI Coworker",
+  "category": "AI & Data",
+  "summary": "Governed company-scoped coworkers, asynchronous read-only ERP analysis, audit trails, cancellation, and bounded provider execution.",
+  "icon": "AI",
+  "version": "1.0.0",
+  "status": "beta",
+  "enabled": true,
+  "sequence": 10,
+  "dependencies": ["foundation", "scheduler", "erpshop-hashy-bridge", "erpshop-moduleai-assistant"],
+  "django_app": "addons.ai.erpshop_ai_coworker.apps.AIWorkspaceConfig",
+  "route": "/ai/coworker/",
+  "urlconf": "addons.ai.erpshop_ai_coworker.urls"
+}

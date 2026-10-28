@@ -34,6 +34,7 @@ services:
     environment:
       DATABASE_HOST: db
       DATABASE_PORT: 5432
+      SEED_DEMO: "False"
     depends_on:
       db:
         condition: service_healthy

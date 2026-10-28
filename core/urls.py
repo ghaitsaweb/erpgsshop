@@ -6,6 +6,8 @@ from . import views
 urlpatterns = [
     path("dashboard/", views.dashboard, name="dashboard"),
     path("api/products/search/", views.product_search, name="product_search"),
+    path("api/expense-products/search/", views.expense_product_search, name="expense_product_search"),
+    path("api/expense-products/claim-search/", views.expense_claim_product_search, name="expense_claim_product_search"),
     path("api/customers/search/", views.customer_search, name="customer_search"),
     path(
         "app/employee-change-requests/<int:pk>/attachment/",
@@ -16,6 +18,16 @@ urlpatterns = [
         "app/contracts/<int:pk>/attachments/<int:attachment_pk>/download/",
         views.contract_attachment_download,
         name="contract_attachment_download",
+    ),
+    path(
+        "app/leave-requests/<int:pk>/attachment/",
+        views.leave_request_attachment,
+        name="leave_request_attachment",
+    ),
+    path(
+        "app/employee-documents/<int:pk>/attachment/",
+        views.employee_document_attachment,
+        name="employee_document_attachment",
     ),
     path("app/<slug:entity>/", views.entity_list, name="entity_list"),
     path("app/<slug:entity>/new/", views.entity_create, name="entity_create"),

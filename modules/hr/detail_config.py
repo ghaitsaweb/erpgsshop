@@ -7,6 +7,7 @@ from .forms import EmployeeChangeRequestLineForm
 
 
 ENTITY_MODELS = {
+    "employee-lifecycle-tasks": hr_models.EmployeeLifecycleTask,
     "employee-change-request-lines": hr_models.EmployeeChangeRequestLine,
     "employee-change-request-history": hr_models.EmployeeChangeRequestHistory,
     "employee-change-relation-history": hr_models.EmployeeChangeRelationHistory,
@@ -30,6 +31,7 @@ ENTITY_MODELS = {
     "attendance-recompute-transactions": hr_models.AttendanceRecomputeTransaction,
     "leave-bulk-operations": hr_models.LeaveBulkOperation,
     "payroll-disbursements": hr_models.PayrollDisbursement,
+    "payroll-disbursement-lines": hr_models.PayrollDisbursementLine,
     "payroll-accounting-events": hr_models.PayrollAccountingEvent,
     "employee-loan-offers": hr_models.EmployeeLoanOffer,
     "career-transition-change-history": hr_models.CareerTransitionChangeHistory,
@@ -79,12 +81,57 @@ def _build_config(entity, model):
         "contract-allowance-history",
         "employee-document-history",
         "hr-workflow-audits",
+        "payroll-accounting-events",
+        "payroll-disbursement-lines",
     }:
         config.update({"creatable": False, "editable": False, "deletable": False})
     return config
 
 
 HR_DETAIL_ENTITY_CONFIG = {entity: _build_config(entity, model) for entity, model in ENTITY_MODELS.items()}
+
+HR_DETAIL_ENTITY_CONFIG["employee-lifecycle-tasks"].update({
+    "title": "Employee Lifecycle Checklist Tasks",
+    "singular": "Lifecycle Checklist Task",
+    "columns": [
+        ("name", "Task"), ("onboarding", "Onboarding"),
+        ("offboarding", "Offboarding"), ("requires_evidence", "Evidence Required"),
+        ("evidence_document", "Evidence Document"), ("status", "Status"),
+    ],
+    "select_related": ["onboarding__employee", "offboarding__employee", "evidence_document"],
+    "form_fields": [],
+    "creatable": False,
+    "deletable": False,
+    "workflow_locked_statuses": set(hr_models.EmployeeLifecycleTask.Status.values),
+    "workflow": {
+        "complete": {
+            "label": "Complete Checklist Task",
+            "from": [hr_models.EmployeeLifecycleTask.Status.PENDING],
+            "to": hr_models.EmployeeLifecycleTask.Status.COMPLETED,
+            "primary": True,
+        },
+    },
+})
+
+HR_DETAIL_ENTITY_CONFIG["payroll-disbursements"].update({
+    "creatable": False,
+    "deletable": False,
+    "workflow_locked_statuses": set(hr_models.PayrollDisbursement.Status.values),
+    "workflow": {
+        "confirm-payment": {
+            "label": "Confirm Bank Payment",
+            "from": [hr_models.PayrollDisbursement.Status.GENERATED],
+            "to": hr_models.PayrollDisbursement.Status.COMPLETED,
+            "primary": True,
+        },
+    },
+    "columns": [
+        ("reference", "Reference"), ("payroll_run", "Payroll Run"),
+        ("amount", "Amount"), ("prepared_count", "Payslips"),
+        ("payment_reference", "Bank Reference"), ("status", "Status"),
+    ],
+    "select_related": ["payroll_run"],
+})
 
 HR_DETAIL_ENTITY_CONFIG["employee-change-request-lines"].update(
     {

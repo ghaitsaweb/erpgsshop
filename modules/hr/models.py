@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 import re
 import uuid
 
@@ -74,6 +74,7 @@ class EmploymentContract(TimeStampedModel):
     start_date = models.DateField()
     end_date = models.DateField(blank=True, null=True)
     base_salary = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    daily_wage = models.DecimalField(max_digits=18, decimal_places=2, blank=True, null=True)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
     notes = models.TextField(blank=True)
 
@@ -89,6 +90,8 @@ class EmploymentContract(TimeStampedModel):
             errors["end_date"] = "A fixed-term contract requires an end date."
         if self.base_salary is not None and self.base_salary < 0:
             errors["base_salary"] = "Base salary cannot be negative."
+        if self.daily_wage is not None and self.daily_wage < 0:
+            errors["daily_wage"] = "Daily wage cannot be negative."
         if self.salary_package_id and self.employee_id:
             if self.salary_package.company_id != self.employee.company_id:
                 errors["salary_package"] = "The salary package must belong to the employee company."
@@ -107,6 +110,10 @@ class EmploymentContract(TimeStampedModel):
 
 
 class LeaveRequest(TimeStampedModel):
+    class Portion(models.TextChoices):
+        FULL = "full", "Full day"
+        HALF = "half", "Half day"
+
     class Status(models.TextChoices):
         DRAFT = "draft", "Draft"
         SUBMITTED = "submitted", "Submitted"
@@ -116,15 +123,36 @@ class LeaveRequest(TimeStampedModel):
 
     employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="leave_requests")
     leave_type = models.CharField(max_length=60, default="Annual Leave")
+    leave_type_record = models.ForeignKey(
+        "LeaveType", on_delete=models.PROTECT, blank=True, null=True, related_name="requests"
+    )
     start_date = models.DateField()
     end_date = models.DateField()
-    days = models.DecimalField(max_digits=6, decimal_places=2, default=1)
+    portion = models.CharField(max_length=8, choices=Portion.choices, default=Portion.FULL)
+    days = models.DecimalField(max_digits=6, decimal_places=2, default=0, editable=False)
     reason = models.TextField(blank=True)
+    attachment_name = models.CharField(max_length=255, blank=True)
+    attachment_content_type = models.CharField(max_length=120, blank=True)
+    attachment_content = models.BinaryField(blank=True, null=True, editable=False)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
     approver = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, blank=True, null=True, related_name="leave_approvals")
 
     class Meta:
         ordering = ["-start_date", "employee__name"]
+        indexes = [models.Index(fields=["employee", "status", "start_date", "end_date"], name="hr_leave_overlap_idx")]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.start_date and self.end_date and self.end_date < self.start_date:
+            errors["end_date"] = "End date must be on or after start date."
+        if self.portion == self.Portion.HALF and self.start_date and self.end_date != self.start_date:
+            errors["portion"] = "A half-day request must cover one date."
+        if self.employee_id and self.leave_type_record_id:
+            if self.employee.company_id != self.leave_type_record.company_id:
+                errors["leave_type_record"] = "Leave type must belong to the employee company."
+        if errors:
+            raise ValidationError(errors)
 
     def __str__(self):
         return f"{self.employee} · {self.leave_type}"
@@ -162,12 +190,7 @@ class Payslip(TimeStampedModel):
         help_text="The effective employment contract used for this payslip.",
     )
     payroll_run = models.ForeignKey(
-        "PayrollRun",
-        on_delete=models.SET_NULL,
-        blank=True,
-        null=True,
-        related_name="payslips",
-        help_text="The payroll run that produced or includes this payslip.",
+        "PayrollRun", on_delete=models.PROTECT, blank=True, null=True, related_name="generated_payslips"
     )
     number = models.CharField(max_length=40, unique=True)
     period_start = models.DateField()
@@ -180,6 +203,13 @@ class Payslip(TimeStampedModel):
 
     class Meta:
         ordering = ["-period_end", "employee__name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["payroll_run", "employee"],
+                condition=models.Q(payroll_run__isnull=False),
+                name="unique_generated_payslip_employee_run",
+            )
+        ]
 
     def clean(self):
         super().clean()
@@ -345,6 +375,7 @@ class DocumentType(TimeStampedModel):
     name = models.CharField(max_length=100)
     mandatory = models.BooleanField(default=False)
     has_expiry = models.BooleanField(default=False)
+    allow_multiple_versions = models.BooleanField(default=False)
     active = models.BooleanField(default=True)
 
     class Meta:
@@ -728,13 +759,22 @@ class EmployeeDocument(TimeStampedModel):
         ACTIVE = "active", "Active"
         EXPIRED = "expired", "Expired"
         REPLACED = "replaced", "Replaced"
+        ARCHIVED = "archived", "Archived"
 
     employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="documents")
     document_type = models.ForeignKey(DocumentType, on_delete=models.PROTECT, related_name="employee_documents")
     document_number = models.CharField(max_length=80, blank=True)
+    version = models.PositiveIntegerField(default=1, editable=False)
+    parent_document = models.ForeignKey(
+        "self", on_delete=models.PROTECT, blank=True, null=True,
+        related_name="subsequent_versions", editable=False,
+    )
     issued_date = models.DateField(blank=True, null=True)
     expiry_date = models.DateField(blank=True, null=True)
     attachment_url = models.URLField(blank=True)
+    attachment_name = models.CharField(max_length=255, blank=True, editable=False)
+    attachment_content_type = models.CharField(max_length=120, blank=True, editable=False)
+    attachment_content = models.BinaryField(blank=True, null=True, editable=False)
     verified = models.BooleanField(default=False)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
     replaced_by = models.ForeignKey(
@@ -748,6 +788,20 @@ class EmployeeDocument(TimeStampedModel):
 
     class Meta:
         ordering = ["employee__name", "document_type__name"]
+        indexes = [
+            models.Index(fields=["status", "expiry_date", "id"], name="hr_document_expiry_idx"),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.employee_id and self.document_type_id and self.employee.company_id != self.document_type.company_id:
+            raise ValidationError({"document_type": "The document type must belong to the employee company."})
+        if self.issued_date and self.issued_date > timezone.localdate():
+            raise ValidationError({"issued_date": "The issue date cannot be in the future."})
+        if self.issued_date and self.expiry_date and self.expiry_date <= self.issued_date:
+            raise ValidationError({"expiry_date": "Expiry must be after the issue date."})
+        if self.document_type_id and self.document_type.has_expiry and not self.expiry_date:
+            raise ValidationError({"expiry_date": "This document type requires an expiry date."})
 
     def __str__(self):
         return f"{self.employee} - {self.document_type}"
@@ -796,10 +850,14 @@ class EmployeeChecklist(TimeStampedModel):
     description = models.TextField(blank=True)
     responsible_role = models.CharField(max_length=100, blank=True)
     sequence = models.PositiveIntegerField(default=10)
+    requires_evidence = models.BooleanField(default=False)
     active = models.BooleanField(default=True)
 
     class Meta:
         ordering = ["lifecycle", "sequence", "name"]
+        indexes = [
+            models.Index(fields=["company", "lifecycle", "active", "sequence"], name="hr_checklist_active_idx"),
+        ]
 
     def __str__(self):
         return f"{self.get_lifecycle_display()} - {self.name}"
@@ -834,6 +892,82 @@ class EmployeeOffboarding(TimeStampedModel):
 
     def __str__(self):
         return f"Offboarding - {self.employee}"
+
+
+class EmployeeLifecycleTask(TimeStampedModel):
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        COMPLETED = "completed", "Completed"
+
+    onboarding = models.ForeignKey(
+        EmployeeOnboarding, on_delete=models.PROTECT, blank=True, null=True,
+        related_name="checklist_tasks",
+    )
+    offboarding = models.ForeignKey(
+        EmployeeOffboarding, on_delete=models.PROTECT, blank=True, null=True,
+        related_name="checklist_tasks",
+    )
+    template = models.ForeignKey(
+        EmployeeChecklist, on_delete=models.PROTECT, related_name="execution_tasks",
+    )
+    name = models.CharField(max_length=120)
+    sequence = models.PositiveIntegerField(default=10)
+    requires_evidence = models.BooleanField(default=False)
+    evidence_document = models.ForeignKey(
+        EmployeeDocument, on_delete=models.PROTECT, blank=True, null=True,
+        related_name="lifecycle_tasks",
+    )
+    evidence_document_number = models.CharField(max_length=80, blank=True, editable=False)
+    evidence_attachment_url = models.URLField(blank=True, editable=False)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
+    completed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, blank=True, null=True,
+        related_name="completed_lifecycle_tasks",
+    )
+    completed_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ["sequence", "id"]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(onboarding__isnull=False, offboarding__isnull=True)
+                    | models.Q(onboarding__isnull=True, offboarding__isnull=False)
+                ),
+                name="one_employee_lifecycle_parent",
+            ),
+            models.UniqueConstraint(
+                fields=["onboarding", "template"],
+                condition=models.Q(onboarding__isnull=False),
+                name="unique_onboarding_template_task",
+            ),
+            models.UniqueConstraint(
+                fields=["offboarding", "template"],
+                condition=models.Q(offboarding__isnull=False),
+                name="unique_offboarding_template_task",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["onboarding", "status"], name="hr_onboard_task_status_idx"),
+            models.Index(fields=["offboarding", "status"], name="hr_offboard_task_status_idx"),
+        ]
+
+    def clean(self):
+        super().clean()
+        if bool(self.onboarding_id) == bool(self.offboarding_id):
+            raise ValidationError("Select exactly one onboarding or offboarding process.")
+        process = self.onboarding if self.onboarding_id else self.offboarding
+        lifecycle = EmployeeChecklist.Lifecycle.ONBOARDING if self.onboarding_id else EmployeeChecklist.Lifecycle.OFFBOARDING
+        if self.template_id and (
+            self.template.company_id != process.employee.company_id
+            or self.template.lifecycle != lifecycle
+        ):
+            raise ValidationError("The checklist template is outside the process company or lifecycle.")
+        if self.evidence_document_id and self.evidence_document.employee_id != process.employee_id:
+            raise ValidationError("The evidence document belongs to another employee.")
+
+    def __str__(self):
+        return self.name
 
 
 class RawAttendance(TimeStampedModel):
@@ -932,12 +1066,57 @@ class ScheduleAssignment(TimeStampedModel):
 
 
 class LeaveType(TimeStampedModel):
+    class DayCountBy(models.TextChoices):
+        WORK_DAY = "work_day", "Work days"
+        CALENDAR_DAY = "calendar_day", "Calendar days"
+
+    class EligibleGender(models.TextChoices):
+        ALL = "all", "All genders"
+        FEMALE = "female", "Female only"
+        MALE = "male", "Male only"
+
+    class TenureUnit(models.TextChoices):
+        DAYS = "days", "Days"
+        MONTHS = "months", "Months"
+        YEARS = "years", "Years"
+
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="leave_types")
     code = models.CharField(max_length=30)
     name = models.CharField(max_length=100)
     annual_entitlement = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+    day_count_by = models.CharField(max_length=16, choices=DayCountBy.choices, default=DayCountBy.WORK_DAY)
+    eligible_gender = models.CharField(max_length=8, choices=EligibleGender.choices, default=EligibleGender.ALL)
+    min_tenure_value = models.PositiveIntegerField(default=0)
+    min_tenure_unit = models.CharField(max_length=8, choices=TenureUnit.choices, default=TenureUnit.DAYS)
+    max_days_per_request = models.PositiveIntegerField(default=0)
+    max_consecutive_days = models.PositiveIntegerField(default=0)
+    cooling_period_days = models.PositiveIntegerField(default=0)
+    notice_flat_days = models.PositiveIntegerField(default=0)
+    allow_past_date = models.BooleanField(default=False)
+    max_past_days = models.PositiveIntegerField(default=0)
+    allow_leave_encashment = models.BooleanField(default=False)
+    max_encashment_days = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+    min_retained_balance = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+    allow_partial_encashment = models.BooleanField(default=False)
+    encashment_calculation_method = models.CharField(
+        max_length=24,
+        choices=[
+            ("flat_amount", "Flat amount"),
+            ("employee_daily_wage", "Employee daily wage"),
+            ("employee_wage", "Employee wage / 22"),
+        ],
+        blank=True,
+    )
+    flat_cash_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     paid = models.BooleanField(default=True)
     requires_attachment = models.BooleanField(default=False)
+    attachment_trigger = models.CharField(
+        max_length=20,
+        choices=[("always", "Always"), ("exceed_n_days", "Exceeds configured days")],
+        default="always",
+    )
+    attachment_exceed_n_days = models.PositiveIntegerField(default=0)
+    max_file_size_mb = models.PositiveSmallIntegerField(default=5, validators=[MinValueValidator(1), MaxValueValidator(50)])
     active = models.BooleanField(default=True)
 
     class Meta:
@@ -948,12 +1127,37 @@ class LeaveType(TimeStampedModel):
         return f"{self.code} - {self.name}"
 
 
+class LeaveBlackoutPeriod(TimeStampedModel):
+    leave_type = models.ForeignKey(LeaveType, on_delete=models.PROTECT, related_name="blackout_periods")
+    date_start = models.DateField()
+    date_end = models.DateField()
+    reason = models.CharField(max_length=255, blank=True)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["date_start", "pk"]
+        indexes = [models.Index(fields=["leave_type", "active", "date_start", "date_end"], name="hr_leave_blackout_idx")]
+
+    def clean(self):
+        super().clean()
+        if self.date_start and self.date_end and self.date_end < self.date_start:
+            raise ValidationError({"date_end": "End date must be on or after start date."})
+
+    def __str__(self):
+        return f"{self.leave_type} - {self.date_start} to {self.date_end}"
+
+
 class LeaveAllocation(TimeStampedModel):
     employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="leave_allocations")
     leave_type = models.ForeignKey(LeaveType, on_delete=models.PROTECT, related_name="allocations")
     year = models.PositiveIntegerField(default=current_year)
     allocated_days = models.DecimalField(max_digits=6, decimal_places=2, default=0)
     used_days = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+    valid_from = models.DateField(blank=True, null=True)
+    expires_on = models.DateField(blank=True, null=True)
+    opening_balance = models.OneToOneField(
+        "LeaveOpeningBalance", on_delete=models.PROTECT, blank=True, null=True, related_name="allocation"
+    )
     status = models.CharField(max_length=16, choices=ApprovalStatus.choices, default=ApprovalStatus.DRAFT)
 
     class Meta:
@@ -964,8 +1168,115 @@ class LeaveAllocation(TimeStampedModel):
     def balance_days(self):
         return self.allocated_days - self.used_days
 
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.employee_id and self.leave_type_id and self.employee.company_id != self.leave_type.company_id:
+            errors["leave_type"] = "Leave type must belong to the employee company."
+        if self.allocated_days is not None and self.allocated_days <= 0:
+            errors["allocated_days"] = "Allocated days must be greater than zero."
+        if self.used_days is not None and self.used_days < 0:
+            errors["used_days"] = "Used days cannot be negative."
+        if self.allocated_days is not None and self.used_days is not None and self.used_days > self.allocated_days:
+            errors["used_days"] = "Used days cannot exceed allocated days."
+        if self.valid_from and self.expires_on and self.expires_on < self.valid_from:
+            errors["expires_on"] = "Expiry date must be on or after the first valid date."
+        if errors:
+            raise ValidationError(errors)
+
     def __str__(self):
         return f"{self.employee} - {self.leave_type} ({self.year})"
+
+
+class LeaveBucket(TimeStampedModel):
+    """One dated grant that leave requests consume in expiry order."""
+
+    class Source(models.TextChoices):
+        ALLOCATION = "allocation", "Allocation"
+        OPENING = "opening", "Opening Balance"
+        CARRY_OVER = "carry_over", "Carry Over"
+        OVERTIME = "overtime", "Overtime Conversion"
+
+    class Status(models.TextChoices):
+        ACTIVE = "active", "Active"
+        EXHAUSTED = "exhausted", "Exhausted"
+        EXPIRED = "expired", "Expired"
+
+    employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="leave_buckets")
+    leave_type = models.ForeignKey(LeaveType, on_delete=models.PROTECT, related_name="buckets")
+    allocation = models.ForeignKey(
+        LeaveAllocation, on_delete=models.PROTECT, related_name="buckets", blank=True, null=True
+    )
+    year = models.PositiveIntegerField(default=current_year)
+    source = models.CharField(max_length=20, choices=Source.choices, default=Source.ALLOCATION)
+    cycle_key = models.CharField(max_length=120, default="base")
+    original_days = models.DecimalField(max_digits=7, decimal_places=2)
+    consumed_days = models.DecimalField(max_digits=7, decimal_places=2, default=0)
+    forfeited_days = models.DecimalField(max_digits=7, decimal_places=2, default=0)
+    start_valid_date = models.DateField()
+    expiry_date = models.DateField()
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.ACTIVE)
+
+    class Meta:
+        ordering = ["expiry_date", "pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["allocation", "cycle_key"],
+                condition=models.Q(allocation__isnull=False),
+                name="unique_leave_bucket_allocation_cycle",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["employee", "leave_type", "expiry_date"], name="hr_leave_bucket_expiry_idx"),
+            models.Index(fields=["status", "expiry_date", "id"], name="hr_leave_bucket_due_idx"),
+        ]
+
+    @property
+    def remaining_days(self):
+        return self.original_days - self.consumed_days - self.forfeited_days
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.employee_id and self.leave_type_id and self.employee.company_id != self.leave_type.company_id:
+            errors["leave_type"] = "Leave type must belong to the employee company."
+        if self.allocation_id and (
+            self.allocation.employee_id != self.employee_id or self.allocation.leave_type_id != self.leave_type_id
+        ):
+            errors["allocation"] = "Bucket allocation must match its employee and leave type."
+        if self.expiry_date and self.start_valid_date and self.expiry_date < self.start_valid_date:
+            errors["expiry_date"] = "Expiry date must follow the first valid date."
+        if self.original_days is not None and self.original_days <= 0:
+            errors["original_days"] = "Granted days must be greater than zero."
+        if self.consumed_days is not None and self.consumed_days < 0:
+            errors["consumed_days"] = "Consumed days cannot be negative."
+        if self.forfeited_days is not None and self.forfeited_days < 0:
+            errors["forfeited_days"] = "Forfeited days cannot be negative."
+        if None not in (self.original_days, self.consumed_days, self.forfeited_days) and self.remaining_days < 0:
+            errors["consumed_days"] = "Consumption and forfeiture cannot exceed the grant."
+        if errors:
+            raise ValidationError(errors)
+
+    def __str__(self):
+        return f"{self.employee} - {self.leave_type} - {self.expiry_date}"
+
+
+class LeaveBucketConsumption(TimeStampedModel):
+    """Exact bucket debit for a request, retained after reversal."""
+
+    leave_request = models.ForeignKey(LeaveRequest, on_delete=models.PROTECT, related_name="bucket_consumptions")
+    bucket = models.ForeignKey(LeaveBucket, on_delete=models.PROTECT, related_name="consumptions")
+    days = models.DecimalField(max_digits=7, decimal_places=2)
+    reversed_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ["bucket__expiry_date", "pk"]
+        constraints = [
+            models.UniqueConstraint(fields=["leave_request", "bucket"], name="unique_leave_request_bucket")
+        ]
+
+    def __str__(self):
+        return f"{self.leave_request} - {self.bucket} - {self.days}"
 
 
 class OvertimeRule(TimeStampedModel):
@@ -1086,6 +1397,47 @@ class CashAdvance(TimeStampedModel):
 
     def __str__(self):
         return self.number
+
+
+class CashAdvanceLine(TimeStampedModel):
+    advance = models.ForeignKey(CashAdvance, on_delete=models.CASCADE, related_name="lines")
+    sequence = models.PositiveIntegerField(default=10)
+    product = models.ForeignKey("ExpenseProduct", on_delete=models.PROTECT, related_name="advance_lines")
+    quantity = models.DecimalField(max_digits=12, decimal_places=2, default=1, validators=[MinValueValidator(Decimal("0.01"))])
+    request_amount = models.DecimalField(max_digits=18, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
+    subtotal = models.DecimalField(max_digits=18, decimal_places=2, default=0, editable=False)
+
+    class Meta:
+        ordering = ["sequence", "pk"]
+        indexes = [models.Index(fields=["advance", "sequence", "id"], name="hr_advance_line_order_idx")]
+        constraints = [
+            models.CheckConstraint(condition=models.Q(quantity__gt=0), name="hr_advance_line_positive_qty"),
+            models.CheckConstraint(condition=models.Q(request_amount__gt=0), name="hr_advance_line_positive_rate"),
+            models.UniqueConstraint(fields=["advance", "product"], name="hr_advance_line_unique_product"),
+        ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.product_id:
+            if not self.product.active or self.product.activity_type != ExpenseProduct.ActivityType.ADVANCE:
+                errors["product"] = "Select an active advance product."
+            advance = getattr(self, "advance", None)
+            if advance and advance.employee_id and self.product.company_id != advance.employee.company_id:
+                errors["product"] = "Advance product must belong to the employee company."
+        if self.quantity is not None and self.quantity <= 0:
+            errors["quantity"] = "Quantity must be greater than zero."
+        if self.request_amount is not None and self.request_amount <= 0:
+            errors["request_amount"] = "Request amount must be greater than zero."
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.subtotal = (self.quantity * self.request_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.advance} · {self.product}"
 
 
 class HRSetting(TimeStampedModel):
@@ -1459,12 +1811,18 @@ class TrainingConductParticipant(TimeStampedModel):
 
 
 class ExpenseProduct(TimeStampedModel):
+    class ActivityType(models.TextChoices):
+        ADVANCE = "advance", "Advance"
+        EXPENSE = "expense", "Expense"
+
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="employee_expense_products")
     code = models.CharField(max_length=30)
     name = models.CharField(max_length=120)
     category = models.CharField(max_length=100, blank=True)
+    standard_price = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     maximum_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     receipt_required = models.BooleanField(default=True)
+    activity_type = models.CharField(max_length=10, choices=ActivityType.choices, default=ActivityType.EXPENSE)
     active = models.BooleanField(default=True)
 
     class Meta:
@@ -1480,6 +1838,11 @@ class PayrollRun(TimeStampedModel):
         DRAFT = "draft", "Draft"
         CALCULATING = "calculating", "Calculating"
         READY = "ready", "Ready"
+        PREVIEWING = "previewing", "Building Preview"
+        PREVIEWED = "previewed", "Previewed"
+        GENERATING = "generating", "Generating Payslips"
+        GENERATED = "generated", "Payslips Generated"
+        FAILED = "failed", "Processing Failed"
         POSTED = "posted", "Posted"
         CANCELLED = "cancelled", "Cancelled"
 
@@ -1491,6 +1854,18 @@ class PayrollRun(TimeStampedModel):
     deduction_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     net_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+    checklist_checked_at = models.DateTimeField(blank=True, null=True, editable=False)
+    checklist_blocking_count = models.PositiveIntegerField(default=0, editable=False)
+    preview_cursor = models.PositiveBigIntegerField(default=0, editable=False)
+    preview_count = models.PositiveIntegerField(default=0, editable=False)
+    preview_blocking_count = models.PositiveIntegerField(default=0, editable=False)
+    preview_period_start = models.DateField(blank=True, null=True, editable=False)
+    preview_period_end = models.DateField(blank=True, null=True, editable=False)
+    previewed_at = models.DateTimeField(blank=True, null=True, editable=False)
+    generation_cursor = models.PositiveBigIntegerField(default=0, editable=False)
+    generated_count = models.PositiveIntegerField(default=0, editable=False)
+    generated_at = models.DateTimeField(blank=True, null=True, editable=False)
+    processing_error = models.CharField(max_length=255, blank=True, editable=False)
     notes = models.TextField(blank=True)
 
     class Meta:
@@ -1498,6 +1873,57 @@ class PayrollRun(TimeStampedModel):
 
     def __str__(self):
         return self.number
+
+
+class PayrollRunChecklistItem(TimeStampedModel):
+    class State(models.TextChoices):
+        PASSED = "passed", "Passed"
+        FAILED = "failed", "Failed"
+
+    run = models.ForeignKey(PayrollRun, on_delete=models.PROTECT, related_name="checklist_items")
+    code = models.CharField(max_length=40)
+    name = models.CharField(max_length=120)
+    severity = models.CharField(max_length=12, choices=[("blocking", "Blocking"), ("info", "Info")])
+    state = models.CharField(max_length=8, choices=State.choices)
+    affected_count = models.PositiveIntegerField(default=0)
+    message = models.TextField(blank=True)
+    checked_at = models.DateTimeField()
+
+    class Meta:
+        ordering = ["run_id", "code"]
+        constraints = [models.UniqueConstraint(fields=["run", "code"], name="unique_payroll_run_check_code")]
+
+    def __str__(self):
+        return f"{self.run} - {self.name}"
+
+
+class PayrollRunPreviewLine(TimeStampedModel):
+    class State(models.TextChoices):
+        READY = "ready", "Ready"
+        BLOCKED = "blocked", "Blocked"
+
+    run = models.ForeignKey(PayrollRun, on_delete=models.PROTECT, related_name="preview_lines")
+    employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="payroll_previews")
+    compensation = models.ForeignKey(
+        "CompensationBenefit", on_delete=models.PROTECT, blank=True, null=True,
+        related_name="payroll_previews",
+    )
+    basic_salary = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    allowance_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    encashment_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    deduction_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    gross_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    net_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    state = models.CharField(max_length=8, choices=State.choices)
+    issue = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        ordering = ["employee_id"]
+        constraints = [models.UniqueConstraint(fields=["run", "employee"], name="unique_payroll_preview_employee_run")]
+        indexes = [models.Index(fields=["run", "id"], name="hr_payroll_preview_cursor_idx")]
+
+    def __str__(self):
+        return f"{self.run} - {self.employee}"
 
 
 class CompensationBenefit(TimeStampedModel):
@@ -2180,7 +2606,15 @@ class LeaveOpeningBalance(TimeStampedModel):
     leave_type = models.ForeignKey(LeaveType, on_delete=models.PROTECT, related_name="opening_balances")
     year = models.PositiveIntegerField(default=current_year)
     balance_days = models.DecimalField(max_digits=7, decimal_places=2, default=0)
+    opening_used = models.DecimalField(max_digits=7, decimal_places=2, default=0)
+    cutoff_date = models.DateField(blank=True, null=True)
+    expiry_date = models.DateField(blank=True, null=True)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+    finalized_at = models.DateTimeField(blank=True, null=True, editable=False)
+    finalized_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, blank=True, null=True,
+        related_name="finalized_leave_opening_balances", editable=False,
+    )
     notes = models.TextField(blank=True)
 
     class Meta:
@@ -2189,6 +2623,24 @@ class LeaveOpeningBalance(TimeStampedModel):
             models.UniqueConstraint(fields=["employee", "leave_type", "year"], name="unique_leave_opening_balance")
         ]
 
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.employee_id and self.leave_type_id and self.employee.company_id != self.leave_type.company_id:
+            errors["leave_type"] = "Leave type must belong to the employee company."
+        if self.balance_days is not None and self.balance_days < 0:
+            errors["balance_days"] = "Opening balance cannot be negative."
+        if self.opening_used is not None and self.opening_used < 0:
+            errors["opening_used"] = "Opening used days cannot be negative."
+        if self.year and self.cutoff_date and self.cutoff_date.year != self.year:
+            errors["cutoff_date"] = "Cut-off date must be in the opening balance year."
+        if self.year and self.expiry_date and self.expiry_date.year != self.year:
+            errors["expiry_date"] = "Expiry date must be in the opening balance year."
+        if self.cutoff_date and self.expiry_date and self.expiry_date < self.cutoff_date:
+            errors["expiry_date"] = "Expiry date must follow the cut-off date."
+        if errors:
+            raise ValidationError(errors)
+
     def __str__(self):
         return f"{self.employee} - {self.leave_type} ({self.year})"
 
@@ -2196,33 +2648,82 @@ class LeaveOpeningBalance(TimeStampedModel):
 class LeaveMovement(TimeStampedModel):
     class MovementType(models.TextChoices):
         OPENING = "opening", "Opening Balance"
+        OPENING_DEDUCTION = "opening_deduction", "Opening Used"
         ALLOCATION = "allocation", "Allocation"
         USAGE = "usage", "Usage"
+        REVERSAL = "reversal", "Usage Reversal"
         ADJUSTMENT = "adjustment", "Adjustment"
         ENCASHMENT = "encashment", "Encashment"
 
     employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="leave_movements")
     leave_type = models.ForeignKey(LeaveType, on_delete=models.PROTECT, related_name="movements")
+    leave_request = models.ForeignKey(
+        LeaveRequest, on_delete=models.PROTECT, blank=True, null=True, related_name="movements"
+    )
+    leave_encashment = models.ForeignKey(
+        "LeaveEncashment", on_delete=models.PROTECT, blank=True, null=True, related_name="movements"
+    )
+    opening_balance = models.ForeignKey(
+        LeaveOpeningBalance, on_delete=models.PROTECT, blank=True, null=True, related_name="movements"
+    )
+    allocation = models.ForeignKey(
+        LeaveAllocation, on_delete=models.PROTECT, blank=True, null=True, related_name="movements"
+    )
     movement_date = models.DateField(default=timezone.localdate)
-    movement_type = models.CharField(max_length=16, choices=MovementType.choices)
+    movement_type = models.CharField(max_length=20, choices=MovementType.choices)
     days = models.DecimalField(max_digits=7, decimal_places=2)
     reference = models.CharField(max_length=80, blank=True)
     notes = models.TextField(blank=True)
 
     class Meta:
         ordering = ["-movement_date", "-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["leave_request", "allocation", "movement_type"],
+                condition=models.Q(leave_request__isnull=False, allocation__isnull=False),
+                name="unique_leave_request_allocation_movement",
+            ),
+            models.UniqueConstraint(
+                fields=["leave_encashment", "allocation", "movement_type"],
+                condition=models.Q(leave_encashment__isnull=False, allocation__isnull=False),
+                name="unique_leave_encashment_allocation_movement",
+            ),
+            models.UniqueConstraint(
+                fields=["opening_balance", "movement_type"],
+                condition=models.Q(opening_balance__isnull=False),
+                name="unique_leave_opening_movement_type",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.employee} - {self.days} days"
 
 
 class LeaveEncashment(TimeStampedModel):
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        SUBMITTED = "submitted", "To Approve"
+        APPROVED = "approved", "Approved"
+        WAITING_FOR_PAYROLL = "waiting_for_payroll", "Waiting for Payroll"
+        PAYROLL_GENERATED = "payroll_generated", "Payroll Generated"
+        REJECTED = "rejected", "Refused"
+        CANCELLED = "cancelled", "Cancelled"
+
     employee = models.ForeignKey(Employee, on_delete=models.PROTECT, related_name="leave_encashments")
+    payslip = models.ForeignKey(
+        Payslip, on_delete=models.PROTECT, blank=True, null=True, related_name="leave_encashments"
+    )
     leave_type = models.ForeignKey(LeaveType, on_delete=models.PROTECT, related_name="encashments")
+    reference = models.CharField(max_length=100, blank=True, null=True, unique=True, editable=False)
+    reason = models.TextField(blank=True)
     request_date = models.DateField(default=timezone.localdate)
     days = models.DecimalField(max_digits=6, decimal_places=2, validators=[MinValueValidator(Decimal("0.25"))])
-    amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
-    status = models.CharField(max_length=16, choices=ApprovalStatus.choices, default=ApprovalStatus.DRAFT)
+    amount = models.DecimalField(max_digits=18, decimal_places=2, default=0, editable=False)
+    rate_per_day = models.DecimalField(max_digits=18, decimal_places=2, default=0, editable=False)
+    valuation_method = models.CharField(max_length=24, blank=True, editable=False)
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.DRAFT)
+    submitted_at = models.DateTimeField(blank=True, null=True, editable=False)
+    approved_at = models.DateTimeField(blank=True, null=True, editable=False)
     approver = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -2233,9 +2734,46 @@ class LeaveEncashment(TimeStampedModel):
 
     class Meta:
         ordering = ["-request_date"]
+        indexes = [
+            models.Index(fields=["employee", "leave_type", "request_date"], name="hr_encashment_quota_idx")
+        ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.employee_id and self.leave_type_id and self.employee.company_id != self.leave_type.company_id:
+            errors["leave_type"] = "Leave type must belong to the employee company."
+        if self.days is not None and self.days <= 0:
+            errors["days"] = "Requested days must be greater than zero."
+        if errors:
+            raise ValidationError(errors)
 
     def __str__(self):
         return f"{self.employee} - {self.days} days"
+
+
+class LeaveEncashmentBucket(TimeStampedModel):
+    class Status(models.TextChoices):
+        RESERVED = "reserved", "Reserved"
+        POSTED = "posted", "Posted"
+        RELEASED = "released", "Released"
+        REVERSED = "reversed", "Reversed"
+
+    encashment = models.ForeignKey(LeaveEncashment, on_delete=models.PROTECT, related_name="bucket_details")
+    bucket = models.ForeignKey(LeaveBucket, on_delete=models.PROTECT, related_name="encashment_details")
+    days = models.DecimalField(max_digits=7, decimal_places=2)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.RESERVED)
+    posted_at = models.DateTimeField(blank=True, null=True)
+    reversed_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ["bucket__expiry_date", "pk"]
+        constraints = [
+            models.UniqueConstraint(fields=["encashment", "bucket"], name="unique_encashment_bucket")
+        ]
+
+    def __str__(self):
+        return f"{self.encashment} - {self.bucket} - {self.days}"
 
 
 class PayrollVariable(TimeStampedModel):
@@ -2695,11 +3233,14 @@ class EmployeeDocumentBulkUpload(TimeStampedModel):
 
 
 class EmployeeDocumentHistory(TimeStampedModel):
-    document = models.ForeignKey(EmployeeDocument, on_delete=models.CASCADE, related_name="history")
+    document = models.ForeignKey(EmployeeDocument, on_delete=models.PROTECT, related_name="history")
     action = models.CharField(max_length=40)
     previous_status = models.CharField(max_length=16, blank=True)
     new_status = models.CharField(max_length=16)
-    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="employee_document_history")
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, blank=True, null=True,
+        related_name="employee_document_history",
+    )
     note = models.TextField(blank=True)
 
     class Meta:
@@ -2763,7 +3304,8 @@ class LeaveBulkOperation(TimeStampedModel):
 class PayrollDisbursement(TimeStampedModel):
     class Status(models.TextChoices):
         DRAFT = "draft", "Draft"
-        GENERATED = "generated", "Bank File Generated"
+        PREPARING = "preparing", "Preparing Payslips"
+        GENERATED = "generated", "Payment Prepared"
         SUBMITTED = "submitted", "Submitted"
         COMPLETED = "completed", "Completed"
         FAILED = "failed", "Failed"
@@ -2774,6 +3316,14 @@ class PayrollDisbursement(TimeStampedModel):
     disbursement_date = models.DateField(default=timezone.localdate)
     amount = models.DecimalField(max_digits=18, decimal_places=2)
     bank_file_url = models.URLField(blank=True)
+    preparation_cursor = models.PositiveBigIntegerField(default=0, editable=False)
+    prepared_count = models.PositiveIntegerField(default=0, editable=False)
+    prepared_at = models.DateTimeField(blank=True, null=True, editable=False)
+    payment_reference = models.CharField(max_length=160, blank=True, editable=False)
+    payment_event = models.OneToOneField(
+        "PayrollAccountingEvent", on_delete=models.PROTECT, blank=True, null=True,
+        related_name="disbursement", editable=False,
+    )
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
     response_message = models.TextField(blank=True)
 
@@ -2782,6 +3332,30 @@ class PayrollDisbursement(TimeStampedModel):
 
     def __str__(self):
         return self.reference
+
+
+class PayrollDisbursementLine(TimeStampedModel):
+    class Status(models.TextChoices):
+        PREPARED = "prepared", "Prepared"
+        PAID = "paid", "Paid"
+
+    disbursement = models.ForeignKey(
+        PayrollDisbursement, on_delete=models.PROTECT, related_name="lines"
+    )
+    payslip = models.ForeignKey(Payslip, on_delete=models.PROTECT, related_name="disbursement_lines")
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.PREPARED)
+    paid_at = models.DateTimeField(blank=True, null=True, editable=False)
+
+    class Meta:
+        ordering = ["payslip_id"]
+        constraints = [
+            models.UniqueConstraint(fields=["disbursement", "payslip"], name="unique_payroll_disbursement_payslip")
+        ]
+        indexes = [models.Index(fields=["disbursement", "id"], name="hr_disbursement_cursor_idx")]
+
+    def __str__(self):
+        return f"{self.disbursement} - {self.payslip}"
 
 
 class PayrollAccountingEvent(TimeStampedModel):

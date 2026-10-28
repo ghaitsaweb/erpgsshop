@@ -40,9 +40,39 @@
                 <label for="workflow-reason-{{ action.key }}">{% if action.key == 'reject' %}Rejection{% else %}Approval{% endif %} reason{% if action.key == 'reject' %} *{% endif %}</label>
                 <textarea id="workflow-reason-{{ action.key }}" class="form-control" name="reason" rows="2" {% if action.key == 'reject' %}required{% endif %}></textarea>
               {% endif %}
+              {% if action.key == 'confirm-payment' %}
+                <label for="payment-reference">Bank payment reference *</label>
+                <input id="payment-reference" class="form-control" type="text" name="payment_reference" maxlength="160" required>
+              {% endif %}
+              {% if entity == 'employee-lifecycle-tasks' and action.key == 'complete' %}
+                <label for="lifecycle-evidence-document">Verified evidence document ID{% if object.requires_evidence %} *{% endif %}</label>
+                <input id="lifecycle-evidence-document" class="form-control" type="number" min="1" name="evidence_document_id" {% if object.requires_evidence %}required{% endif %}>
+              {% endif %}
+              {% if entity == 'employee-documents' and action.key == 'replace' %}
+                <label for="replacement-document">Draft replacement document ID *</label>
+                <input id="replacement-document" class="form-control" type="number" min="1" name="replacement_document_id" required>
+              {% endif %}
               <button class="btn {% if action.primary %}btn-primary{% else %}btn-secondary{% endif %} btn-block" type="submit">{{ action.label }}</button>
             </form>
           {% endfor %}
+        </section>
+      {% endif %}
+      {% if entity == 'employee-onboarding' and object %}
+        <section class="workflow-actions-panel">
+          <div><small>Checklist</small><strong>{{ object.progress }}% complete</strong></div>
+          <a class="btn btn-secondary btn-block" href="{% url 'entity_list' 'employee-lifecycle-tasks' %}?onboarding={{ object.pk }}">View onboarding tasks</a>
+        </section>
+      {% elif entity == 'employee-offboarding' and object %}
+        <section class="workflow-actions-panel">
+          <div><small>Checklist</small><strong>{{ object.progress }}% complete</strong></div>
+          <a class="btn btn-secondary btn-block" href="{% url 'entity_list' 'employee-lifecycle-tasks' %}?offboarding={{ object.pk }}">View offboarding tasks</a>
+        </section>
+      {% elif entity == 'employee-lifecycle-tasks' and object %}
+        <section class="workflow-actions-panel">
+          <div><small>Checklist task</small><strong>{{ object.name }}</strong></div>
+          {% if object.onboarding_id %}<a class="btn btn-secondary btn-block" href="{% url 'entity_edit' 'employee-onboarding' object.onboarding_id %}">View onboarding process</a>{% endif %}
+          {% if object.offboarding_id %}<a class="btn btn-secondary btn-block" href="{% url 'entity_edit' 'employee-offboarding' object.offboarding_id %}">View offboarding process</a>{% endif %}
+          {% if object.evidence_document_id %}<span>Evidence document: {{ object.evidence_document_id }}</span>{% endif %}
         </section>
       {% endif %}
       {% if entity == 'employee-change-requests' and object %}
@@ -65,7 +95,41 @@
           {% if object.relation_history.exists %}<a class="btn btn-secondary btn-block" href="{% url 'entity_list' 'employee-change-relation-history' %}?request={{ object.pk }}">View relationship history</a>{% endif %}
         </section>
       {% endif %}
+      {% if entity == 'leave-requests' and object and object.attachment_name %}
+        <a class="btn btn-secondary btn-block" href="{% url 'leave_request_attachment' object.pk %}">Download {{ object.attachment_name }}</a>
+      {% endif %}
+      {% if entity == 'employee-documents' and object and object.attachment_name %}
+        <a class="btn btn-secondary btn-block" href="{% url 'employee_document_attachment' object.pk %}">Download {{ object.attachment_name }}</a>
+      {% endif %}
       {% if entity == 'stock-moves' %}<div class="info-strip">Stock ledger entries are immutable. Corrections use an opposite movement to preserve the audit trail.</div>{% endif %}
     </aside>
   </div>
+  {% if entity == 'employee-onboarding' or entity == 'employee-offboarding' %}
+    {% if object %}
+      <section class="panel document-lines" aria-label="Checklist lines">
+        <div class="document-tabbar"><span class="active">Checklist Lines</span></div>
+        {% if lifecycle_tasks_preview %}
+          <div class="line-table-wrap">
+            <table class="line-table">
+              <thead><tr><th>Sequence</th><th>Checklist</th><th>Evidence</th><th>Status</th><th>Open</th></tr></thead>
+              <tbody>
+                {% for task in lifecycle_tasks_preview %}
+                  <tr>
+                    <td>{{ task.sequence }}</td>
+                    <td>{{ task.name }}</td>
+                    <td>{% if task.evidence_document_number %}{{ task.evidence_document_number }}{% elif task.requires_evidence %}Required{% else %}Optional{% endif %}</td>
+                    <td>{{ task.get_status_display }}</td>
+                    <td><a href="{% url 'entity_edit' 'employee-lifecycle-tasks' task.pk %}">Open task</a></td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% if lifecycle_tasks_has_more %}<p>Showing the first 50 lines. Use “View tasks” for the full list.</p>{% endif %}
+        {% else %}
+          <p>The checklist lines appear here when this process starts.</p>
+        {% endif %}
+      </section>
+    {% endif %}
+  {% endif %}
 {% endblock %}

@@ -177,6 +177,35 @@ class EmployeeOrganizationWorkflowTests(TestCase):
         self.manager_b.refresh_from_db()
         self.assertIsNone(self.manager_b.supervisor)
 
+    def test_organization_chart_pages_large_company_without_losing_employees(self):
+        call_command("sync_apps", verbosity=0)
+        Employee.objects.bulk_create(
+            [
+                Employee(
+                    company=self.company,
+                    branch=self.branch_a,
+                    supervisor=self.manager_a if index == 204 else None,
+                    employee_id=f"ORG-PAGE-{index:03d}",
+                    name=f"Page Employee {index:03d}",
+                )
+                for index in range(205)
+            ]
+        )
+
+        first = self.client.get("/apps/hr/feature/organization-chart/")
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.context["chart_employee_count"], 200)
+        self.assertTrue(first.context["chart_has_more"])
+
+        second = self.client.get(
+            f"/apps/hr/feature/organization-chart/?after={first.context['chart_next_cursor']}"
+        )
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.context["chart_employee_count"], 8)
+        self.assertFalse(second.context["chart_has_more"])
+        self.assertContains(second, "Page Employee 204")
+        self.assertContains(second, "Manager not shown in this view")
+
 
     def test_employee_form_uses_master_organization_and_blocks_direct_status_change(self):
         self.assertNotIn("status", EmployeeForm().fields)

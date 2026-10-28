@@ -15,6 +15,7 @@
       {% if chart_edit_mode %}<span class="org-chart-drag-handle" aria-label="Drag to change manager">⠿</span>{% endif %}
     </header>
     <p>{{ node.employee.job_position.name|default:node.employee.position|default:"Position not set" }}</p>
+    {% if node.manager_not_shown %}<small>Manager not shown in this view</small>{% endif %}
     <footer><span>{{ node.employee.department_record.name|default:node.employee.department|default:"No department" }}</span><a href="{% url 'entity_edit' 'employees' node.employee.pk %}">Open</a></footer>
   </article>
   {% if node.children %}

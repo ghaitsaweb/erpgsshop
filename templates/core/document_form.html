@@ -8,7 +8,7 @@
       <div class="document-actions">
         <a class="btn btn-secondary" href="{% url 'entity_list' entity %}">Cancel</a>
         {% if editable %}<button form="document-record-form" class="btn btn-primary" type="submit">Save {{ config.singular }}</button>{% endif %}
-        {% if object %}<a class="btn btn-secondary" href="{% url 'document_pdf' entity object.pk %}" target="_blank" rel="noopener">Print PDF</a>{% endif %}
+        {% if object and document.has_pdf != False %}<a class="btn btn-secondary" href="{% url 'document_pdf' entity object.pk %}" target="_blank" rel="noopener">Print PDF</a>{% endif %}
         {% for action in available_actions %}
           <form method="post" action="{% url 'document_action' entity object.pk action.key %}">
             {% csrf_token %}
@@ -133,6 +133,14 @@
           const selectExactChoice = () => {
             const match = Array.from(choices.options).find((option) => option.value === searchInput.value);
             hiddenInput.value = match ? match.dataset.recordId : '';
+            if (match && match.dataset.standardPrice) {
+              const amountInput = hiddenInput.closest('tr')?.querySelector(
+                'input[name$="-request_amount"], input[name$="-unit_price"]'
+              );
+              if (amountInput && (!amountInput.value || Number(amountInput.value) === 0)) {
+                amountInput.value = match.dataset.standardPrice;
+              }
+            }
           };
 
           const loadProducts = async (query = '', productId = '') => {
@@ -151,6 +159,7 @@
                 const option = document.createElement('option');
                 option.value = record.text;
                 option.dataset.recordId = record.id;
+                if (record.standard_price) option.dataset.standardPrice = record.standard_price;
                 return option;
               }));
               if (productId && payload.results.length) {

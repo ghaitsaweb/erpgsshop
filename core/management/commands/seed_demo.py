@@ -23,7 +23,7 @@ from core.models import (
     StockMove,
     Warehouse,
 )
-from modules.ai_workspace.models import AIAgent, AIWorkspace
+from addons.ai.erpshop_ai_coworker.models import AIAgent, AIWorkspace
 from modules.crm.models import Lead, Opportunity
 from modules.education.models import Course, Enrollment, LibraryBook, School, Student
 from modules.finance.models import Account, Budget

@@ -263,6 +263,7 @@ def app_workspace(request, slug):
             if (permitted_items := filter_menu_items(group["items"], can_open_menu_item))
         ]
 
+        # scale-guard: allow SG001 — entities are fixed application metadata, not database-sized records.
         for entity in workspace.get("entities", []):
             config = ENTITY_CONFIG.get(entity)
             if not config:
@@ -367,7 +368,7 @@ def hr_feature(request, feature):
             if request.GET.get("edit") == "1":
                 chart_url = f"{chart_url}?edit=1"
             return redirect(chart_url)
-        chart_context = organization_chart_context(request.user)
+        chart_context = organization_chart_context(request.user, after=request.GET.get("after"))
         return render(
             request,
             "hr/organization_chart.html",

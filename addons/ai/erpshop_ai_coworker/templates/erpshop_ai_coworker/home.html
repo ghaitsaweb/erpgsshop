@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}AI Coworker · ERP GSSHOP{% endblock %}
+{% block page_title %}AI Coworker{% endblock %}
+
+{% block content %}
+<link rel="stylesheet" href="{% static 'erpshop_ai_coworker/coworker.css' %}">
+<div class="coworker-shell">
+  <header class="coworker-hero">
+    <div><p class="eyebrow">ERPShop AI · Coworker</p><h2>Delegated analysis, within explicit boundaries</h2><p>Queue a focused planning or read-only ERP analysis task. Every run is company-scoped, bounded, asynchronous, and auditable.</p></div>
+    {% if can_manage %}<a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:settings' %}">Manage coworkers</a>{% endif %}
+  </header>
+
+  <section class="coworker-boundary"><strong>Current capability</strong><span>One governed provider turn per task · maximum 100 ERP rows · no write/delete/approval/message tools · no external channel or MCP execution.</span></section>
+
+  <div class="coworker-grid">
+    <aside class="panel coworker-agents">
+      <header><p class="eyebrow">Team</p><h3>Coworkers</h3></header>
+      <nav>
+        {% for agent in agents %}
+          <a href="{% url 'erpshop_ai_coworker:home' %}?agent={{ agent.pk }}" class="{% if selected_agent.pk == agent.pk %}selected{% endif %}">
+            <span>{{ agent.name }}</span><small>{{ agent.role }} · {% if agent.active %}active{% else %}inactive{% endif %}</small>
+          </a>
+        {% empty %}<p class="coworker-empty">No coworker is configured for this company.</p>{% endfor %}
+      </nav>
+      {% if selected_agent %}
+        <dl class="coworker-stats"><div><dt>Runs</dt><dd>{{ selected_agent.total_requests }}</dd></div><div><dt>Context limit</dt><dd>{{ selected_agent.max_context_records }} rows</dd></div><div><dt>ERP read</dt><dd>{% if 'erp_read' in selected_agent.allowed_tools %}Allowed{% else %}Off{% endif %}</dd></div></dl>
+      {% endif %}
+    </aside>
+
+    <main class="panel coworker-run-card">
+      <header><p class="eyebrow">New assignment</p><h3>{% if selected_agent %}Brief {{ selected_agent.name }}{% else %}Configure a coworker first{% endif %}</h3></header>
+      {% if selected_agent %}
+        <form method="post" action="{% url 'erpshop_ai_coworker:create_task' %}" class="coworker-form">{% csrf_token %}
+          {% for field in task_form %}<div class="field {% if field.errors %}has-error{% endif %}"><label for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}{% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>{% endfor %}
+          <button class="btn btn-primary" type="submit">Queue task</button>
+        </form>
+      {% elif can_manage %}<a class="btn btn-primary" href="{% url 'erpshop_ai_coworker:settings' %}">Create first coworker</a>{% else %}<p class="coworker-empty">Ask an administrator to configure a coworker for this company.</p>{% endif %}
+    </main>
+  </div>
+
+  <section class="panel coworker-queue">
+    <header><div><p class="eyebrow">Work queue</p><h3>Recent tasks</h3></div><small>Latest {{ tasks|length }} tasks</small></header>
+    <div class="coworker-table-wrap"><table><thead><tr><th>Task</th><th>Coworker</th><th>Type</th><th>Status</th><th>Requested</th></tr></thead><tbody>
+      {% for task in tasks %}<tr><td><a href="{% url 'erpshop_ai_coworker:task_detail' task.pk %}">{{ task.title }}</a>{% if task.entity %}<small>{{ task.entity }} · {{ task.context_record_count }} rows</small>{% endif %}</td><td>{{ task.agent.name }}</td><td>{{ task.get_task_type_display }}</td><td><span class="status status-{{ task.status }}">{{ task.get_status_display }}</span></td><td>{{ task.created_at|date:"d M Y H:i" }}</td></tr>
+      {% empty %}<tr><td colspan="5" class="coworker-empty">No task has been queued for this company.</td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+</div>
+{% endblock %}

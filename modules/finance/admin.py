@@ -29,6 +29,7 @@ from .models import (
     CurrencyRevaluation,
     CurrencyRevaluationLine,
     ExpenseClaim,
+    ExpenseClaimLine,
     FiscalPeriod,
     FiscalPosition,
     FiscalYear,
@@ -129,10 +130,21 @@ for model in [
     WithholdingTaxTransaction,
     WithholdingTaxTransactionLine,
     Budget,
-    ExpenseClaim,
     Loan,
 ]:
     admin.site.register(model)
+
+
+@admin.register(ExpenseClaim, ExpenseClaimLine)
+class ExpenseClaimAuditAdmin(admin.ModelAdmin):
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 for model in [

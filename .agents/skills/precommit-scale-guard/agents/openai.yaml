@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pre-commit & Scale Guard"
+  short_description: "Run repository checks and scale review"
+  default_prompt: "Use $precommit-scale-guard to verify my staged changes before commit."

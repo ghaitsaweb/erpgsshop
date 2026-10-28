@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Hashy AI Assistant · ERP GSSHOP{% endblock %}
+{% block page_title %}Hashy AI Assistant{% endblock %}
+
+{% block content %}
+<link rel="stylesheet" href="{% static 'erpshop_moduleai_assistant/assistant.css' %}">
+<div class="hashy-workspace" data-assistant-workspace {% if selected_session and not older_page %}data-state-url="{% url 'erpshop_moduleai_assistant:session_state' selected_session.pk %}"{% endif %}>
+  <header class="hashy-hero">
+    <div>
+      <p class="eyebrow">ERPShop Module AI · Assistant</p>
+      <h2>{{ configuration.display_name }}</h2>
+      <p>Company-scoped AI conversations with Hashy OS-compatible provider controls, auditable sessions, file consent, and feedback.</p>
+    </div>
+    <div class="hashy-hero-actions">
+      <span class="hashy-connection"><i></i>Provider {% if configuration.is_ready %}configured{% else %}configuration needed{% endif %}</span>
+      {% if can_configure %}<a class="btn btn-secondary" href="{% url 'erpshop_moduleai_assistant:settings' %}">Assistant settings</a>{% endif %}
+    </div>
+  </header>
+
+  {% if not configuration.is_ready %}
+    <section class="hashy-notice">
+      <strong>Provider belum siap</strong>
+      <span>Anda masih dapat membuat sesi. Jawaban diproses setelah administrator mengaktifkan endpoint, model, dan credential environment variable.</span>
+      {% if can_configure %}<a href="{% url 'erpshop_moduleai_assistant:settings' %}">Configure now</a>{% endif %}
+    </section>
+  {% endif %}
+
+  <div class="hashy-layout">
+    <aside class="hashy-session-pane">
+      <form method="post" action="{% url 'erpshop_moduleai_assistant:new_session' %}" class="hashy-new-session">
+        {% csrf_token %}
+        <input type="hidden" name="title" value="New conversation">
+        <button class="btn btn-primary btn-block" type="submit">＋ New chat</button>
+      </form>
+      <div class="hashy-session-head"><strong>Conversations</strong>{% if can_view_all_sessions %}<small>company scope</small>{% endif %}</div>
+      <nav class="hashy-session-list" aria-label="Assistant conversations">
+        {% for session in sessions %}
+          <a href="{% url 'erpshop_moduleai_assistant:home' %}?session={{ session.pk }}" class="hashy-session {% if selected_session and session.pk == selected_session.pk %}selected{% endif %}">
+            <span>{{ session.title }}</span><small>{{ session.last_activity_at|date:"d M · H:i" }}{% if can_view_all_sessions and session.user_id != request.user.id %} · {{ session.user.get_username }}{% endif %}</small>
+          </a>
+        {% empty %}
+          <p class="hashy-empty">No chat yet. Start a focused conversation for this company.</p>
+        {% endfor %}
+      </nav>
+      <section class="hashy-safety-card">
+        <strong>Governed by design</strong>
+        <p>Provider keys never enter this database. Only selected company data and files explicitly sent in this chat are considered.</p>
+      </section>
+    </aside>
+
+    <section class="hashy-chat-pane">
+      {% if selected_session %}
+        <header class="hashy-chat-head">
+          <div><p class="eyebrow">Active session</p><h3>{{ selected_session.title }}</h3></div>
+          <form method="post" action="{% url 'erpshop_moduleai_assistant:archive_session' selected_session.pk %}">{% csrf_token %}<button class="btn btn-secondary" type="submit">Archive</button></form>
+        </header>
+        <div class="hashy-message-list" data-assistant-messages>
+          {% if older_page %}<a class="btn btn-secondary" href="{% url 'erpshop_moduleai_assistant:home' %}?session={{ selected_session.pk }}">Latest messages</a>{% endif %}
+          {% if has_older_messages %}<a class="btn btn-secondary" href="{% url 'erpshop_moduleai_assistant:home' %}?session={{ selected_session.pk }}&amp;before={{ oldest_message_id }}">Earlier messages</a>{% endif %}
+          {% for message in messages %}
+            <article class="hashy-message role-{{ message.role }} state-{{ message.state }}" data-message-id="{{ message.pk }}">
+              <header><strong>{% if message.role == 'assistant' %}Hashy{% elif message.role == 'user' %}You{% else %}System{% endif %}</strong><span>{% if message.state == 'pending' %}Working…{% elif message.state == 'failed' %}Needs attention{% else %}{{ message.created_at|date:"H:i" }}{% endif %}</span></header>
+              {% if message.content %}<div class="hashy-message-content">{{ message.content|linebreaksbr }}</div>{% else %}<div class="hashy-message-content hashy-thinking">Preparing a safe provider request…</div>{% endif %}
+              {% if message.attachments.all %}<ul class="hashy-attachments">{% for attachment in message.attachments.all %}<li>▣ {{ attachment.original_name }} <small>{{ attachment.byte_size|filesizeformat }}</small></li>{% endfor %}</ul>{% endif %}
+              {% if message.role == 'assistant' and message.state == 'completed' %}
+                <footer class="hashy-feedback" data-feedback-for="{{ message.pk }}">
+                  <span>Was this useful?</span>
+                  <form method="post" action="{% url 'erpshop_moduleai_assistant:message_feedback' message.pk %}">{% csrf_token %}<input type="hidden" name="feedback" value="helpful"><button type="submit" class="{% if message.feedback == 'helpful' %}selected{% endif %}" aria-label="Helpful">👍</button></form>
+                  <form method="post" action="{% url 'erpshop_moduleai_assistant:message_feedback' message.pk %}">{% csrf_token %}<input type="hidden" name="feedback" value="unhelpful"><button type="submit" class="{% if message.feedback == 'unhelpful' %}selected{% endif %}" aria-label="Not helpful">👎</button></form>
+                </footer>
+              {% elif message.state == 'failed' and can_configure %}
+                <footer class="hashy-error-detail">Admin detail: {{ message.error_message|default:"Provider response failed." }}</footer>
+              {% endif %}
+            </article>
+          {% empty %}
+            <div class="hashy-empty-state"><span>✦</span><h3>How can Hashy help?</h3><p>Ask for a summary, explanation, or a plan. This assistant does not change ERP records on its own.</p></div>
+          {% endfor %}
+        </div>
+        <form method="post" enctype="multipart/form-data" action="{% url 'erpshop_moduleai_assistant:send_message' selected_session.pk %}" class="hashy-composer" data-assistant-composer>
+          {% csrf_token %}
+          <label class="hashy-file-input" title="Attach files"><input type="file" name="attachments" multiple data-assistant-files>⌕</label>
+          <textarea name="content" rows="2" maxlength="50000" required placeholder="Message Hashy AI Assistant…" data-assistant-textarea></textarea>
+          <button class="btn btn-primary" type="submit">Send <span>↗</span></button>
+          <p class="hashy-file-note" data-assistant-file-note>Up to 5 files, 10 MB each. {% if configuration.allow_file_content %}Plain-text file contents may be sent to the configured provider.{% else %}File content is retained but not sent to the provider by current policy.{% endif %}</p>
+        </form>
+      {% else %}
+        <div class="hashy-empty-state hashy-empty-large"><span>✦</span><h3>Start a Hashy conversation</h3><p>Each conversation belongs to the active company and your account. Provider configuration stays under administrator control.</p>
+          <form method="post" action="{% url 'erpshop_moduleai_assistant:new_session' %}">{% csrf_token %}<input type="hidden" name="title" value="New conversation"><button class="btn btn-primary" type="submit">Start new chat</button></form>
+        </div>
+      {% endif %}
+    </section>
+  </div>
+</div>
+<script src="{% static 'erpshop_moduleai_assistant/assistant.js' %}"></script>
+{% endblock %}

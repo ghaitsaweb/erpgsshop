@@ -1,0 +1,15 @@
+{
+  "slug": "erpshop-hashy-bridge",
+  "name": "ERPShop Hashy Bridge",
+  "category": "AI & Data",
+  "summary": "Company-scoped, token-authenticated read gateway for Hashy OS integrations.",
+  "icon": "HB",
+  "version": "1.0.0",
+  "status": "beta",
+  "enabled": true,
+  "sequence": 10,
+  "dependencies": ["foundation"],
+  "django_app": "addons.ai.erpshop_hashy_bridge.apps.ERPShopHashyBridgeConfig",
+  "urlconf": "addons.ai.erpshop_hashy_bridge.urls",
+  "route": ""
+}

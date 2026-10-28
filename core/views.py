@@ -43,7 +43,7 @@ from .models import (
     StockMove,
     Warehouse,
 )
-from modules.ai_workspace.models import AIAgent, AIConversation, AIMessage, AITask, AIWorkspace
+from addons.ai.erpshop_ai_coworker.models import AIAgent, AIConversation, AIMessage, AITask, AIWorkspace
 from modules.apphub.workflow_hooks import run_before_workflow_hooks
 from modules.crm.models import Lead, Opportunity
 from modules.construction.access import (
@@ -74,7 +74,9 @@ from modules.finance.ecosystem_config import ECOSYSTEM_DOCUMENT_CONFIG, ECOSYSTE
 from modules.finance.core_parity_config import CORE_PARITY_DOCUMENT_CONFIG, CORE_PARITY_ENTITY_CONFIG
 from modules.finance.localization_config import LOCALIZATION_ENTITY_CONFIG
 from modules.finance.parity_config import PARITY_DOCUMENT_CONFIG, PARITY_ENTITY_CONFIG
-from modules.finance.models import Account, Budget, ExpenseClaim, JournalEntry, JournalLine, Loan
+from modules.finance.models import Account, Budget, ExpenseClaim, ExpenseClaimLine, JournalEntry, JournalLine, Loan
+from modules.finance.expense_forms import ExpenseClaimForm, ExpenseClaimLineForm, ExpenseClaimLineFormSet
+from modules.finance.expense_lines import save_expense_claim_lines, validate_expense_claim_lines
 from modules.finance.services import (
     cancel_invoice,
     handle_accounting_workflow,
@@ -95,6 +97,7 @@ from modules.hr.models import (
     CareerTransitionRequest,
     CareerTransitionType,
     CashAdvance,
+    CashAdvanceLine,
     CompanyHoliday,
     CompensationBenefit,
     ContractAllowance,
@@ -126,7 +129,11 @@ from modules.hr.models import (
     JobExperienceLevel,
     JobPosition,
     LeaveAllocation,
+    LeaveBlackoutPeriod,
+    LeaveBucket,
+    LeaveBucketConsumption,
     LeaveEncashment,
+    LeaveEncashmentBucket,
     LeaveMovement,
     LeaveOpeningBalance,
     LeaveRequest,
@@ -143,6 +150,8 @@ from modules.hr.models import (
     PayrollPeriod,
     PayrollReportTemplate,
     PayrollRun,
+    PayrollRunChecklistItem,
+    PayrollRunPreviewLine,
     PayrollVariable,
     Payslip,
     RawAttendance,
@@ -165,6 +174,8 @@ from modules.hr.models import (
     WorkPattern,
     WorkSchedule,
 )
+from modules.hr.cash_advances import save_cash_advance_lines, validate_cash_advance_lines
+from modules.hr.forms import CashAdvanceForm, CashAdvanceLineForm, CashAdvanceLineFormSet
 from modules.hr.change_requests import (
     initialize_employee_relation_drafts,
     serialize_employee_value,
@@ -173,12 +184,29 @@ from modules.hr.change_requests import (
 from modules.hr.career_transitions import transition_career_request
 from modules.hr.attendance_changes import transition_attendance_change_request
 from modules.hr.contracts import add_contract_allowance_version, transition_employment_contract
+from modules.hr.leave_requests import transition_leave_request
+from modules.hr.leave_encashments import transition_leave_encashment
+from modules.hr.leave_opening_balances import finalize_leave_opening_balance
+from modules.hr.payroll_runs import (
+    check_payroll_run,
+    post_generated_payroll_accrual,
+    start_payroll_generation,
+    start_payroll_preview,
+)
+from modules.hr.payroll_payments import prepare_payroll_disbursement, post_payroll_disbursement
+from modules.hr.lifecycle_checklists import complete_lifecycle_task, transition_lifecycle_process
+from modules.hr.document_lifecycle import transition_employee_document
+from modules.hr.leave_buckets import current_allocation_availability
 from modules.hr.forms import (
     AttendanceChangeRequestForm,
     CareerTransitionRequestForm,
     ContractAllowanceForm,
     EmployeeChangeRequestForm,
+    EmployeeDocumentForm,
     EmploymentContractForm,
+    LeaveAllocationForm,
+    LeaveEncashmentForm,
+    LeaveRequestForm,
     RawAttendanceForm,
 )
 from modules.hr.raw_attendance import process_raw_attendance
@@ -273,6 +301,18 @@ APPROVAL_WORKFLOW = {
     "reset": {"label": "Reset to Draft", "from": ["rejected", "cancelled"], "to": "draft"},
 }
 
+LEAVE_ENCASHMENT_WORKFLOW = {
+    "submit": {"label": "Submit", "from": ["draft"], "to": "submitted", "primary": True},
+    "approve": {"label": "Approve", "from": ["submitted"], "to": "approved", "primary": True},
+    "reject": {"label": "Refuse", "from": ["submitted"], "to": "rejected"},
+    "cancel": {"label": "Cancel", "from": ["draft", "submitted", "approved", "waiting_for_payroll"], "to": "cancelled"},
+    "assign-payroll": {"label": "Assign to Payroll", "from": ["approved"], "to": "waiting_for_payroll"},
+}
+
+LEAVE_OPENING_BALANCE_WORKFLOW = {
+    "finalize": {"label": "Finalize Opening Balance", "from": ["draft"], "to": "finalized", "primary": True},
+}
+
 EMPLOYMENT_CONTRACT_WORKFLOW = {
     "submit": {"label": "Submit for Approval", "from": ["draft"], "to": "submitted", "primary": True},
     "approve": {"label": "Approve & Activate", "from": ["submitted"], "to": "active", "primary": True},
@@ -284,11 +324,13 @@ EMPLOYMENT_CONTRACT_WORKFLOW = {
 }
 
 PAYROLL_RUN_WORKFLOW = {
-    "calculate": {"label": "Start Calculation", "from": ["draft"], "to": "calculating", "primary": True},
+    "calculate": {"label": "Run Checklist", "from": ["draft", "calculating"], "to": "calculating", "primary": True},
     "mark-ready": {"label": "Mark Ready", "from": ["calculating"], "to": "ready", "primary": True},
-    "post": {"label": "Post Payroll", "from": ["ready"], "to": "posted", "primary": True},
-    "cancel": {"label": "Cancel", "from": ["draft", "calculating", "ready"], "to": "cancelled"},
-    "reset": {"label": "Reset to Draft", "from": ["cancelled"], "to": "draft"},
+    "preview": {"label": "Build Preview", "from": ["ready"], "to": "previewing", "primary": True},
+    "generate": {"label": "Generate Payslips", "from": ["previewed"], "to": "generating", "primary": True},
+    "post": {"label": "Post Payroll Accrual", "from": ["generated"], "to": "posted", "primary": True},
+    "prepare-payment": {"label": "Prepare Payment", "from": ["posted"], "to": "posted", "primary": True},
+    "cancel": {"label": "Cancel", "from": ["draft", "calculating", "ready", "previewed"], "to": "cancelled"},
 }
 
 TRAINING_WORKFLOW = {
@@ -425,6 +467,7 @@ ENTITY_CONFIG = {
         "columns": [("employee_id", "Employee ID"), ("name", "Name"), ("branch", "Branch"), ("department_record", "Department"), ("job_position", "Position"), ("supervisor", "Manager"), ("status", "Status")],
         "search": ["employee_id", "name", "department", "position", "branch__name", "department_record__name", "job_position__name"],
         "select_related": ["branch", "department_record", "job_position", "supervisor"],
+        "deletable": False,
     },
     "attendance": {
         "model": Attendance,
@@ -465,11 +508,16 @@ ENTITY_CONFIG = {
         "model": LeaveRequest,
         "title": "Leave Requests",
         "singular": "Leave Request",
-        "columns": [("employee", "Employee"), ("leave_type", "Type"), ("start_date", "Start"), ("end_date", "End"), ("days", "Days"), ("status", "Status")],
+        "columns": [("employee", "Employee"), ("leave_type", "Type"), ("start_date", "Start"), ("end_date", "End"), ("days", "Days"), ("attachment_name", "Evidence"), ("status", "Status")],
         "search": ["employee__employee_id", "employee__name", "leave_type"],
-        "form_fields": ["employee", "leave_type", "start_date", "end_date", "days", "reason"],
-        "select_related": ["employee", "approver"],
-        "workflow": APPROVAL_WORKFLOW,
+        "form": LeaveRequestForm,
+        "select_related": ["employee", "leave_type_record", "approver"],
+        "defer": ["attachment_content"],
+        "workflow": {
+            **{key: APPROVAL_WORKFLOW[key] for key in ("submit", "approve", "reject")},
+            "cancel": {"label": "Cancel", "from": ["draft", "submitted", "approved"], "to": "cancelled"},
+        },
+        "workflow_locked_statuses": {"submitted", "approved", "rejected", "cancelled"},
     },
     "overtime": {
         "model": OvertimeRequest,
@@ -552,8 +600,18 @@ ENTITY_CONFIG = {
         "singular": "Employee Document",
         "columns": [("employee", "Employee"), ("document_type", "Document Type"), ("document_number", "Number"), ("expiry_date", "Expiry"), ("status", "Status"), ("verified", "Verified")],
         "search": ["employee__employee_id", "employee__name", "document_type__name", "document_number"],
-        "form_fields": ["employee", "document_type", "document_number", "issued_date", "expiry_date", "attachment_url", "verified", "status", "replaced_by", "notes"],
+        "form": EmployeeDocumentForm,
+        "defer": ["attachment_content"],
         "select_related": ["employee", "document_type", "replaced_by"],
+        "workflow": {
+            "verify": {"label": "Verify Document", "from": ["draft"], "to": "active", "primary": True},
+            "expire": {"label": "Mark Expired", "from": ["active"], "to": "expired"},
+            "replace": {"label": "Replace with Draft", "from": ["active"], "to": "replaced"},
+            "archive": {"label": "Archive Document", "from": ["draft", "active", "expired", "replaced"], "to": "archived"},
+            "unarchive": {"label": "Restore Document", "from": ["archived"], "to": "active"},
+        },
+        "workflow_locked_statuses": {"active", "expired", "replaced", "archived"},
+        "deletable": False,
     },
     "employee-disciplinary": {
         "model": EmployeeDisciplinary,
@@ -570,7 +628,7 @@ ENTITY_CONFIG = {
         "singular": "Employee Checklist",
         "columns": [("name", "Checklist"), ("lifecycle", "Lifecycle"), ("responsible_role", "Responsible Role"), ("sequence", "Sequence"), ("active", "Active")],
         "search": ["name", "description", "responsible_role"],
-        "form_fields": ["company", "name", "lifecycle", "description", "responsible_role", "sequence", "active"],
+        "form_fields": ["company", "name", "lifecycle", "description", "responsible_role", "sequence", "requires_evidence", "active"],
         "select_related": ["company"],
     },
     "employee-onboarding": {
@@ -579,9 +637,15 @@ ENTITY_CONFIG = {
         "singular": "Onboarding Process",
         "columns": [("employee", "Employee"), ("start_date", "Start Date"), ("owner", "Owner"), ("progress", "Progress %"), ("status", "Status")],
         "search": ["employee__employee_id", "employee__name", "owner__username"],
-        "form_fields": ["employee", "start_date", "owner", "progress", "notes"],
+        "form_fields": ["employee", "start_date", "owner", "notes"],
         "select_related": ["employee", "owner"],
-        "workflow": APPROVAL_WORKFLOW,
+        "workflow": {
+            "submit": {"label": "Start Onboarding", "from": ["draft", "submitted"], "to": "submitted", "primary": True},
+            "complete": {"label": "Complete Onboarding", "from": ["submitted"], "to": "approved"},
+            "cancel": {"label": "Cancel", "from": ["draft", "submitted"], "to": "cancelled"},
+        },
+        "workflow_locked_statuses": {"submitted", "approved", "rejected", "cancelled"},
+        "deletable": False,
     },
     "employee-offboarding": {
         "model": EmployeeOffboarding,
@@ -589,9 +653,15 @@ ENTITY_CONFIG = {
         "singular": "Offboarding Process",
         "columns": [("employee", "Employee"), ("last_working_date", "Last Working Date"), ("owner", "Owner"), ("progress", "Progress %"), ("status", "Status")],
         "search": ["employee__employee_id", "employee__name", "owner__username", "reason"],
-        "form_fields": ["employee", "last_working_date", "owner", "reason", "progress", "notes"],
+        "form_fields": ["employee", "last_working_date", "owner", "reason", "notes"],
         "select_related": ["employee", "owner"],
-        "workflow": APPROVAL_WORKFLOW,
+        "workflow": {
+            "submit": {"label": "Start Offboarding", "from": ["draft", "submitted"], "to": "submitted", "primary": True},
+            "complete": {"label": "Complete Offboarding", "from": ["submitted"], "to": "approved"},
+            "cancel": {"label": "Cancel", "from": ["draft", "submitted"], "to": "cancelled"},
+        },
+        "workflow_locked_statuses": {"submitted", "approved", "rejected", "cancelled"},
+        "deletable": False,
     },
     "raw-attendance": {
         "model": RawAttendance,
@@ -639,18 +709,29 @@ ENTITY_CONFIG = {
         "singular": "Leave Type",
         "columns": [("code", "Code"), ("name", "Leave Type"), ("annual_entitlement", "Annual Entitlement"), ("paid", "Paid"), ("active", "Active")],
         "search": ["code", "name"],
-        "form_fields": ["company", "code", "name", "annual_entitlement", "paid", "requires_attachment", "active"],
+        "form_fields": ["company", "code", "name", "annual_entitlement", "day_count_by", "eligible_gender", "min_tenure_value", "min_tenure_unit", "max_days_per_request", "max_consecutive_days", "cooling_period_days", "notice_flat_days", "allow_past_date", "max_past_days", "allow_leave_encashment", "max_encashment_days", "min_retained_balance", "allow_partial_encashment", "encashment_calculation_method", "flat_cash_amount", "paid", "requires_attachment", "attachment_trigger", "attachment_exceed_n_days", "max_file_size_mb", "active"],
         "select_related": ["company"],
+    },
+    "leave-blackout-periods": {
+        "model": LeaveBlackoutPeriod,
+        "title": "Leave Blackout Periods",
+        "singular": "Leave Blackout Period",
+        "columns": [("leave_type", "Leave Type"), ("date_start", "Start"), ("date_end", "End"), ("reason", "Reason"), ("active", "Active")],
+        "search": ["leave_type__name", "leave_type__code", "reason"],
+        "form_fields": ["leave_type", "date_start", "date_end", "reason", "active"],
+        "select_related": ["leave_type", "leave_type__company"],
     },
     "leave-allocations": {
         "model": LeaveAllocation,
         "title": "Leave Allocations",
         "singular": "Leave Allocation",
-        "columns": [("employee", "Employee"), ("leave_type", "Leave Type"), ("year", "Year"), ("allocated_days", "Allocated"), ("used_days", "Used"), ("balance_days", "Balance"), ("status", "Status")],
+        "columns": [("employee", "Employee"), ("leave_type", "Leave Type"), ("year", "Year"), ("allocated_days", "Allocated"), ("used_days", "Used"), ("balance_days", "Unconsumed"), ("available_days", "Available Today"), ("expires_on", "Expires"), ("status", "Status")],
         "search": ["employee__employee_id", "employee__name", "leave_type__name"],
-        "form_fields": ["employee", "leave_type", "year", "allocated_days", "used_days"],
+        "form": LeaveAllocationForm,
         "select_related": ["employee", "leave_type"],
         "workflow": APPROVAL_WORKFLOW,
+        "workflow_locked_statuses": {"submitted", "approved", "rejected", "cancelled"},
+        "deletable": False,
     },
     "overtime-rules": {
         "model": OvertimeRule,
@@ -704,7 +785,8 @@ ENTITY_CONFIG = {
         "singular": "Cash Advance",
         "columns": [("number", "Number"), ("employee", "Employee"), ("request_date", "Request Date"), ("amount", "Amount"), ("settlement_due_date", "Settlement Due"), ("status", "Status")],
         "search": ["number", "employee__employee_id", "employee__name", "purpose"],
-        "form_fields": ["employee", "number", "request_date", "amount", "purpose", "settlement_due_date", "approver"],
+        "form": CashAdvanceForm,
+        "form_fields": ["employee", "number", "request_date", "purpose", "settlement_due_date"],
         "select_related": ["employee", "approver"],
         "workflow": {
             "submit": {"label": "Submit", "from": ["draft"], "to": "submitted", "primary": True},
@@ -755,7 +837,7 @@ ENTITY_CONFIG = {
         "singular": "Document Type",
         "columns": [("code", "Code"), ("name", "Document Type"), ("mandatory", "Mandatory"), ("has_expiry", "Has Expiry"), ("active", "Active")],
         "search": ["code", "name"],
-        "form_fields": ["company", "code", "name", "mandatory", "has_expiry", "active"],
+        "form_fields": ["company", "code", "name", "mandatory", "has_expiry", "allow_multiple_versions", "active"],
         "select_related": ["company"],
     },
     "hr-settings": {
@@ -854,21 +936,44 @@ ENTITY_CONFIG = {
         "model": ExpenseProduct,
         "title": "Expense Products",
         "singular": "Expense Product",
-        "columns": [("code", "Code"), ("name", "Expense Product"), ("category", "Category"), ("maximum_amount", "Maximum Amount"), ("receipt_required", "Receipt"), ("active", "Active")],
+        "columns": [("code", "Code"), ("name", "Expense Product"), ("activity_type", "Activity"), ("category", "Category"), ("maximum_amount", "Maximum Amount"), ("receipt_required", "Receipt"), ("active", "Active")],
         "search": ["code", "name", "category"],
-        "form_fields": ["company", "code", "name", "category", "maximum_amount", "receipt_required", "active"],
+        "form_fields": ["company", "code", "name", "activity_type", "category", "standard_price", "maximum_amount", "receipt_required", "active"],
         "select_related": ["company"],
     },
     "payroll-runs": {
         "model": PayrollRun,
         "title": "Payroll Runs",
         "singular": "Payroll Run",
-        "columns": [("number", "Number"), ("period", "Period"), ("company", "Company"), ("employee_count", "Employees"), ("net_amount", "Net Amount"), ("status", "Status")],
+        "columns": [("number", "Number"), ("period", "Period"), ("company", "Company"), ("employee_count", "Employees"), ("checklist_blocking_count", "Check Blockers"), ("preview_count", "Previewed"), ("generated_count", "Generated"), ("net_amount", "Net Amount"), ("status", "Status")],
         "search": ["number", "period__name", "company__name"],
-        "form_fields": ["company", "period", "number", "employee_count", "gross_amount", "deduction_amount", "net_amount", "notes"],
+        "form_fields": ["company", "period", "number", "notes"],
         "select_related": ["company", "period"],
         "workflow": PAYROLL_RUN_WORKFLOW,
-        "workflow_locked_statuses": {"posted", "cancelled"},
+        "workflow_locked_statuses": {"calculating", "ready", "previewing", "previewed", "generating", "generated", "failed", "posted", "cancelled"},
+        "deletable": False,
+    },
+    "payroll-run-checklist": {
+        "model": PayrollRunChecklistItem,
+        "title": "Payroll Run Checklist",
+        "singular": "Payroll Checklist Item",
+        "columns": [("run", "Payroll Run"), ("name", "Check"), ("severity", "Severity"), ("state", "Result"), ("affected_count", "Affected"), ("checked_at", "Checked")],
+        "search": ["run__number", "code", "name"],
+        "select_related": ["run"],
+        "creatable": False,
+        "editable": False,
+        "deletable": False,
+    },
+    "payroll-run-preview": {
+        "model": PayrollRunPreviewLine,
+        "title": "Payroll Run Preview",
+        "singular": "Payroll Preview Line",
+        "columns": [("run", "Payroll Run"), ("employee", "Employee"), ("basic_salary", "Basic"), ("allowance_amount", "Allowance"), ("encashment_amount", "Encashment"), ("deduction_amount", "Deduction"), ("net_amount", "Net"), ("state", "Result"), ("issue", "Issue")],
+        "search": ["run__number", "employee__employee_id", "employee__name"],
+        "select_related": ["run", "employee"],
+        "creatable": False,
+        "editable": False,
+        "deletable": False,
     },
     "compensation-benefits": {
         "model": CompensationBenefit,
@@ -915,7 +1020,8 @@ ENTITY_CONFIG = {
         "singular": "Expense Claim",
         "columns": [("reference", "Reference"), ("claim_date", "Date"), ("employee", "Employee"), ("category", "Category"), ("amount", "Amount"), ("status", "Status")],
         "search": ["reference", "employee__employee_id", "employee__name", "category"],
-        "form_fields": ["company", "employee", "product", "cash_advance", "reference", "claim_date", "category", "amount", "description", "status"],
+        "form": ExpenseClaimForm,
+        "form_fields": ["company", "employee", "cash_advance", "reference", "claim_date", "category", "description"],
         "select_related": ["company", "employee", "product", "cash_advance"],
         "workflow": {
             "submit": {"label": "Submit", "from": ["draft"], "to": "submitted", "primary": True},
@@ -1152,6 +1258,7 @@ ENTITY_CONFIG = {
         "form_fields": ["company", "name", "description", "active"],
         "select_related": ["company"],
         "admin_detail": True,
+        "creatable": False,
     },
     "ai-agents": {
         "model": AIAgent,
@@ -1161,6 +1268,7 @@ ENTITY_CONFIG = {
         "search": ["name", "role", "model_name", "workspace__name"],
         "form_fields": ["workspace", "name", "role", "provider", "model_name", "system_prompt", "allowed_tools", "active"],
         "select_related": ["workspace"],
+        "creatable": False,
     },
     "ai-conversations": {
         "model": AIConversation,
@@ -1171,6 +1279,7 @@ ENTITY_CONFIG = {
         "form_fields": ["agent", "user", "title", "status", "last_activity_at"],
         "select_related": ["agent", "user"],
         "admin_detail": True,
+        "creatable": False,
     },
     "ai-tasks": {
         "model": AITask,
@@ -1180,6 +1289,7 @@ ENTITY_CONFIG = {
         "search": ["title", "task_type", "agent__name"],
         "form_fields": ["agent", "title", "task_type", "status", "input_data", "result_data", "error_message", "started_at", "completed_at"],
         "select_related": ["agent"],
+        "creatable": False,
     },
     # Localization
     "localization-packs": {
@@ -1392,10 +1502,12 @@ ENTITY_CONFIG.update(
             "model": LeaveOpeningBalance,
             "title": "Leave Opening Balances",
             "singular": "Leave Opening Balance",
-            "columns": [("employee", "Employee"), ("leave_type", "Leave Type"), ("year", "Year"), ("balance_days", "Balance"), ("status", "Status")],
+            "columns": [("employee", "Employee"), ("leave_type", "Leave Type"), ("year", "Year"), ("balance_days", "Available"), ("opening_used", "Previously Used"), ("status", "Status")],
             "search": ["employee__employee_id", "employee__name", "leave_type__name"],
-            "form_fields": ["employee", "leave_type", "year", "balance_days", "status", "notes"],
+            "form_fields": ["employee", "leave_type", "year", "balance_days", "opening_used", "cutoff_date", "expiry_date", "notes"],
             "select_related": ["employee", "leave_type"],
+            "workflow": LEAVE_OPENING_BALANCE_WORKFLOW,
+            "workflow_locked_statuses": {"finalized", "locked"},
         },
         "leave-movements": {
             "model": LeaveMovement,
@@ -1405,16 +1517,57 @@ ENTITY_CONFIG.update(
             "search": ["employee__employee_id", "employee__name", "leave_type__name", "reference"],
             "form_fields": ["employee", "leave_type", "movement_date", "movement_type", "days", "reference", "notes"],
             "select_related": ["employee", "leave_type"],
+            "creatable": False,
+            "editable": False,
+            "deletable": False,
+        },
+        "leave-buckets": {
+            "model": LeaveBucket,
+            "title": "Leave Count Buckets",
+            "singular": "Leave Count Bucket",
+            "columns": [("employee", "Employee"), ("leave_type", "Leave Type"), ("original_days", "Granted"), ("consumed_days", "Consumed"), ("forfeited_days", "Forfeited"), ("remaining_days", "Remaining"), ("expiry_date", "Expires"), ("status", "Status")],
+            "search": ["employee__employee_id", "employee__name", "leave_type__name", "cycle_key"],
+            "form_fields": ["employee", "leave_type", "allocation", "year", "source", "cycle_key", "original_days", "consumed_days", "forfeited_days", "start_valid_date", "expiry_date", "status"],
+            "select_related": ["employee", "leave_type", "allocation"],
+            "creatable": False,
+            "editable": False,
+            "deletable": False,
+        },
+        "leave-bucket-consumptions": {
+            "model": LeaveBucketConsumption,
+            "title": "Leave Bucket Consumption",
+            "singular": "Leave Bucket Consumption",
+            "columns": [("leave_request", "Leave Request"), ("bucket", "Bucket"), ("days", "Days"), ("reversed_at", "Reversed At")],
+            "search": ["leave_request__employee__employee_id", "leave_request__employee__name", "bucket__cycle_key"],
+            "form_fields": ["leave_request", "bucket", "days", "reversed_at"],
+            "select_related": ["leave_request__employee", "bucket__employee", "bucket__leave_type"],
+            "creatable": False,
+            "editable": False,
+            "deletable": False,
         },
         "leave-encashments": {
             "model": LeaveEncashment,
             "title": "Leave Encashments",
             "singular": "Leave Encashment",
-            "columns": [("request_date", "Date"), ("employee", "Employee"), ("leave_type", "Leave Type"), ("days", "Days"), ("amount", "Amount"), ("status", "Status")],
-            "search": ["employee__employee_id", "employee__name", "leave_type__name"],
-            "form_fields": ["employee", "leave_type", "request_date", "days", "amount", "approver"],
+            "columns": [("reference", "Reference"), ("request_date", "Date"), ("employee", "Employee"), ("leave_type", "Leave Type"), ("days", "Days"), ("amount", "Amount"), ("status", "Status")],
+            "search": ["reference", "employee__employee_id", "employee__name", "leave_type__name"],
+            "form": LeaveEncashmentForm,
             "select_related": ["employee", "leave_type", "approver"],
-            "workflow": APPROVAL_WORKFLOW,
+            "workflow": LEAVE_ENCASHMENT_WORKFLOW,
+            "workflow_locked_statuses": {"submitted", "approved", "waiting_for_payroll", "payroll_generated", "rejected", "cancelled"},
+            "deletable": False,
+        },
+        "leave-encashment-buckets": {
+            "model": LeaveEncashmentBucket,
+            "title": "Encashment Bucket Reservations",
+            "singular": "Encashment Bucket Reservation",
+            "columns": [("encashment", "Encashment"), ("bucket", "Bucket"), ("days", "Days"), ("status", "Status"), ("posted_at", "Posted"), ("reversed_at", "Reversed")],
+            "search": ["encashment__reference", "encashment__employee__employee_id", "encashment__employee__name"],
+            "form_fields": ["encashment", "bucket", "days", "status", "posted_at", "reversed_at"],
+            "select_related": ["encashment__employee", "bucket__employee", "bucket__leave_type"],
+            "creatable": False,
+            "editable": False,
+            "deletable": False,
         },
         "payroll-variables": {
             "model": PayrollVariable,
@@ -1551,6 +1704,30 @@ ENTITY_CONFIG.update(LOCALIZATION_ENTITY_CONFIG)
 
 
 DOCUMENT_CONFIG = {
+    "expenses": {
+        "line_model": ExpenseClaimLine,
+        "line_relation": "lines",
+        "header_fields": ["company", "employee", "cash_advance", "reference", "claim_date", "category", "description"],
+        "line_fields": ["date", "description", "product", "quantity", "unit_price"],
+        "line_title": "Expense Lines",
+        "line_select_related": ("product",),
+        "total_fields": [("Claim Total", "amount")],
+        "editable_statuses": [ExpenseClaim.Status.DRAFT],
+        "actions": ENTITY_CONFIG["expenses"]["workflow"],
+        "has_pdf": False,
+    },
+    "cash-advances": {
+        "line_model": CashAdvanceLine,
+        "line_relation": "lines",
+        "header_fields": ["employee", "number", "request_date", "purpose", "settlement_due_date"],
+        "line_fields": ["sequence", "product", "quantity", "request_amount"],
+        "line_title": "Advance Request Lines",
+        "line_select_related": ("product",),
+        "total_fields": [("Total Requested", "amount")],
+        "editable_statuses": ["draft"],
+        "actions": ENTITY_CONFIG["cash-advances"]["workflow"],
+        "has_pdf": False,
+    },
     "sales": {
         "line_model": SaleOrderLine,
         "line_relation": "lines",
@@ -2173,6 +2350,16 @@ def _load_delete_targets(user, entity, config, selected_ids, *, for_update=False
 def _delete_block_reason(entity, config, instance):
     if entity == "employees":
         return "Employee records are retained for HR, payroll, and approval audit history; archive the employee instead."
+    if entity == "cash-advances" and instance.status != "draft":
+        return "Only draft cash advances can be deleted; use the workflow for later states."
+    if entity == "expenses" and instance.status != ExpenseClaim.Status.DRAFT:
+        return "Only draft expense claims can be deleted; use the workflow for later states."
+    if entity == "leave-requests" and instance.status != LeaveRequest.Status.DRAFT:
+        return "Only draft leave requests can be deleted; use the workflow for later states."
+    if entity == "leave-opening-balances" and instance.status != LeaveOpeningBalance.Status.DRAFT:
+        return "Finalized opening balances cannot be deleted."
+    if entity == "payslips" and instance.payroll_run_id:
+        return "Generated payslips cannot be deleted; retain their payroll audit history."
     if entity == "attendance" and instance.from_raw_attendance:
         return "Raw-derived attendance must be changed through an attendance correction request."
     if (
@@ -2195,6 +2382,7 @@ def _delete_error_message(error):
 def _can(user, action, model, entity=None):
     return (
         user.has_perm(f"{model._meta.app_label}.{action}_{model._meta.model_name}")
+        and (entity not in {"ai-workspaces", "ai-agents", "ai-conversations", "ai-tasks"} or action == "view")
         and can_approval_entity_action(user, entity, action)
         and can_hr_entity_action(user, entity, action)
         and can_purchase_entity_action(user, entity, action)
@@ -2246,6 +2434,8 @@ def _hr_audit_company_id(instance):
         return instance.company_id
     relation_paths = (
         "employee.company_id",
+        "onboarding.employee.company_id",
+        "offboarding.employee.company_id",
         "contract.employee.company_id",
         "payroll_run.company_id",
         "request.employee.company_id",
@@ -2292,10 +2482,10 @@ def _form_class(config):
 def _document_context(request, entity, config, instance=None, mode="Create"):
     document = DOCUMENT_CONFIG[entity]
     model = config["model"]
+    is_derived_line_total = entity in {"cash-advances", "expenses"}
     header_form_class = (
-        SaleOrderDocumentForm
-        if entity == "sales"
-        else modelform_factory(model, form=StyledModelForm, fields=document["header_fields"])
+        SaleOrderDocumentForm if entity == "sales" else
+        config.get("form") or modelform_factory(model, form=StyledModelForm, fields=document["header_fields"])
     )
     form = header_form_class(request.POST or None, request.FILES or None, instance=instance)
     section_definitions = document.get("line_sections") or [{
@@ -2307,9 +2497,19 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
         "fk_name": document.get("fk_name"),
     }]
     line_sections = []
+    # scale-guard: allow SG001 — line sections are fixed code configuration, never a database-sized collection.
     for index, section in enumerate(section_definitions):
         prefix = f"document_lines_{index}" if document.get("line_sections") else "document_lines"
-        line_form_class = SaleOrderLineForm if entity == "sales" and index == 0 else StyledModelForm
+        line_form_class = (
+            SaleOrderLineForm if entity == "sales" and index == 0 else
+            CashAdvanceLineForm if entity == "cash-advances" and index == 0 else
+            ExpenseClaimLineForm if entity == "expenses" and index == 0 else StyledModelForm
+        )
+        formset_options = (
+            {"formset": CashAdvanceLineFormSet if entity == "cash-advances" else ExpenseClaimLineFormSet,
+             "max_num": 100, "validate_max": True, "absolute_max": 120}
+            if is_derived_line_total else {}
+        )
         formset_class = inlineformset_factory(
             model,
             section["line_model"],
@@ -2318,6 +2518,7 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
             extra=section.get("extra", 1),
             can_delete=True,
             fk_name=section.get("fk_name"),
+            **formset_options,
         )
         line_queryset = section["line_model"].objects.all()
         related = section.get("line_select_related", ())
@@ -2328,7 +2529,7 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
         formset = formset_class(
             request.POST or None,
             request.FILES or None,
-            instance=instance,
+            instance=form.instance if is_derived_line_total else instance,
             prefix=prefix,
             queryset=line_queryset,
         )
@@ -2358,13 +2559,23 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
         messages.error(request, "This document is locked by its workflow status.")
         return None, redirect("entity_edit", entity=entity, pk=instance.pk)
 
-    formsets_valid = all(section["formset"].is_valid() for section in line_sections)
-    if editable and form.is_valid() and formsets_valid:
+    form_valid = form.is_valid() if editable and request.method == "POST" else False
+    formsets_valid = all(section["formset"].is_valid() for section in line_sections) if form_valid else False
+    if editable and form_valid and formsets_valid:
         with transaction.atomic():
-            saved = form.save()
+            saved = form.save(commit=False) if is_derived_line_total else form.save()
+            if is_derived_line_total:
+                saved.amount = formset.total_amount
+                saved.full_clean()
+                saved.save()
             for section in line_sections:
                 section["formset"].instance = saved
-                section["formset"].save()
+                if entity == "cash-advances":
+                    save_cash_advance_lines(saved, section["formset"])
+                elif entity == "expenses":
+                    save_expense_claim_lines(saved, section["formset"])
+                else:
+                    section["formset"].save()
             if model._meta.app_label == "gsshop_construction":
                 handle_construction_document_save(entity, saved, request.user)
         saved.refresh_from_db()
@@ -2407,6 +2618,48 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
         "developer_meta": developer_metadata(model, entity=entity, instance=instance),
     }
     return context, None
+
+
+@require_GET
+@login_required
+def expense_claim_product_search(request):
+    if not _can(request.user, "view", ExpenseClaim, "expenses"):
+        return JsonResponse({"detail": "You do not have access to expense claims."}, status=403)
+    line_form = ExpenseClaimLineForm()
+    _scope_form(line_form, request.user, "expenses")
+    products = line_form.fields["product"].queryset
+    product_id = request.GET.get("id", "").strip()
+    query = request.GET.get("q", "").strip()[:100]
+    if product_id.isdigit():
+        products = products.filter(pk=int(product_id))
+    elif query:
+        products = products.filter(Q(code__icontains=query) | Q(name__icontains=query))
+    results = [
+        {"id": row["id"], "text": f"{row['code']} — {row['name']}", "standard_price": str(row["standard_price"])}
+        for row in products.order_by("name", "pk").values("id", "code", "name", "standard_price")[:20]
+    ]
+    return JsonResponse({"results": results})
+
+
+@require_GET
+@login_required
+def expense_product_search(request):
+    if not _can(request.user, "view", CashAdvance, "cash-advances"):
+        return JsonResponse({"detail": "You do not have access to cash advances."}, status=403)
+    line_form = CashAdvanceLineForm()
+    _scope_form(line_form, request.user, "cash-advances")
+    products = line_form.fields["product"].queryset
+    product_id = request.GET.get("id", "").strip()
+    query = request.GET.get("q", "").strip()[:100]
+    if product_id.isdigit():
+        products = products.filter(pk=int(product_id))
+    elif query:
+        products = products.filter(Q(code__icontains=query) | Q(name__icontains=query))
+    results = [
+        {"id": row["id"], "text": f"{row['code']} — {row['name']}", "standard_price": str(row["standard_price"])}
+        for row in products.order_by("name", "pk").values("id", "code", "name", "standard_price")[:20]
+    ]
+    return JsonResponse({"results": results})
 
 
 @require_GET
@@ -2518,8 +2771,15 @@ def entity_list(request, entity):
     parent_request_id = request.GET.get("request", "").strip()
     if config.get("parent_request_filter") and parent_request_id.isdecimal():
         queryset = queryset.filter(request_id=int(parent_request_id))
+    if entity == "employee-lifecycle-tasks":
+        for parent in ("onboarding", "offboarding"):
+            parent_id = request.GET.get(parent, "").strip()
+            if parent_id.isdecimal():
+                queryset = queryset.filter(**{f"{parent}_id": int(parent_id)})
     if config.get("select_related"):
         queryset = queryset.select_related(*config["select_related"])
+    if config.get("defer"):
+        queryset = queryset.defer(*config["defer"])
     query = request.GET.get("q", "").strip()
     if query:
         filters = Q()
@@ -2529,6 +2789,11 @@ def entity_list(request, entity):
     if not queryset.ordered:
         queryset = queryset.order_by("pk")
     page = Paginator(queryset, 25).get_page(request.GET.get("page"))
+    page_items = list(page.object_list)
+    if entity == "leave-allocations":
+        availability = current_allocation_availability(page_items)
+        for allocation in page_items:
+            allocation.available_days = availability[allocation.pk]
     columns = [
         {"label": label, **developer_field_metadata(model, field)}
         for field, label in config["columns"]
@@ -2542,7 +2807,7 @@ def entity_list(request, entity):
                 for column in columns
             ],
         }
-        for obj in page.object_list
+        for obj in page_items
     ]
     context = {
         "entity": entity,
@@ -2692,6 +2957,8 @@ def entity_edit(request, entity, pk):
         return _edit_attendance_change_request(request, config, scoped_queryset, pk)
     if entity == "employee-change-requests" and request.method == "POST":
         return _edit_employee_change_request(request, config, scoped_queryset, pk)
+    if entity == "employee-documents" and request.method == "POST":
+        return _edit_employee_document(request, config, scoped_queryset, pk)
     if entity == "employee-change-requests":
         scoped_queryset = scoped_queryset.prefetch_related(
             "change_lines",
@@ -2703,6 +2970,11 @@ def entity_edit(request, entity, pk):
             "dependent_changes",
             "education_changes",
         )
+    if entity in {"cash-advances", "expenses"} and request.method == "POST":
+        with transaction.atomic():
+            instance = get_object_or_404(scoped_queryset.select_for_update(), pk=pk)
+            context, response = _document_context(request, entity, config, instance=instance, mode="Edit")
+            return response or render(request, "core/document_form.html", context)
     instance = get_object_or_404(scoped_queryset, pk=pk)
     if entity in DOCUMENT_CONFIG:
         context, response = _document_context(request, entity, config, instance=instance, mode="Edit")
@@ -2710,6 +2982,8 @@ def entity_edit(request, entity, pk):
     current_status = getattr(instance, config.get("workflow_field", "status"), None)
     locked_statuses = set(config.get("workflow_locked_statuses", {"approved", "cancelled"}))
     workflow_locked = (entity == "attendance" and instance.from_raw_attendance) or (
+        entity == "payslips" and instance.payroll_run_id is not None
+    ) or (
         entity == "contract-allowances"
         and instance.contract.status == EmploymentContract.Status.ACTIVE
     ) or (
@@ -2735,6 +3009,14 @@ def entity_edit(request, entity, pk):
         for key, definition in config.get("workflow", {}).items()
         if current_status in definition["from"] and _can_workflow(request.user, entity, key, instance)
     ]
+    lifecycle_tasks_preview = None
+    lifecycle_tasks_has_more = False
+    if entity in {"employee-onboarding", "employee-offboarding"}:
+        preview_rows = list(instance.checklist_tasks.order_by("sequence", "pk").only(
+            "id", "name", "sequence", "requires_evidence", "evidence_document_number", "status"
+        )[:51])
+        lifecycle_tasks_preview = preview_rows[:50]
+        lifecycle_tasks_has_more = len(preview_rows) > 50
     return render(
         request,
         "core/entity_form.html",
@@ -2747,9 +3029,41 @@ def entity_edit(request, entity, pk):
             "current_status": current_status,
             "workflow_actions": workflow_actions,
             "workflow_locked": workflow_locked,
+            "lifecycle_tasks_preview": lifecycle_tasks_preview,
+            "lifecycle_tasks_has_more": lifecycle_tasks_has_more,
             "developer_meta": developer_metadata(model, entity=entity, instance=instance),
         },
     )
+
+
+@transaction.atomic
+def _edit_employee_document(request, config, scoped_queryset, pk):
+    original = get_object_or_404(scoped_queryset.only("id", "employee_id"), pk=pk)
+    Employee.objects.select_for_update().get(pk=original.employee_id)
+    document = get_object_or_404(scoped_queryset.select_for_update(of=("self",)), pk=pk)
+    if document.status != EmployeeDocument.Status.DRAFT:
+        messages.error(request, "Only a draft employee document can be edited.")
+        return redirect("entity_edit", entity="employee-documents", pk=pk)
+    form = EmployeeDocumentForm(request.POST, request.FILES, instance=document)
+    _scope_form(form, request.user, "employee-documents")
+    if form.is_valid():
+        form.save()
+        messages.success(request, "Employee Document updated successfully.")
+        return redirect("entity_list", entity="employee-documents")
+    return render(request, "core/entity_form.html", {
+        "form": form,
+        "config": config,
+        "entity": "employee-documents",
+        "mode": "Edit",
+        "object": document,
+        "current_status": document.status,
+        "workflow_actions": [
+            {"key": key, **definition} for key, definition in config["workflow"].items()
+            if document.status in definition["from"] and _can_workflow(request.user, "employee-documents", key, document)
+        ],
+        "workflow_locked": False,
+        "developer_meta": developer_metadata(EmployeeDocument, entity="employee-documents", instance=document),
+    })
 
 
 @transaction.atomic
@@ -2955,7 +3269,7 @@ def entity_bulk_delete(request, entity):
             ]
             if blocked:
                 raise ValidationError(blocked[0])
-            # scale-guard: allow SG001 — per-instance delete guards must run; selection is capped at 25 records.
+            # scale-guard: allow SG003 — per-instance delete guards must run; selection is capped at 25 records.
             for target in targets:
                 target.delete()
     except (ValidationError, ProtectedError, RestrictedError, IntegrityError) as error:
@@ -3001,6 +3315,51 @@ def contract_attachment_download(request, pk, attachment_pk):
         raise Http404("Attachment not found.")
     queryset = _scope_queryset(request.user, "contracts", EmploymentContract.objects.all())
     return serve_contract_attachment(request, queryset, pk, attachment_pk)
+
+
+@require_GET
+@login_required
+def leave_request_attachment(request, pk):
+    if not _can(request.user, "view", LeaveRequest, "leave-requests"):
+        raise Http404("Attachment not found.")
+    queryset = _scope_queryset(
+        request.user,
+        "leave-requests",
+        LeaveRequest.objects.only(
+            "id", "employee_id", "attachment_name", "attachment_content_type", "attachment_content"
+        ),
+    )
+    leave_request = get_object_or_404(queryset, pk=pk)
+    if not leave_request.attachment_name or not leave_request.attachment_content:
+        raise Http404("Attachment not found.")
+    response = HttpResponse(
+        bytes(leave_request.attachment_content),
+        content_type=leave_request.attachment_content_type or "application/octet-stream",
+    )
+    response["Content-Disposition"] = content_disposition_header(True, leave_request.attachment_name)
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@require_GET
+@login_required
+def employee_document_attachment(request, pk):
+    if not _can(request.user, "view", EmployeeDocument, "employee-documents"):
+        raise Http404("Attachment not found.")
+    queryset = _scope_queryset(
+        request.user,
+        "employee-documents",
+        EmployeeDocument.objects.only(
+            "id", "employee_id", "attachment_name", "attachment_content_type", "attachment_content"
+        ),
+    )
+    document = get_object_or_404(queryset, pk=pk)
+    if not document.attachment_name or not document.attachment_content:
+        raise Http404("Attachment not found.")
+    response = HttpResponse(bytes(document.attachment_content), content_type=document.attachment_content_type)
+    response["Content-Disposition"] = content_disposition_header(True, document.attachment_name)
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @require_GET
@@ -3101,7 +3460,22 @@ def document_action(request, entity, pk, action):
             return redirect("entity_list", entity=entity)
         scoped_queryset = _scope_queryset(request.user, entity, model.objects.all())
         instance = get_object_or_404(scoped_queryset, pk=pk)
-        approval_engine_decision = uses_approval_engine(instance) and action in {"approve", "reject"}
+        # These records need domain transitions that also update balances,
+        # checklists, or contract state; the generic approval adapter must not
+        # bypass their workflow authorization.
+        local_workflow_entities = {
+            "attendance-change-requests",
+            "leave-requests",
+            "employee-onboarding",
+            "employee-offboarding",
+            "contracts",
+            "career-transition-requests",
+        }
+        approval_engine_decision = (
+            entity not in local_workflow_entities
+            and uses_approval_engine(instance)
+            and action in {"approve", "reject"}
+        )
         if not approval_engine_decision and not _can_workflow(request.user, entity, action, instance):
             messages.error(request, "Your role cannot perform that workflow approval action.")
             return redirect("entity_edit", entity=entity, pk=pk)
@@ -3136,6 +3510,138 @@ def document_action(request, entity, pk, action):
                         messages.error(request, "; ".join(exc.messages))
                         return redirect("entity_edit", entity=entity, pk=pk)
                     instance = locked
+                    updated = 1
+            elif entity == "attendance-change-requests":
+                locked = get_object_or_404(scoped_queryset.select_for_update(), pk=pk)
+                if locked.status != current_status:
+                    updated = 0
+                else:
+                    try:
+                        transition_attendance_change_request(locked, action, request.user)
+                    except ValidationError as exc:
+                        messages.error(request, "; ".join(exc.messages))
+                        return redirect("entity_edit", entity=entity, pk=pk)
+                    instance = locked
+                    updated = 1
+            elif entity == "leave-requests":
+                try:
+                    instance = transition_leave_request(
+                        instance, action, request.user, reason=request.POST.get("reason", "")
+                    )
+                except ValidationError as exc:
+                    messages.error(request, "; ".join(exc.messages))
+                    return redirect("entity_edit", entity=entity, pk=pk)
+                actual_status = instance.status
+                updated = 1
+            elif entity == "leave-encashments":
+                try:
+                    instance = transition_leave_encashment(instance, action, request.user)
+                except ValidationError as exc:
+                    messages.error(request, "; ".join(exc.messages))
+                    return redirect("entity_edit", entity=entity, pk=pk)
+                actual_status = instance.status
+                updated = 1
+            elif entity == "leave-opening-balances":
+                try:
+                    instance = finalize_leave_opening_balance(instance, request.user)
+                except ValidationError as exc:
+                    messages.error(request, "; ".join(exc.messages))
+                    return redirect("entity_edit", entity=entity, pk=pk)
+                actual_status = instance.status
+                updated = 1
+            elif entity == "payroll-runs" and action in {"calculate", "mark-ready", "preview", "generate", "post", "prepare-payment"}:
+                try:
+                    if action in {"calculate", "mark-ready"}:
+                        instance = check_payroll_run(instance, request.user, mark_ready=action == "mark-ready")
+                    elif action == "preview":
+                        instance = start_payroll_preview(instance, request.user)
+                    elif action == "generate":
+                        instance = start_payroll_generation(instance, request.user)
+                    elif action == "prepare-payment":
+                        prepare_payroll_disbursement(instance, request.user)
+                    else:
+                        instance = post_generated_payroll_accrual(instance, request.user)
+                except ValidationError as exc:
+                    messages.error(request, "; ".join(exc.messages))
+                    return redirect("entity_edit", entity=entity, pk=pk)
+                actual_status = instance.status
+                updated = 1
+            elif entity == "payroll-disbursements" and action == "confirm-payment":
+                try:
+                    instance = post_payroll_disbursement(
+                        instance, request.user, payment_reference=request.POST.get("payment_reference", "")
+                    )
+                except ValidationError as exc:
+                    messages.error(request, "; ".join(exc.messages))
+                    return redirect("entity_edit", entity=entity, pk=pk)
+                actual_status = instance.status
+                updated = 1
+            elif entity in {"employee-onboarding", "employee-offboarding"}:
+                try:
+                    instance = transition_lifecycle_process(instance, action, request.user)
+                except ValidationError as exc:
+                    messages.error(request, "; ".join(exc.messages))
+                    return redirect("entity_edit", entity=entity, pk=pk)
+                actual_status = instance.status
+                updated = 1
+            elif entity == "employee-lifecycle-tasks" and action == "complete":
+                try:
+                    instance = complete_lifecycle_task(
+                        instance, request.user, evidence_document_id=request.POST.get("evidence_document_id")
+                    )
+                except ValidationError as exc:
+                    messages.error(request, "; ".join(exc.messages))
+                    return redirect("entity_edit", entity=entity, pk=pk)
+                actual_status = instance.status
+                updated = 1
+            elif entity == "employee-documents":
+                try:
+                    instance = transition_employee_document(
+                        instance, action, request.user,
+                        replacement_document_id=request.POST.get("replacement_document_id"),
+                        note=request.POST.get("reason", ""),
+                    )
+                except ValidationError as exc:
+                    messages.error(request, "; ".join(exc.messages))
+                    return redirect("entity_edit", entity=entity, pk=pk)
+                actual_status = instance.status
+                updated = 1
+            elif entity == "contracts":
+                locked = get_object_or_404(scoped_queryset.select_for_update(), pk=pk)
+                if locked.status != current_status:
+                    updated = 0
+                else:
+                    try:
+                        transition_employment_contract(
+                            locked, "activate" if action == "approve" else action, request.user
+                        )
+                    except ValidationError as exc:
+                        messages.error(request, "; ".join(exc.messages))
+                        return redirect("entity_edit", entity=entity, pk=pk)
+                    instance = locked
+                    updated = 1
+            elif entity == "career-transition-requests":
+                locked = get_object_or_404(
+                    scoped_queryset.select_for_update(of=("self",)).select_related(
+                        "employee",
+                        "transition_type",
+                        "target_branch",
+                        "target_department",
+                        "target_job_position__department",
+                        "target_supervisor",
+                    ),
+                    pk=pk,
+                )
+                if locked.status != current_status:
+                    updated = 0
+                else:
+                    try:
+                        transition_career_request(locked, action, request.user)
+                    except ValidationError as exc:
+                        messages.error(request, "; ".join(exc.messages))
+                        return redirect("entity_edit", entity=entity, pk=pk)
+                    instance = locked
+                    actual_status = locked.status
                     updated = 1
             elif uses_approval_engine(instance):
                 locked = get_object_or_404(scoped_queryset.select_for_update(), pk=pk)
@@ -3317,6 +3823,18 @@ def document_action(request, entity, pk, action):
         if definition.get("requires_balance") and not instance.balanced:
             messages.error(request, "Accounting lines changed and are no longer balanced. Please review them again.")
             return redirect("entity_edit", entity=entity, pk=pk)
+        if entity == "cash-advances" and action in {"submit", "approve"}:
+            try:
+                validate_cash_advance_lines(instance)
+            except ValidationError as exc:
+                messages.error(request, "; ".join(exc.messages))
+                return redirect("entity_edit", entity=entity, pk=pk)
+        if entity == "expenses" and action in {"submit", "approve"}:
+            try:
+                validate_expense_claim_lines(instance)
+            except ValidationError as exc:
+                messages.error(request, "; ".join(exc.messages))
+                return redirect("entity_edit", entity=entity, pk=pk)
         previous_status = current_status
         update_fields = [workflow_field, "updated_at"]
         target_status = previous_status if definition.get("preserve_status") else definition["to"]

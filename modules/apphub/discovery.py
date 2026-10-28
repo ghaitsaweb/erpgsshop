@@ -73,7 +73,9 @@ def discover_addon_manifests(paths=None):
     for addon_root in paths or configured_addon_paths():
         if not addon_root.is_dir():
             continue
-        for manifest_path in sorted(addon_root.glob("*/manifest.json")):
+        manifest_paths = set(addon_root.glob("*/manifest.json"))
+        manifest_paths.update(addon_root.glob("*/*/manifest.json"))
+        for manifest_path in sorted(manifest_paths):
             try:
                 payload = json.loads(manifest_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:

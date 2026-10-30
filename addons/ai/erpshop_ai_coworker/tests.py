@@ -1,4 +1,6 @@
 from unittest.mock import patch
+from decimal import Decimal
+from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
@@ -6,13 +8,26 @@ from django.db import connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
+from django.utils import timezone
 
 from addons.ai.erpshop_moduleai_assistant.models import AssistantConfiguration
 from core.models import Company, Product
 from modules.apphub.models import ERPApp
 from modules.organization.models import UserOrganizationAccess
 
-from .models import AIAgent, AIConversation, AIMessage, AITask, AITaskEvent, AIWorkspace
+from .models import (
+    AIAgent,
+    AICompanyCredit,
+    AIConversation,
+    AIMessage,
+    AIModelPricing,
+    AIModelTemplate,
+    AIProvider,
+    AIUsageEvent,
+    AITask,
+    AITaskEvent,
+    AIWorkspace,
+)
 from .services import execute_coworker_task
 
 
@@ -110,6 +125,52 @@ class AICoworkerTests(TestCase):
         prompt = provider.call_args.args[1][1]["content"]
         self.assertIn("Governed ERP snapshot", prompt)
         self.assertIn('"sku":"COW-0"', prompt)
+
+    def test_worker_passes_a_coworker_model_override_to_the_provider(self):
+        self.agent.model_name = "coworker-analysis-model"
+        self.agent.save(update_fields=["model_name", "updated_at"])
+        task = self._task(task_type=AITask.TaskType.PLAN)
+
+        with patch("addons.ai.erpshop_ai_coworker.services.request_completion", return_value=PROVIDER_RESULT) as provider:
+            execute_coworker_task(task.pk)
+
+        self.assertEqual(provider.call_args.kwargs["model_name"], "coworker-analysis-model")
+
+    def test_model_template_pricing_creates_one_usage_event_and_credit_ledger_entry(self):
+        provider = AIProvider.objects.create(
+            name="test-openai",
+            display_name="Test OpenAI",
+            api_base_url="https://provider.example.test/v1",
+            credential_env_var="TEST_COWORKER_API_KEY",
+        )
+        template = AIModelTemplate.objects.create(
+            name="Operations model",
+            provider=provider,
+            model_name="operations-test-model",
+            max_output_tokens=512,
+            context_window_tokens=4096,
+        )
+        AIModelPricing.objects.create(
+            template=template,
+            input_price_per_mtok=Decimal("2"),
+            output_price_per_mtok=Decimal("4"),
+            effective_from=timezone.now() - timedelta(minutes=1),
+        )
+        credit = AICompanyCredit.objects.create(company=self.company, credit_balance=Decimal("10"), currency="USD")
+        self.agent.model_template = template
+        self.agent.save(update_fields=["model_template", "updated_at"])
+
+        with patch("addons.ai.erpshop_ai_coworker.services.request_completion", return_value=PROVIDER_RESULT):
+            execute_coworker_task(self._task().pk)
+
+        usage = AIUsageEvent.objects.get()
+        self.assertEqual(usage.model_name, "operations-test-model")
+        self.assertEqual(usage.total_cost, Decimal("0.000072"))
+        self.assertEqual(self.company.ai_credit_ledger_entries.count(), 1)
+        credit.refresh_from_db()
+        self.assertEqual(credit.credit_balance, Decimal("9.999928"))
+        self.agent.refresh_from_db()
+        self.assertEqual(self.agent.total_cost, Decimal("0.000072"))
 
     def test_query_count_does_not_grow_with_context_rows(self):
         Product.objects.bulk_create(

@@ -6,7 +6,7 @@ from django.core.exceptions import ValidationError
 from addons.ai.erpshop_hashy_bridge import api as bridge_api
 from core.views import ENTITY_CONFIG, _can
 
-from .models import AIAgent, AITask
+from .models import AIAgent, AICoworkerSchedule, AIModelTemplate, AITask
 
 
 class CoworkerForm(forms.ModelForm):
@@ -19,14 +19,19 @@ class CoworkerForm(forms.ModelForm):
 
     class Meta:
         model = AIAgent
-        fields = ["name", "role", "system_prompt", "max_context_records", "active"]
+        fields = ["name", "slug", "role", "model_template", "model_name", "system_prompt", "max_context_records", "active"]
         widgets = {
+            "model_name": forms.TextInput(
+                attrs={"maxlength": 100, "placeholder": "Leave blank to use the company default model"}
+            ),
             "system_prompt": forms.Textarea(attrs={"rows": 7, "maxlength": 12000}),
         }
 
     def __init__(self, *args, workspace=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.workspace = workspace or (self.instance.workspace if self.instance and self.instance.pk else None)
+        self.fields["model_template"].queryset = AIModelTemplate.objects.filter(active=True).select_related("provider").order_by("name")
+        self.fields["model_template"].required = False
         if self.instance and self.instance.pk:
             self.fields["allow_erp_context"].initial = "erp_read" in (self.instance.allowed_tools or [])
 
@@ -45,6 +50,12 @@ class CoworkerForm(forms.ModelForm):
         if len(value) > 12000:
             raise ValidationError("System prompt must be at most 12,000 characters.")
         return value
+
+    def clean_model_name(self):
+        return self.cleaned_data["model_name"].strip()
+
+    def clean_slug(self):
+        return self.cleaned_data["slug"].strip()
 
     def save(self, commit=True):
         instance = super().save(commit=False)
@@ -143,4 +154,76 @@ class CoworkerTaskForm(forms.Form):
         cleaned["entity"] = entity
         cleaned["selected_fields"] = field_names
         cleaned["filters"] = filters
+        return cleaned
+
+
+class CoworkerScheduleForm(CoworkerTaskForm):
+    WEEKDAYS = (
+        ("0", "Monday"),
+        ("1", "Tuesday"),
+        ("2", "Wednesday"),
+        ("3", "Thursday"),
+        ("4", "Friday"),
+        ("5", "Saturday"),
+        ("6", "Sunday"),
+    )
+
+    name = forms.CharField(max_length=180, label="Schedule name")
+    frequency = forms.ChoiceField(choices=AICoworkerSchedule.Frequency.choices)
+    weekday = forms.ChoiceField(required=False, choices=(("", "Choose a weekday"), *WEEKDAYS))
+    run_at = forms.TimeField(
+        label="Run at (Asia/Jakarta)",
+        widget=forms.TimeInput(attrs={"type": "time"}),
+        help_text="The scheduler checks due jobs every minute.",
+    )
+    active = forms.BooleanField(required=False, initial=True)
+
+    def __init__(self, *args, company_id, branch_id, user, schedule=None, **kwargs):
+        self.schedule = schedule
+        self.branch_id = branch_id
+        super().__init__(*args, company_id=company_id, user=user, **kwargs)
+        if schedule and not self.is_bound:
+            self.initial.update(
+                {
+                    "name": schedule.name,
+                    "agent": schedule.agent_id,
+                    "task_type": schedule.task_type,
+                    "instruction": schedule.instruction,
+                    "entity": schedule.entity,
+                    "field_names": ",".join(schedule.selected_fields or []),
+                    "filters_json": json.dumps(schedule.filters or []),
+                    "frequency": schedule.frequency,
+                    "weekday": str(schedule.weekday) if schedule.weekday is not None else "",
+                    "run_at": schedule.run_at,
+                    "active": schedule.active,
+                }
+            )
+
+    def clean_name(self):
+        value = self.cleaned_data["name"].strip()
+        schedules = AICoworkerSchedule.objects.filter(company_id=self.company_id, name=value)
+        if self.schedule:
+            schedules = schedules.exclude(pk=self.schedule.pk)
+        if schedules.exists():
+            raise ValidationError("A schedule with this name already exists in the active company.")
+        return value
+
+    def clean(self):
+        cleaned = super().clean()
+        task_type = cleaned.get("task_type")
+        entity = cleaned.get("entity") or ""
+        frequency = cleaned.get("frequency")
+        weekday = cleaned.get("weekday")
+        if task_type != AITask.TaskType.PLAN and not self.branch_id:
+            self.add_error("entity", "Select an active branch before scheduling ERP record context.")
+        if frequency == AICoworkerSchedule.Frequency.WEEKLY:
+            if not weekday:
+                self.add_error("weekday", "Choose a weekday for a weekly schedule.")
+            else:
+                cleaned["weekday"] = int(weekday)
+        else:
+            cleaned["weekday"] = None
+        if entity and not cleaned.get("selected_fields"):
+            # The worker will use the same bounded default fields as an ad-hoc task.
+            cleaned["selected_fields"] = []
         return cleaned

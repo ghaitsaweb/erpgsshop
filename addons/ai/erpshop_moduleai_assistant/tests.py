@@ -57,6 +57,21 @@ class HashyAssistantTests(TestCase):
         self.assertEqual(message.state, AssistantMessage.State.PENDING)
         task.assert_called_once_with(message.pk)
 
+    def test_login_defaults_to_the_assistant_but_honors_next(self):
+        self.client.logout()
+        credentials = {"username": self.user.username, "password": "safe-password"}
+
+        default_login = self.client.post(reverse("login"), credentials)
+        self.assertRedirects(
+            default_login,
+            reverse("erpshop_moduleai_assistant:home"),
+            fetch_redirect_response=False,
+        )
+
+        self.client.logout()
+        explicit_next = self.client.post(reverse("login"), {**credentials, "next": reverse("dashboard")})
+        self.assertRedirects(explicit_next, reverse("dashboard"), fetch_redirect_response=False)
+
     def test_unconfigured_runtime_returns_a_safe_auditable_failure(self):
         config = AssistantConfiguration.objects.create(company=self.company)
         session = AssistantSession.objects.create(company=self.company, configuration=config, user=self.user)

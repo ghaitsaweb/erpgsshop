@@ -54,6 +54,11 @@ def _provider_endpoint(base_url):
     return urljoin(base_url.rstrip("/") + "/", "chat/completions")
 
 
+def _anthropic_endpoint(base_url):
+    endpoint = _provider_endpoint(base_url)
+    return endpoint.rsplit("/chat/completions", 1)[0] + "/messages"
+
+
 def _attachment_excerpt(attachment):
     if attachment.extracted_text:
         return attachment.extracted_text[:12000]
@@ -133,7 +138,16 @@ def _token_count(value):
         return 0
 
 
-def request_completion(configuration, messages, *, user_agent="ERP-GSSHOP-Hashy-Assistant/1.0"):
+def _anthropic_result(payload):
+    blocks = payload.get("content", []) if isinstance(payload, dict) else []
+    content = "".join(str(block.get("text", "")) for block in blocks if isinstance(block, dict) and block.get("type") == "text").strip()
+    if not content:
+        raise AssistantProviderError("The provider returned an empty response.")
+    usage = payload.get("usage", {}) if isinstance(payload, dict) else {}
+    return content[:50000], _token_count(usage.get("input_tokens")), _token_count(usage.get("output_tokens")), str(payload.get("id") or "")[:180]
+
+
+def request_completion(configuration, messages, *, user_agent="ERP-GSSHOP-Hashy-Assistant/1.0", model_name=None):
     """Execute one bounded provider turn without persisting application records."""
     if not configuration.is_ready:
         raise AssistantProviderError(
@@ -154,25 +168,26 @@ def request_completion(configuration, messages, *, user_agent="ERP-GSSHOP-Hashy-
             raise AssistantProviderError("Provider message context exceeds the safe size limit.")
         normalized.append({"role": message["role"], "content": content})
 
+    selected_model = str(model_name or configuration.model_name).strip()
+    if not selected_model or len(selected_model) > 160:
+        raise AssistantProviderError("The selected provider model is invalid.")
+
     credential = os.getenv(configuration.credential_env_var)
     if not credential:
         raise AssistantProviderError("The provider credential is unavailable.")
-    endpoint = _provider_endpoint(configuration.api_base_url)
-    request_payload = {
-        "model": configuration.model_name,
-        "messages": normalized,
-        "temperature": float(configuration.temperature),
-        "max_tokens": configuration.max_output_tokens,
-    }
+    is_anthropic = configuration.provider == "anthropic"
+    endpoint = _anthropic_endpoint(configuration.api_base_url) if is_anthropic else _provider_endpoint(configuration.api_base_url)
+    if is_anthropic:
+        system = "\n\n".join(message["content"] for message in normalized if message["role"] == "system")
+        request_payload = {"model": selected_model, "system": system, "messages": [message for message in normalized if message["role"] != "system"], "temperature": float(configuration.temperature), "max_tokens": configuration.max_output_tokens}
+        headers = {"x-api-key": credential, "anthropic-version": "2023-06-01", "Content-Type": "application/json", "Accept": "application/json", "User-Agent": user_agent[:120]}
+    else:
+        request_payload = {"model": selected_model, "messages": normalized, "temperature": float(configuration.temperature), "max_tokens": configuration.max_output_tokens}
+        headers = {"Authorization": f"Bearer {credential}", "Content-Type": "application/json", "Accept": "application/json", "User-Agent": user_agent[:120]}
     request = Request(
         endpoint,
         data=json.dumps(request_payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {credential}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": user_agent[:120],
-        },
+        headers=headers,
         method="POST",
     )
     started = time.monotonic()
@@ -187,6 +202,9 @@ def request_completion(configuration, messages, *, user_agent="ERP-GSSHOP-Hashy-
         raise AssistantProviderError("The provider returned invalid JSON.") from exc
     if not isinstance(payload, dict):
         raise AssistantProviderError("The provider returned an unsupported response.")
+    if is_anthropic:
+        content, input_tokens, output_tokens, provider_message_id = _anthropic_result(payload)
+        return {"content": content, "input_tokens": input_tokens, "output_tokens": output_tokens, "provider_message_id": provider_message_id, "latency_ms": latency_ms}
     usage = payload.get("usage", {})
     if not isinstance(usage, dict):
         usage = {}

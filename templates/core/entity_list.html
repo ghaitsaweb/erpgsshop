@@ -6,9 +6,10 @@
   <div class="toolbar list-toolbar">
     <form method="get" class="search-form">
       <input class="form-control" type="search" name="q" value="{{ query }}" placeholder="Search {{ config.title|lower }}…">
+      <input type="hidden" name="layout" value="{{ layout }}" data-entity-layout-input>
       <button class="btn btn-secondary" type="submit">Search</button>
     </form>
-    <div class="list-quick-controls" data-list-controls>
+    <div class="list-quick-controls" data-list-controls data-list-layout-control>
       <details class="list-control-menu">
         <summary>Filter By <i data-list-filter-count hidden>•</i></summary>
         <div class="list-control-popover">
@@ -46,7 +47,15 @@
         </div>
       </details>
     </div>
-    {% if can_delete %}
+    <nav class="base-view-toggle" data-layout-switcher data-view-modes="{{ view_modes|join:',' }}" aria-label="Record layout">
+      <button class="{% if layout == 'list' %}active{% endif %}" type="button" data-layout-switch="list" data-tooltip="List" aria-label="List" aria-pressed="{% if layout == 'list' %}true{% else %}false{% endif %}">
+        <svg aria-hidden="true" viewBox="0 0 16 16"><path d="M2 3h2m2 0h8M2 8h2m2 0h8M2 13h2m2 0h8"/></svg>
+      </button>
+      <button class="{% if layout == 'kanban' %}active{% endif %}" type="button" data-layout-switch="kanban" data-tooltip="Kanban" aria-label="Kanban" aria-pressed="{% if layout == 'kanban' %}true{% else %}false{% endif %}">
+        <svg aria-hidden="true" viewBox="0 0 16 16"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>
+      </button>
+    </nav>
+    {% if can_select %}
       <form id="bulk-delete-form" class="list-bulk-actions" method="post" action="{% url 'entity_bulk_delete' entity %}" data-bulk-delete-form hidden>
         {% csrf_token %}
         <input type="hidden" name="next" value="{{ request.get_full_path }}">
@@ -67,14 +76,71 @@
     <div class="info-strip">Create the document here, then use <a href="{% url 'admin:index' %}">Administration</a> to add detailed line items.</div>
   {% endif %}
 
+  {% if config.kanban_variant == "employee" %}
+    <div class="employee-kanban-grid" data-entity-layout="kanban" data-dev-model="{{ developer_meta.model }}" data-dev-table="{{ developer_meta.table }}" data-dev-entity="{{ developer_meta.entity }}"{% if layout != "kanban" %} hidden{% endif %}>
+      {% for card in employee_kanban_cards %}
+        {% with employee=card.row.object %}
+          <article class="employee-kanban-card" {% if can_change %}data-record-url="{% url 'entity_edit' entity employee.pk %}" tabindex="0" role="link" aria-label="Open profile for {{ employee.name }}"{% endif %}>
+            <div class="employee-kanban-card__accent" aria-hidden="true"></div>
+            <div class="employee-kanban-card__top">
+              <div class="employee-kanban-card__avatar" aria-hidden="true">{{ card.initials }}</div>
+              <div class="employee-kanban-card__identity">
+                <strong title="{{ employee.name }}">{{ employee.name }}</strong>
+                <span title="{{ card.role }}">{{ card.role }}</span>
+              </div>
+              <span class="employee-kanban-card__status {% if card.inactive %}is-inactive{% endif %}">{{ card.status }}</span>
+            </div>
+            <div class="employee-kanban-card__meta-grid">
+              <div><span>Department</span><strong title="{{ card.department }}">{{ card.department }}</strong></div>
+              <div><span>Branch</span><strong title="{{ card.branch }}">{{ card.branch }}</strong></div>
+              <div><span>Manager</span><strong title="{{ card.manager }}">{{ card.manager }}</strong></div>
+              <div><span>Joined</span><strong>{{ employee.join_date|date:"d M Y" }}</strong></div>
+            </div>
+            <footer class="employee-kanban-card__footer">
+              <code>{{ employee.employee_id }}</code>
+              {% if can_change %}<a href="{% url 'entity_edit' entity employee.pk %}">Open profile</a>{% endif %}
+            </footer>
+          </article>
+        {% endwith %}
+      {% empty %}<div class="panel empty">No employees found. Add the first employee.</div>{% endfor %}
+      {% if page.paginator.num_pages > 1 %}
+        <div class="pagination">
+          {% if page.has_previous %}<a href="?q={{ query|urlencode }}&layout=kanban&page={{ page.previous_page_number }}">← Previous</a>{% endif %}
+          <span>Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
+          {% if page.has_next %}<a href="?q={{ query|urlencode }}&layout=kanban&page={{ page.next_page_number }}">Next →</a>{% endif %}
+        </div>
+      {% endif %}
+    </div>
+  {% else %}
+    <div class="base-kanban" data-entity-layout="kanban" data-dev-model="{{ developer_meta.model }}" data-dev-table="{{ developer_meta.table }}" data-dev-entity="{{ developer_meta.entity }}"{% if layout != "kanban" %} hidden{% endif %}>
+      {% for group in kanban_groups %}
+        <section class="base-kanban-column"><header><strong>{{ group.label }}</strong><small>{{ group.rows|length }}</small></header><div class="base-kanban-stack">
+          {% for row in group.rows %}
+            <article class="base-kanban-card" {% if can_change %}data-record-url="{% url 'entity_edit' entity row.object.pk %}" tabindex="0" role="link"{% endif %}>
+              <strong>{{ row.cells.0.value }}</strong>
+              {% for cell in row.cells|slice:"1:5" %}<p><span>{{ cell.label }}</span>{{ cell.value }}</p>{% endfor %}
+            </article>
+          {% endfor %}
+        </div></section>
+      {% empty %}<div class="panel empty">No records found. Add the first {{ config.singular|lower }}.</div>{% endfor %}
+      {% if page.paginator.num_pages > 1 %}
+        <div class="pagination">
+          {% if page.has_previous %}<a href="?q={{ query|urlencode }}&layout=kanban&page={{ page.previous_page_number }}">← Previous</a>{% endif %}
+          <span>Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
+          {% if page.has_next %}<a href="?q={{ query|urlencode }}&layout=kanban&page={{ page.next_page_number }}">Next →</a>{% endif %}
+        </div>
+      {% endif %}
+    </div>
+  {% endif %}
+  <div data-entity-layout="list"{% if layout == "kanban" %} hidden{% endif %}>
   <div class="panel table-panel" data-dev-model="{{ developer_meta.model }}" data-dev-table="{{ developer_meta.table }}" data-dev-entity="{{ developer_meta.entity }}">
     <div class="table-wrap">
       <table data-entity-list-table data-dev-model="{{ developer_meta.model }}" data-dev-table="{{ developer_meta.table }}">
-        <thead><tr>{% if can_delete %}<th class="list-select-column"><input class="list-select-checkbox" type="checkbox" data-select-all aria-label="Select all records on this page"></th>{% endif %}{% for column in columns %}<th data-list-field="{{ column.name }}" data-dev-field="{{ column.name }}" data-dev-field-label="{{ column.label }}" data-dev-field-type="{{ column.type }}" data-dev-field-column="{{ column.column }}" data-dev-field-relation="{{ column.relation }}" data-dev-field-kind="{{ column.kind }}">{{ column.label }}</th>{% endfor %}</tr></thead>
+        <thead><tr>{% if can_select %}<th class="list-select-column"><input class="list-select-checkbox" type="checkbox" data-select-all aria-label="Select all records on this page"></th>{% endif %}{% for column in columns %}<th data-list-field="{{ column.name }}" data-dev-field="{{ column.name }}" data-dev-field-label="{{ column.label }}" data-dev-field-type="{{ column.type }}" data-dev-field-column="{{ column.column }}" data-dev-field-relation="{{ column.relation }}" data-dev-field-kind="{{ column.kind }}">{{ column.label }}</th>{% endfor %}</tr></thead>
         <tbody>
           {% for row in rows %}
             <tr class="{% if can_change %}record-row{% endif %}" data-list-row data-dev-object data-dev-entity="{{ row.developer_meta.entity }}" data-dev-model="{{ row.developer_meta.model }}" data-dev-table="{{ row.developer_meta.table }}" data-dev-object-id="{{ row.developer_meta.object_id }}" data-dev-object-name="{{ row.developer_meta.object_name }}" {% if can_change %}data-record-url="{% url 'entity_edit' entity row.object.pk %}" tabindex="0" role="link" aria-label="Open {{ row.developer_meta.object_name }}"{% endif %}>
-              {% if can_delete %}<td class="list-select-column"><input class="list-select-checkbox" type="checkbox" name="selected_ids" value="{{ row.object.pk }}" form="bulk-delete-form" data-select-record aria-label="Select {{ row.developer_meta.object_name }}"></td>{% endif %}
+              {% if can_select %}<td class="list-select-column"><input class="list-select-checkbox" type="checkbox" name="selected_ids" value="{{ row.object.pk }}" form="bulk-delete-form" data-select-record aria-label="Select {{ row.developer_meta.object_name }}"></td>{% endif %}
               {% for cell in row.cells %}<td data-dev-field="{{ cell.name }}" data-dev-field-label="{{ cell.label }}" data-dev-field-type="{{ cell.type }}" data-dev-field-column="{{ cell.column }}" data-dev-field-relation="{{ cell.relation }}" data-dev-field-kind="{{ cell.kind }}">{% if forloop.first %}<strong>{{ cell.value }}</strong>{% else %}{{ cell.value }}{% endif %}</td>{% endfor %}
             </tr>
           {% empty %}<tr><td class="empty" colspan="20">No records found. Add the first {{ config.singular|lower }}.</td></tr>{% endfor %}
@@ -90,7 +156,8 @@
       </div>
     {% endif %}
   </div>
-  {% if can_delete %}
+  </div>
+  {% if can_select %}
     <dialog class="delete-wizard" data-delete-wizard aria-labelledby="delete-wizard-title">
       <div class="delete-wizard-head">
         <span class="delete-wizard-icon" aria-hidden="true">×</span>

@@ -31,6 +31,7 @@ class AssistantConfiguration(TimeStampedModel):
         DISABLED = "disabled", "Disabled"
         HASHY_OS = "hashy_os", "Hashy OS gateway"
         OPENAI_COMPATIBLE = "openai_compatible", "OpenAI-compatible gateway"
+        ANTHROPIC = "anthropic", "Anthropic Messages API"
 
     company = models.OneToOneField(Company, on_delete=models.PROTECT, related_name="hashy_assistant_configuration")
     display_name = models.CharField(max_length=120, default="Hashy AI Assistant")

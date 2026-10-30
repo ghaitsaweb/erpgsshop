@@ -15,6 +15,35 @@
     });
   });
 
+  const layoutSwitcher = document.querySelector('[data-layout-switcher]');
+  const listLayout = document.querySelector('[data-entity-layout="list"]');
+  const kanbanLayout = document.querySelector('[data-entity-layout="kanban"]');
+  const layoutInput = document.querySelector('[data-entity-layout-input]');
+  const listControls = document.querySelector('[data-list-layout-control]');
+
+  if (layoutSwitcher && listLayout && kanbanLayout) {
+    const switchLayout = (nextLayout) => {
+      listLayout.hidden = nextLayout !== 'list';
+      kanbanLayout.hidden = nextLayout !== 'kanban';
+      if (listControls) listControls.hidden = nextLayout !== 'list';
+      if (layoutInput) layoutInput.value = nextLayout;
+      layoutSwitcher.querySelectorAll('[data-layout-switch]').forEach((button) => {
+        const active = button.dataset.layoutSwitch === nextLayout;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
+      const url = new URL(window.location.href);
+      if (nextLayout === 'list') url.searchParams.delete('layout');
+      else url.searchParams.set('layout', nextLayout);
+      window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+    };
+
+    layoutSwitcher.querySelectorAll('[data-layout-switch]').forEach((button) => {
+      button.addEventListener('click', () => switchLayout(button.dataset.layoutSwitch));
+    });
+    switchLayout(layoutInput?.value === 'kanban' ? 'kanban' : 'list');
+  }
+
   const table = document.querySelector('[data-entity-list-table]');
   if (!table) {
     activateRecordRows(Array.from(document.querySelectorAll('[data-record-url]')));

@@ -122,7 +122,10 @@ MEDIA_ROOT = BASE_DIR / "media"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 LOGIN_URL = "login"
-LOGIN_REDIRECT_URL = "dashboard"
+# Start authenticated users in the native AI workspace.  The assistant view
+# safely falls back to the dashboard when its app, permission, or company
+# context is unavailable; explicit ?next= destinations still take priority.
+LOGIN_REDIRECT_URL = "erpshop_moduleai_assistant:home"
 LOGOUT_REDIRECT_URL = "login"
 
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://redis:6379/0")
@@ -130,6 +133,18 @@ CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://redis:6379/1
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 1800
 CELERY_BEAT_SCHEDULE = {
+    "ai-coworker-due-crons": {
+        "task": "ai_coworker.queue_due_crons",
+        "schedule": 60.0,
+    },
+    "ai-coworker-due-heartbeats": {
+        "task": "ai_coworker.queue_due_heartbeats",
+        "schedule": 60.0,
+    },
+    "ai-coworker-due-schedules": {
+        "task": "ai_coworker.queue_due_schedules",
+        "schedule": 60.0,
+    },
     "approval-workflow-runtime": {
         "task": "approval_workflow.scan_due_runtime",
         "schedule": 60.0,

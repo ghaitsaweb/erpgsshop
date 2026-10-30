@@ -11,8 +11,9 @@ from django.views.decorators.http import require_GET, require_POST
 
 from modules.apphub.models import ERPApp
 
-from .forms import CoworkerForm, CoworkerTaskForm
-from .models import AIAgent, AIConversation, AIMessage, AITask, AITaskEvent, AIWorkspace
+from .forms import CoworkerForm, CoworkerScheduleForm, CoworkerTaskForm
+from .models import AIAgent, AICoworkerSchedule, AITask, AITaskEvent, AIWorkspace
+from .services import next_schedule_run, queue_coworker_task
 from .tasks import process_coworker_task
 
 
@@ -78,6 +79,14 @@ def _tasks(request):
     if not _can_manage(request.user):
         queryset = queryset.filter(requested_by=request.user)
     return queryset
+
+
+def _schedules(company_id):
+    return (
+        AICoworkerSchedule.objects.filter(company_id=company_id)
+        .select_related("agent", "branch", "requested_by")
+        .order_by("active", "next_run_at", "id")
+    )
 
 
 @require_GET
@@ -152,10 +161,76 @@ def save_agent(request, agent_id=None):
             )
         saved = form.save(commit=False)
         saved.workspace = workspace
+        if saved.owner_user_id is None:
+            saved.owner_user = request.user
         saved.full_clean()
         saved.save()
     django_messages.success(request, f"Coworker {saved.name} saved.")
     return redirect(f"{reverse('erpshop_ai_coworker:settings_edit', args=[saved.pk])}")
+
+
+@require_GET
+@coworker_access_required
+def schedules(request, schedule_id=None):
+    if not _can_manage(request.user):
+        raise Http404("Coworker schedules not found.")
+    company_id, branch_id = _active_scope(request)
+    schedule = get_object_or_404(_schedules(company_id), pk=schedule_id) if schedule_id else None
+    form = CoworkerScheduleForm(
+        company_id=company_id,
+        branch_id=branch_id,
+        user=request.user,
+        schedule=schedule,
+        initial={"agent": _agents(company_id).filter(active=True).first(), "task_type": AITask.TaskType.PLAN},
+    )
+    return render(
+        request,
+        "erpshop_ai_coworker/schedules.html",
+        {"schedule": schedule, "schedules": _schedules(company_id), "form": form},
+    )
+
+
+@require_POST
+@coworker_access_required
+def save_schedule(request, schedule_id=None):
+    if not _can_manage(request.user):
+        raise Http404("Coworker schedules not found.")
+    company_id, branch_id = _active_scope(request)
+    schedule = get_object_or_404(_schedules(company_id), pk=schedule_id) if schedule_id else None
+    form = CoworkerScheduleForm(
+        request.POST,
+        company_id=company_id,
+        branch_id=branch_id,
+        user=request.user,
+        schedule=schedule,
+    )
+    if not form.is_valid():
+        return render(
+            request,
+            "erpshop_ai_coworker/schedules.html",
+            {"schedule": schedule, "schedules": _schedules(company_id), "form": form},
+            status=400,
+        )
+    data = form.cleaned_data
+    with transaction.atomic():
+        if schedule is None:
+            schedule = AICoworkerSchedule(company_id=company_id, branch_id=branch_id, requested_by=request.user)
+        schedule.agent = data["agent"]
+        schedule.name = data["name"]
+        schedule.task_type = data["task_type"]
+        schedule.instruction = data["instruction"]
+        schedule.entity = data["entity"]
+        schedule.selected_fields = data["selected_fields"]
+        schedule.filters = data["filters"]
+        schedule.frequency = data["frequency"]
+        schedule.weekday = data["weekday"]
+        schedule.run_at = data["run_at"]
+        schedule.active = data["active"]
+        schedule.next_run_at = next_schedule_run(schedule) if schedule.active else None
+        schedule.full_clean()
+        schedule.save()
+    django_messages.success(request, f"Schedule {schedule.name} saved.")
+    return redirect(reverse("erpshop_ai_coworker:schedules_edit", args=[schedule.pk]))
 
 
 @require_POST
@@ -192,34 +267,18 @@ def create_task(request):
         )
 
     data = form.cleaned_data
-    with transaction.atomic():
-        conversation = AIConversation.objects.create(
-            agent=data["agent"],
-            user=request.user,
-            title=data["title"],
-        )
-        AIMessage.objects.create(
-            conversation=conversation,
-            role=AIMessage.Role.USER,
-            content=data["instruction"],
-            metadata={"task_type": data["task_type"], "entity": data["entity"]},
-        )
-        task = AITask(
-            agent=data["agent"],
-            company_id=company_id,
-            branch_id=branch_id,
-            requested_by=request.user,
-            conversation=conversation,
-            title=data["title"],
-            task_type=data["task_type"],
-            instruction=data["instruction"],
-            entity=data["entity"],
-            selected_fields=data["selected_fields"],
-            filters=data["filters"],
-        )
-        task.full_clean()
-        task.save()
-        AITaskEvent.objects.create(task=task, actor=request.user, event="queued")
+    task = queue_coworker_task(
+        agent=data["agent"],
+        company_id=company_id,
+        branch_id=branch_id,
+        requested_by=request.user,
+        title=data["title"],
+        task_type=data["task_type"],
+        instruction=data["instruction"],
+        entity=data["entity"],
+        selected_fields=data["selected_fields"],
+        filters=data["filters"],
+    )
     try:
         process_coworker_task.delay(task.pk)
     except Exception:

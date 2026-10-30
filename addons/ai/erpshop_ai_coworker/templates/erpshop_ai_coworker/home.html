@@ -9,10 +9,10 @@
 <div class="coworker-shell">
   <header class="coworker-hero">
     <div><p class="eyebrow">ERPShop AI · Coworker</p><h2>Delegated analysis, within explicit boundaries</h2><p>Queue a focused planning or read-only ERP analysis task. Every run is company-scoped, bounded, asynchronous, and auditable.</p></div>
-    {% if can_manage %}<a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:settings' %}">Manage coworkers</a>{% endif %}
+    {% if can_manage %}<div class="coworker-actions"><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:schedules' %}">Manage schedules</a><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:settings' %}">Manage coworkers</a></div>{% endif %}
   </header>
 
-  <section class="coworker-boundary"><strong>Current capability</strong><span>One governed provider turn per task · maximum 100 ERP rows · no write/delete/approval/message tools · no external channel or MCP execution.</span></section>
+  <section class="coworker-boundary"><strong>Current capability</strong><span>Manual or scheduled governed provider turns · maximum 100 ERP rows · no write/delete/approval/message tools · no external channel or MCP execution.</span></section>
 
   <div class="coworker-grid">
     <aside class="panel coworker-agents">

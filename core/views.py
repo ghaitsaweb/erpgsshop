@@ -467,6 +467,8 @@ ENTITY_CONFIG = {
         "columns": [("employee_id", "Employee ID"), ("name", "Name"), ("branch", "Branch"), ("department_record", "Department"), ("job_position", "Position"), ("supervisor", "Manager"), ("status", "Status")],
         "search": ["employee_id", "name", "department", "position", "branch__name", "department_record__name", "job_position__name"],
         "select_related": ["branch", "department_record", "job_position", "supervisor"],
+        "kanban_variant": "employee",
+        "kanban_group_by": False,
         "deletable": False,
     },
     "attendance": {
@@ -2287,6 +2289,26 @@ def _config(entity):
         raise Http404("Unknown ERP module") from exc
 
 
+def _employee_kanban_cards(rows):
+    cards = []
+    for row in rows:
+        employee = row["object"]
+        initials = "".join(part[:1] for part in employee.name.split() if part)[:2].upper() or "?"
+        cards.append(
+            {
+                "row": row,
+                "initials": initials,
+                "role": str(employee.job_position or employee.position or "No position assigned"),
+                "department": str(employee.department_record or employee.department or "Not assigned"),
+                "branch": str(employee.branch or "Not assigned"),
+                "manager": str(employee.supervisor or "Not assigned"),
+                "status": employee.get_status_display(),
+                "inactive": employee.status == Employee.Status.INACTIVE,
+            }
+        )
+    return cards
+
+
 BULK_DELETE_MAX_SELECTION = 25
 
 
@@ -2809,6 +2831,25 @@ def entity_list(request, entity):
         }
         for obj in page_items
     ]
+    view_modes = tuple(config.get("view_modes", ("list", "kanban", "form")))
+    collection_views = tuple(mode for mode in view_modes if mode in {"list", "kanban"})
+    layout = request.GET.get("layout", config.get("default_collection_view", "list"))
+    layout = layout if layout in collection_views else config.get("default_collection_view", "list")
+    field_names = {field.name for field in model._meta.get_fields()}
+    kanban_field = (
+        config["kanban_group_by"]
+        if "kanban_group_by" in config
+        else ("status" if "status" in field_names else "")
+    )
+    kanban_groups = []
+    if kanban_field:
+        grouped = {}
+        for row in rows:
+            label = _display_value(row["object"], kanban_field) or "Uncategorized"
+            grouped.setdefault(str(label), []).append(row)
+        kanban_groups = [{"label": label, "rows": group_rows} for label, group_rows in grouped.items()]
+    elif rows:
+        kanban_groups = [{"label": config["title"], "rows": rows}]
     context = {
         "entity": entity,
         "config": config,
@@ -2816,9 +2857,14 @@ def entity_list(request, entity):
         "rows": rows,
         "page": page,
         "query": query,
+        "layout": layout,
+        "view_modes": view_modes,
+        "kanban_groups": kanban_groups,
+        "employee_kanban_cards": _employee_kanban_cards(rows) if config.get("kanban_variant") == "employee" else [],
         "developer_meta": developer_metadata(model, entity=entity),
         "can_add": config.get("creatable", True) and _can(request.user, "add", model, entity),
         "can_change": config.get("editable", True) and _can(request.user, "change", model, entity),
+        "can_select": config.get("selectable", True),
         "can_delete": config.get("deletable", True) and _can(request.user, "delete", model, entity),
     }
     return render(request, "core/entity_list.html", context)

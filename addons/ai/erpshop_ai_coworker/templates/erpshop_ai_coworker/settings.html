@@ -7,7 +7,7 @@
 {% block content %}
 <link rel="stylesheet" href="{% static 'erpshop_ai_coworker/coworker.css' %}">
 <div class="coworker-shell">
-  <header class="coworker-hero compact"><div><p class="eyebrow">ERPShop AI · Coworker</p><h2>{% if agent %}Edit {{ agent.name }}{% else %}Create a coworker{% endif %}</h2><p>Identity and read access are company-scoped. Provider credentials remain in the shared Hashy Assistant configuration.</p></div><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:home' %}">Back to work queue</a></header>
+  <header class="coworker-hero compact"><div><p class="eyebrow">ERPShop AI · Coworker</p><h2>{% if agent %}Edit {{ agent.name }}{% else %}Create a coworker{% endif %}</h2><p>Identity and read access are company-scoped. Select an active model template, or leave it empty to use the company Hashy Assistant default.</p></div><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:home' %}">Back to work queue</a></header>
   <div class="coworker-settings-grid">
     <aside class="panel coworker-agents"><header><h3>Configured coworkers</h3></header><nav><a href="{% url 'erpshop_ai_coworker:settings' %}" class="{% if not agent %}selected{% endif %}"><span>＋ New coworker</span></a>{% for item in agents %}<a href="{% url 'erpshop_ai_coworker:settings_edit' item.pk %}" class="{% if agent.pk == item.pk %}selected{% endif %}"><span>{{ item.name }}</span><small>{{ item.role }}</small></a>{% endfor %}</nav></aside>
     <section class="panel coworker-run-card"><form method="post" action="{% if agent %}{% url 'erpshop_ai_coworker:settings_update' agent.pk %}{% else %}{% url 'erpshop_ai_coworker:settings_save' %}{% endif %}" class="coworker-form">{% csrf_token %}

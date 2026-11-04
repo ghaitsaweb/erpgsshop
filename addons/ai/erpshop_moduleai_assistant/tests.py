@@ -73,6 +73,25 @@ class HashyAssistantTests(TestCase):
         self.assertEqual(message.state, AssistantMessage.State.PENDING)
         task.assert_called_once_with(message.pk)
 
+    def test_knowledge_document_is_company_scoped_and_ready_from_reviewed_text(self):
+        response = self.client.post(
+            reverse("erpshop_moduleai_assistant:knowledge_documents"),
+            {"title": "Expense policy", "category": "Finance", "extracted_text": "Expenses need a receipt."},
+        )
+        self.assertRedirects(response, reverse("erpshop_moduleai_assistant:knowledge_documents"))
+        document = AIKnowledgeDocument.objects.get(title="Expense policy")
+        self.assertEqual(document.company, self.company)
+        self.assertEqual(document.status, AIKnowledgeDocument.Status.READY)
+        self.assertTrue(document.active)
+
+        archived = self.client.post(
+            reverse("erpshop_moduleai_assistant:knowledge_document_state", args=[document.pk]), {"action": "archive"}
+        )
+        self.assertRedirects(archived, reverse("erpshop_moduleai_assistant:knowledge_documents"))
+        document.refresh_from_db()
+        self.assertEqual(document.status, AIKnowledgeDocument.Status.ARCHIVED)
+        self.assertFalse(document.active)
+
     def test_login_defaults_to_the_assistant_but_honors_next(self):
         self.client.logout()
         credentials = {"username": self.user.username, "password": "safe-password"}

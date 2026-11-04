@@ -15,7 +15,7 @@
     </div>
     <div class="hashy-hero-actions">
       <span class="hashy-connection"><i></i>Provider {% if configuration.is_ready %}configured{% else %}configuration needed{% endif %}</span>
-      {% if can_configure %}<a class="btn btn-secondary" href="{% url 'erpshop_moduleai_assistant:settings' %}">Assistant settings</a>{% endif %}
+      {% if can_configure %}<a class="btn btn-secondary" href="{% url 'erpshop_moduleai_assistant:knowledge_documents' %}">Knowledge</a><a class="btn btn-secondary" href="{% url 'erpshop_moduleai_assistant:settings' %}">Assistant settings</a>{% endif %}
     </div>
   </header>
 

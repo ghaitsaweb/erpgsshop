@@ -1,3 +1,4 @@
+import hashlib
 import json
 from functools import wraps
 from pathlib import Path
@@ -14,11 +15,12 @@ from django.views.decorators.http import require_POST
 
 from modules.apphub.models import ERPApp
 
-from .forms import AssistantConfigurationForm, HashyOSConnectionForm
+from .forms import AIKnowledgeDocumentForm, AssistantConfigurationForm, HashyOSConnectionForm
 from .models import (
     AssistantAttachment,
     AssistantAuditEvent,
     AssistantConfiguration,
+    AIKnowledgeDocument,
     AssistantMessage,
     AssistantSession,
     HashyOSConnection,
@@ -31,6 +33,7 @@ MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 MAX_ATTACHMENTS_PER_MESSAGE = 5
 MESSAGE_PAGE_SIZE = 100
 EXTRACTABLE_CONTENT_TYPES = {"text/plain", "text/markdown", "text/csv", "application/json"}
+MAX_KNOWLEDGE_TEXT_BYTES = 200_000
 
 
 def _is_json_request(request):
@@ -348,3 +351,104 @@ def assistant_settings(request):
             "connection_form": connection_form,
         },
     )
+
+
+def _knowledge_access_required(request):
+    if not _can_configure(request.user):
+        messages.error(request, "Only an assistant administrator can manage company knowledge.")
+        return False
+    return True
+
+
+def _extract_knowledge_upload(upload):
+    """Return bounded plain text and a source digest when a file is safely readable."""
+    content_type = (getattr(upload, "content_type", "") or "").lower()[:120]
+    if content_type not in EXTRACTABLE_CONTENT_TYPES:
+        return "", "", content_type
+    raw = upload.read(MAX_KNOWLEDGE_TEXT_BYTES + 1)
+    upload.seek(0)
+    if len(raw) > MAX_KNOWLEDGE_TEXT_BYTES:
+        raise ValidationError("Plain-text knowledge files must be at most 200 KB after extraction.")
+    return raw.decode("utf-8", errors="replace"), hashlib.sha256(raw).hexdigest(), content_type
+
+
+@assistant_access_required
+def knowledge_documents(request):
+    """Company-scoped local base-knowledge management."""
+    if not _knowledge_access_required(request):
+        return redirect("erpshop_moduleai_assistant:home")
+    company_id = _active_company(request)
+    documents = AIKnowledgeDocument.objects.filter(company_id=company_id)
+    if request.method == "POST":
+        form = AIKnowledgeDocumentForm(request.POST, request.FILES)
+        if form.is_valid():
+            title = form.cleaned_data["title"].strip()
+            if documents.filter(title=title).exists():
+                form.add_error("title", "A company knowledge document already uses this title.")
+            else:
+                uploaded_file = form.cleaned_data.get("file")
+                extracted_text = (form.cleaned_data.get("extracted_text") or "").strip()
+                content_type = ""
+                content_sha256 = ""
+                try:
+                    if uploaded_file:
+                        file_text, file_sha256, content_type = _extract_knowledge_upload(uploaded_file)
+                        if not extracted_text:
+                            extracted_text = file_text
+                        content_sha256 = file_sha256
+                except ValidationError as exc:
+                    form.add_error("file", exc.message)
+                if not form.errors:
+                    if extracted_text:
+                        content_sha256 = content_sha256 or hashlib.sha256(extracted_text.encode("utf-8")).hexdigest()
+                    document = AIKnowledgeDocument(
+                        company_id=company_id,
+                        title=title,
+                        category=(form.cleaned_data.get("category") or "").strip(),
+                        file=uploaded_file,
+                        original_name=Path(uploaded_file.name).name[:255] if uploaded_file else "",
+                        content_type=content_type,
+                        byte_size=uploaded_file.size if uploaded_file else 0,
+                        extracted_text=extracted_text,
+                        content_sha256=content_sha256,
+                        status=AIKnowledgeDocument.Status.READY if extracted_text else AIKnowledgeDocument.Status.PENDING,
+                        metadata={"ingestion": "local", "created_by_user_id": request.user.pk},
+                    )
+                    document.full_clean()
+                    document.save()
+                    messages.success(
+                        request,
+                        "Knowledge document saved and ready for assistant context."
+                        if extracted_text
+                        else "Knowledge file saved as pending because its content is not locally extractable.",
+                    )
+                    return redirect("erpshop_moduleai_assistant:knowledge_documents")
+    else:
+        form = AIKnowledgeDocumentForm()
+    return render(
+        request,
+        "erpshop_moduleai_assistant/knowledge_documents.html",
+        {"documents": documents[:200], "form": form},
+    )
+
+
+@require_POST
+@assistant_access_required
+def set_knowledge_document_state(request, document_id):
+    if not _knowledge_access_required(request):
+        return redirect("erpshop_moduleai_assistant:home")
+    document = get_object_or_404(AIKnowledgeDocument, pk=document_id, company_id=_active_company(request))
+    action = request.POST.get("action")
+    if action == "archive":
+        document.active = False
+        document.status = AIKnowledgeDocument.Status.ARCHIVED
+        message = "Knowledge document archived. It is no longer included in AI context."
+    elif action == "restore":
+        document.active = True
+        document.status = AIKnowledgeDocument.Status.READY if document.extracted_text else AIKnowledgeDocument.Status.PENDING
+        message = "Knowledge document restored."
+    else:
+        raise Http404("Unknown knowledge action.")
+    document.save(update_fields=["active", "status", "updated_at"])
+    messages.success(request, message)
+    return redirect("erpshop_moduleai_assistant:knowledge_documents")

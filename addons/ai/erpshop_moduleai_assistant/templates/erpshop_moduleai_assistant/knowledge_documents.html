@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Knowledge · Hashy AI Assistant{% endblock %}
+{% block page_title %}Assistant knowledge{% endblock %}
+
+{% block content %}
+<link rel="stylesheet" href="{% static 'erpshop_moduleai_assistant/assistant.css' %}">
+<div class="hashy-knowledge-page">
+  <header class="hashy-hero compact"><div><p class="eyebrow">ERPShop Module AI · Base knowledge</p><h2>Company knowledge</h2><p>Ready documents are included as bounded context for the active company only. Files in unsupported formats remain pending until an administrator supplies approved extracted text.</p></div><a class="btn btn-secondary" href="{% url 'erpshop_moduleai_assistant:home' %}">Back to assistant</a></header>
+  <div class="hashy-knowledge-grid">
+    <section class="panel hashy-knowledge-card"><h3>Add knowledge</h3><p>Paste reviewed content or attach a plain-text, Markdown, CSV, or JSON file. Credentials and provider sync are not stored here.</p>
+      <form method="post" enctype="multipart/form-data" class="hashy-form">{% csrf_token %}
+        {% for field in form %}<div class="field"><label for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}{% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>{% endfor %}
+        {% for error in form.non_field_errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+        <button class="btn btn-primary" type="submit">Save knowledge document</button>
+      </form>
+    </section>
+    <section class="panel hashy-knowledge-card"><h3>Company documents</h3><p>Archived documents are retained for auditability and never enter assistant context.</p>
+      <div class="hashy-knowledge-list">
+        {% for document in documents %}
+          <article class="hashy-knowledge-item {% if not document.active %}inactive{% endif %}"><div><h4>{{ document.title }}</h4><p>{% if document.category %}{{ document.category }} · {% endif %}{% if document.original_name %}{{ document.original_name }} · {% endif %}updated {{ document.updated_at|date:"d M Y H:i" }}</p><div class="hashy-knowledge-meta"><span class="{{ document.status }}">{{ document.get_status_display }}</span>{% if document.active %}<span>active</span>{% endif %}{% if document.extracted_text %}<span>text ready</span>{% endif %}</div></div>
+            <form class="hashy-knowledge-action" method="post" action="{% url 'erpshop_moduleai_assistant:knowledge_document_state' document.pk %}">{% csrf_token %}{% if document.active %}<input type="hidden" name="action" value="archive"><button class="btn btn-secondary" type="submit">Archive</button>{% else %}<input type="hidden" name="action" value="restore"><button class="btn btn-secondary" type="submit">Restore</button>{% endif %}</form>
+          </article>
+        {% empty %}<p class="hashy-empty">No company knowledge has been added yet.</p>{% endfor %}
+      </div>
+    </section>
+  </div>
+</div>
+{% endblock %}

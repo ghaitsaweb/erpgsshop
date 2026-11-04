@@ -268,6 +268,32 @@ def _execute_fetch(arguments):
     }
 
 
+def _execute_message(approval, arguments):
+    from .channel_runtime import ChannelError, send_text
+    from .models import AIChannelConfiguration
+
+    try:
+        channel_id = int(arguments.get("channel"))
+    except (TypeError, ValueError) as exc:
+        raise ToolExecutionError("Message delivery requires a numeric configured channel ID.") from exc
+    recipient = str(arguments.get("recipient") or "").strip()
+    content = str(arguments.get("content") or "").strip()
+    if not recipient or not content:
+        raise ToolExecutionError("Message delivery requires both recipient and content.")
+    channel = AIChannelConfiguration.objects.filter(
+        pk=channel_id,
+        enabled=True,
+        coworker_link__agent_id=approval.agent_id,
+    ).first()
+    if channel is None:
+        raise ToolExecutionError("The selected channel is unavailable for this coworker.")
+    try:
+        send_text(channel, recipient, content)
+    except ChannelError as exc:
+        raise ToolExecutionError(str(exc)) from exc
+    return {"status": "completed", "channel_id": channel.pk, "recipient": recipient, "characters_sent": len(content)}
+
+
 def execute_approved_tool(approval):
     """Execute a supported adapter after an explicit, unexpired human approval."""
     approval = consume_approval(approval)
@@ -278,6 +304,8 @@ def execute_approved_tool(approval):
             result = _execute_filesystem(approval.agent, arguments)
         elif approval.tool_name == "fetch":
             result = _execute_fetch(arguments)
+        elif approval.tool_name == "message":
+            result = _execute_message(approval, arguments)
         else:
             result = {"status": "not_configured", "message": "No governed adapter is configured for this approved tool."}
     except (OSError, ToolExecutionError) as exc:

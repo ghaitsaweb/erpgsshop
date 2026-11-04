@@ -1,4 +1,5 @@
 from unittest.mock import patch
+from tempfile import TemporaryDirectory
 from decimal import Decimal
 from datetime import timedelta
 
@@ -6,6 +7,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.db import connection
 from django.test import TestCase
+from django.test import override_settings
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
@@ -44,7 +46,7 @@ from .models import (
 )
 from .channel_runtime import deliver_task_output, queue_inbound
 from .services import _messages, execute_coworker_task, expire_due_tool_approvals, queue_due_crons, queue_due_heartbeats, queue_subagent
-from .tool_runtime import request_approval
+from .tool_runtime import decide_approval, execute_approved_tool, request_approval
 
 
 PROVIDER_RESULT = {
@@ -782,3 +784,19 @@ class AICoworkerTests(TestCase):
                 {"shared-token": "participant-value"},
             )
         self.assertFalse(system_secret.is_available)
+
+    def test_approved_filesystem_tool_is_scoped_to_the_coworker_workspace(self):
+        self.agent.allowed_tools = ["filesystem"]
+        self.agent.save(update_fields=["allowed_tools", "updated_at"])
+        task = self._task(task_type=AITask.TaskType.PLAN)
+        approval, _created = request_approval(
+            task=task,
+            tool_name="filesystem",
+            request_preview={"tool": "filesystem", "arguments": {"operation": "write", "path": "notes/today.txt", "content": "safe"}},
+        )
+        approval = decide_approval(approval=approval, actor=self.user, approve=True)
+        with TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
+            executed = execute_approved_tool(approval)
+            self.assertEqual(executed.state, AIToolApproval.State.EXECUTED)
+            self.assertEqual(executed.result["status"], "completed")
+            self.assertEqual(executed.result["bytes_written"], 4)

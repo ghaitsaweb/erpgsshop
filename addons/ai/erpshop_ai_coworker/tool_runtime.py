@@ -1,9 +1,15 @@
 """Approval gate for stateful AI tools; tool adapters must call this before execution."""
 
 import hashlib
+import ipaddress
 import json
+import socket
 from datetime import timedelta
+from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -12,6 +18,20 @@ from .models import AITaskEvent, AIToolApproval
 
 
 WRITE_TOOLS = {"erp_write", "message", "sandbox", "mcp", "filesystem", "fetch", "web_search"}
+MAX_TOOL_FETCH_BYTES = 256 * 1024
+MAX_WORKSPACE_FILE_BYTES = 64 * 1024
+
+
+class ToolExecutionError(RuntimeError):
+    pass
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        return None
+
+
+_NO_REDIRECT_OPENER = build_opener(_NoRedirect)
 
 
 TOOL_DEFINITIONS = {
@@ -49,7 +69,11 @@ TOOL_DEFINITIONS = {
         "description": "Request a governed workspace file operation. A human must approve it before execution.",
         "parameters": {
             "type": "object",
-            "properties": {"operation": {"type": "string"}, "path": {"type": "string", "maxLength": 1000}},
+            "properties": {
+                "operation": {"type": "string", "enum": ["list", "read", "write"]},
+                "path": {"type": "string", "maxLength": 1000},
+                "content": {"type": "string", "maxLength": MAX_WORKSPACE_FILE_BYTES},
+            },
             "required": ["operation", "path"],
             "additionalProperties": False,
         },
@@ -170,4 +194,99 @@ def consume_approval(approval):
             raise ValidationError("The tool approval is not executable.")
         approval.state = AIToolApproval.State.EXECUTED
         approval.save(update_fields=["state", "updated_at"])
+    return approval
+
+
+def _workspace_path(agent, raw_path):
+    relative = str(raw_path or "").strip().replace("\\", "/")
+    if not relative or relative.startswith("/") or "\x00" in relative:
+        raise ToolExecutionError("Workspace paths must be non-empty relative paths.")
+    root = (Path(settings.MEDIA_ROOT) / "ai_coworker_workspaces" / (agent.slug or str(agent.pk))).resolve()
+    target = (root / relative).resolve()
+    if root != target and root not in target.parents:
+        raise ToolExecutionError("Workspace path escapes the coworker workspace.")
+    return root, target
+
+
+def _execute_filesystem(agent, arguments):
+    root, target = _workspace_path(agent, arguments.get("path"))
+    operation = str(arguments.get("operation") or "").strip()
+    root.mkdir(parents=True, exist_ok=True)
+    if operation == "list":
+        if not target.exists() or not target.is_dir():
+            raise ToolExecutionError("The requested workspace directory does not exist.")
+        children = sorted(item.name for item in target.iterdir())[:200]
+        return {"status": "completed", "operation": operation, "path": str(target.relative_to(root)), "entries": children}
+    if operation == "read":
+        if not target.is_file():
+            raise ToolExecutionError("The requested workspace file does not exist.")
+        if target.stat().st_size > MAX_WORKSPACE_FILE_BYTES:
+            raise ToolExecutionError("The requested workspace file exceeds the safe read limit.")
+        return {
+            "status": "completed",
+            "operation": operation,
+            "path": str(target.relative_to(root)),
+            "content": target.read_text(encoding="utf-8", errors="replace"),
+        }
+    if operation == "write":
+        content = arguments.get("content")
+        if not isinstance(content, str) or len(content.encode("utf-8")) > MAX_WORKSPACE_FILE_BYTES:
+            raise ToolExecutionError("Workspace writes must be UTF-8 text within the safe size limit.")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        return {"status": "completed", "operation": operation, "path": str(target.relative_to(root)), "bytes_written": len(content.encode("utf-8"))}
+    raise ToolExecutionError("Unsupported workspace operation.")
+
+
+def _execute_fetch(arguments):
+    url = str(arguments.get("url") or "").strip()
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
+        raise ToolExecutionError("Fetch requires a credential-free HTTPS URL.")
+    try:
+        addresses = {value[4][0] for value in socket.getaddrinfo(parsed.hostname, 443, type=socket.SOCK_STREAM)}
+    except socket.gaierror as exc:
+        raise ToolExecutionError("Fetch host cannot be resolved.") from exc
+    for address in addresses:
+        candidate = ipaddress.ip_address(address)
+        if candidate.is_private or candidate.is_loopback or candidate.is_link_local or candidate.is_reserved or candidate.is_multicast:
+            raise ToolExecutionError("Fetch host resolves to a non-public address.")
+    request = Request(url, headers={"Accept": "text/plain,text/html,application/json;q=0.9"})
+    with _NO_REDIRECT_OPENER.open(request, timeout=20) as response:
+        body = response.read(MAX_TOOL_FETCH_BYTES + 1)
+        content_type = response.headers.get("Content-Type", "")[:120]
+        final_url = response.geturl()
+        status = response.status
+    if len(body) > MAX_TOOL_FETCH_BYTES:
+        raise ToolExecutionError("Fetch response exceeds the safe size limit.")
+    return {
+        "status": "completed",
+        "url": final_url,
+        "http_status": status,
+        "content_type": content_type,
+        "content": body.decode("utf-8", errors="replace")[:MAX_TOOL_FETCH_BYTES],
+    }
+
+
+def execute_approved_tool(approval):
+    """Execute a supported adapter after an explicit, unexpired human approval."""
+    approval = consume_approval(approval)
+    preview = approval.request_preview if isinstance(approval.request_preview, dict) else {}
+    arguments = preview.get("arguments") if isinstance(preview.get("arguments"), dict) else {}
+    try:
+        if approval.tool_name == "filesystem":
+            result = _execute_filesystem(approval.agent, arguments)
+        elif approval.tool_name == "fetch":
+            result = _execute_fetch(arguments)
+        else:
+            result = {"status": "not_configured", "message": "No governed adapter is configured for this approved tool."}
+    except (OSError, ToolExecutionError) as exc:
+        result = {"status": "error", "message": str(exc)[:1000]}
+    approval.result = result
+    approval.save(update_fields=["result", "updated_at"])
+    AITaskEvent.objects.create(
+        task=approval.task,
+        event="tool_executed",
+        details={"approval_id": approval.pk, "tool": approval.tool_name, "status": result.get("status")},
+    )
     return approval

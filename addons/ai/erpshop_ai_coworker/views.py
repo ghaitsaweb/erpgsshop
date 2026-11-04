@@ -59,7 +59,7 @@ from .models import (
 )
 from .services import next_schedule_run, queue_coworker_task, queue_subagent
 from .tasks import process_coworker_task
-from .tool_runtime import decide_approval
+from .tool_runtime import decide_approval, execute_approved_tool
 
 
 APP_SLUG = "ai-coworker"
@@ -599,7 +599,9 @@ def decide_tool_approval(request, approval_id):
     saved = decide_approval(approval=approval, actor=request.user, approve=decision == "approve")
     tool_label = saved.tool_name.replace("_", " ")
     if saved.state == AIToolApproval.State.APPROVED:
-        django_messages.success(request, f"{tool_label} request approved. No external adapter was executed.")
+        saved = execute_approved_tool(saved)
+        result_status = (saved.result or {}).get("status", "completed")
+        django_messages.success(request, f"{tool_label} request approved and processed ({result_status}).")
     elif saved.state == AIToolApproval.State.REJECTED:
         django_messages.info(request, f"{tool_label} request rejected.")
     else:

@@ -21,6 +21,11 @@ def assistant_attachment_path(instance, filename):
     return f"ai_assistant/{instance.session_id}/{uuid.uuid4().hex}-{safe_name}"
 
 
+def knowledge_document_path(instance, filename):
+    safe_name = Path(filename).name[:120]
+    return f"ai_knowledge/{instance.company_id}/{uuid.uuid4().hex}-{safe_name}"
+
+
 class AssistantConfiguration(TimeStampedModel):
     """One company-scoped provider configuration.
 
@@ -50,6 +55,10 @@ class AssistantConfiguration(TimeStampedModel):
     active = models.BooleanField(default=False)
     allow_erp_context = models.BooleanField(default=True)
     allow_file_content = models.BooleanField(default=False)
+    allow_knowledge_context = models.BooleanField(
+        default=True,
+        help_text="Include bounded active company knowledge documents in assistant context.",
+    )
 
     class Meta:
         ordering = ["company__name"]
@@ -641,3 +650,42 @@ class AIDigestRecord(TimeStampedModel):
 
     def __str__(self):
         return self.summary or self.source_ref or "AI digest"
+
+
+class AIKnowledgeDocument(TimeStampedModel):
+    """Company-scoped base knowledge, stored locally until an explicit sync is configured."""
+
+    class Status(models.TextChoices):
+        READY = "ready", "Ready"
+        PENDING = "pending", "Pending extraction"
+        FAILED = "failed", "Extraction failed"
+        ARCHIVED = "archived", "Archived"
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="ai_knowledge_documents")
+    title = models.CharField(max_length=255)
+    category = models.CharField(max_length=100, blank=True)
+    file = models.FileField(upload_to=knowledge_document_path, blank=True)
+    original_name = models.CharField(max_length=255, blank=True)
+    content_type = models.CharField(max_length=120, blank=True)
+    byte_size = models.PositiveBigIntegerField(default=0)
+    extracted_text = models.TextField(blank=True)
+    content_sha256 = models.CharField(max_length=64, blank=True, db_index=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING, db_index=True)
+    error_message = models.CharField(max_length=500, blank=True)
+    active = models.BooleanField(default=True, db_index=True)
+
+    class Meta:
+        ordering = ["category", "title", "id"]
+        constraints = [models.UniqueConstraint(fields=["company", "title"], name="unique_ai_knowledge_title")]
+        indexes = [models.Index(fields=["company", "active", "status", "id"], name="ai_knowledge_context")]
+
+    def clean(self):
+        super().clean()
+        if len(self.extracted_text or "") > 200_000:
+            raise ValidationError({"extracted_text": "Extracted knowledge text must be at most 200,000 characters."})
+        if self.status == self.Status.READY and not (self.extracted_text or self.file):
+            raise ValidationError({"status": "Ready knowledge requires extracted text or a source file."})
+
+    def __str__(self):
+        return self.title

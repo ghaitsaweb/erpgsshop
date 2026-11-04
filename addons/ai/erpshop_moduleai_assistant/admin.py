@@ -7,6 +7,7 @@ from .models import (
     AIDigestRuleSource,
     AIDigestRuleSourceAction,
     AIHashyInteractionSignalOutbox,
+    AIKnowledgeDocument,
     AIWorkEpisode,
     AIWorkEpisodeEvent,
     AIWorkProfileRefreshRun,
@@ -146,3 +147,11 @@ class AIDigestRecordAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+
+@admin.register(AIKnowledgeDocument)
+class AIKnowledgeDocumentAdmin(admin.ModelAdmin):
+    list_display = ("title", "company", "category", "status", "active", "updated_at")
+    list_filter = ("status", "active", "company", "category")
+    search_fields = ("title", "category", "original_name")
+    readonly_fields = ("content_sha256", "byte_size", "created_at", "updated_at")

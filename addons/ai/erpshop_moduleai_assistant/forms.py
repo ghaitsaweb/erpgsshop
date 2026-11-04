@@ -18,6 +18,7 @@ class AssistantConfigurationForm(forms.ModelForm):
             "active",
             "allow_erp_context",
             "allow_file_content",
+            "allow_knowledge_context",
         ]
         widgets = {
             "system_prompt": forms.Textarea(attrs={"rows": 5}),

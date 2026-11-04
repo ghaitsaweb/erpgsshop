@@ -21,6 +21,7 @@ from .models import (
     AIDigestRule,
     AIDigestRuleSource,
     AIDigestRuleSourceAction,
+    AIKnowledgeDocument,
     AssistantConfiguration,
     AssistantMessage,
     AssistantSession,
@@ -336,3 +337,25 @@ class HashyAssistantTests(TestCase):
         self.assertEqual(record.evidence[0]["canonical_action"], "assistant_reply")
         self.assertNotIn("message_id", str(record.evidence))
         self.assertEqual(record.confidence_score, 1)
+
+    def test_active_company_knowledge_is_bounded_in_assistant_context(self):
+        config = AssistantConfiguration.objects.create(company=self.company, allow_knowledge_context=True)
+        session = AssistantSession.objects.create(company=self.company, configuration=config, user=self.user)
+        AIKnowledgeDocument.objects.create(
+            company=self.company,
+            title="Credit policy",
+            category="Finance",
+            extracted_text="Credit terms are net 30.",
+            status=AIKnowledgeDocument.Status.READY,
+        )
+        other_company = Company.objects.create(code="AI2", name="Other AI Company")
+        AIKnowledgeDocument.objects.create(
+            company=other_company,
+            title="Other policy",
+            extracted_text="This must not cross company scope.",
+            status=AIKnowledgeDocument.Status.READY,
+        )
+        messages = _request_messages(session)
+        context = "\n".join(message["content"] for message in messages)
+        self.assertIn("Credit terms are net 30.", context)
+        self.assertNotIn("This must not cross company scope.", context)

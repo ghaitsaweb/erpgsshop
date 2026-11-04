@@ -13,7 +13,19 @@ from modules.apphub.models import ERPApp
 from modules.organization.models import UserOrganizationAccess
 
 from .forms import HashyOSConnectionForm
-from .models import AssistantConfiguration, AssistantMessage, AssistantSession, HashyOSConnection
+from .models import (
+    AIWorkProfileRefreshSetting,
+    AIWorkProfileSignal,
+    AIWorkSignalOutbox,
+    AIDigestRecord,
+    AIDigestRule,
+    AIDigestRuleSource,
+    AIDigestRuleSourceAction,
+    AssistantConfiguration,
+    AssistantMessage,
+    AssistantSession,
+    HashyOSConnection,
+)
 from .services import (
     MAX_PROVIDER_RESPONSE_BYTES,
     AssistantProviderError,
@@ -24,6 +36,8 @@ from .services import (
     execute_message,
     request_agent_completion,
 )
+from .work_intelligence import profile_context_for, record_assistant_turn, refresh_work_profiles
+from .digest import run_digest_rule
 
 
 class HashyAssistantTests(TestCase):
@@ -259,3 +273,66 @@ class HashyAssistantTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Provider configuration needed")
         self.assertFalse(HashyOSConnection.objects.exists())
+
+    def test_work_intelligence_derives_a_soft_profile_without_storing_message_content(self):
+        config = AssistantConfiguration.objects.create(company=self.company)
+        session = AssistantSession.objects.create(company=self.company, configuration=config, user=self.user)
+        for index in range(3):
+            request_message = AssistantMessage.objects.create(
+                session=session,
+                role=AssistantMessage.Role.USER,
+                content=f"Sensitive request {index}",
+                state=AssistantMessage.State.COMPLETED,
+            )
+            response_message = AssistantMessage.objects.create(
+                session=session,
+                role=AssistantMessage.Role.ASSISTANT,
+                content=f"Sensitive response {index}",
+                state=AssistantMessage.State.COMPLETED,
+                input_tokens=10,
+                output_tokens=5,
+            )
+            record_assistant_turn(
+                session=session,
+                request_message=request_message,
+                response_message=response_message,
+            )
+        setting = AIWorkProfileRefreshSetting.objects.create(company=self.company)
+        result = refresh_work_profiles(setting_id=setting.pk)
+        self.assertEqual(result["scanned"], 3)
+        signal = AIWorkProfileSignal.objects.get(company=self.company, workflow_scope="assistant_chat")
+        self.assertGreaterEqual(signal.confidence, 0)
+        self.assertNotIn("Sensitive", str(signal.profile_payload))
+        self.assertEqual(len(profile_context_for(company_id=self.company.pk, actor_id=self.user.pk)), 1)
+        outbox = AIWorkSignalOutbox.objects.get(company=self.company)
+        self.assertNotIn("Sensitive", str(outbox.payload))
+
+    def test_digest_rule_uses_only_privacy_filtered_work_signal_metadata(self):
+        rule = AIDigestRule.objects.create(
+            company=self.company,
+            name="Assistant health",
+            trigger_type=AIDigestRule.Trigger.EVENT,
+        )
+        source = AIDigestRuleSource.objects.create(
+            rule=rule,
+            module_key="ai",
+            model_key="assistant_turn",
+        )
+        AIDigestRuleSourceAction.objects.create(
+            source=source,
+            canonical_action_key="assistant_reply",
+            method_name="assistant_reply",
+            friendly_label="Assistant reply",
+        )
+        AIWorkSignalOutbox.objects.create(
+            company=self.company,
+            actor=self.user,
+            event_type="assistant_turn_completed",
+            canonical_action="assistant_reply",
+            payload={"message_id": 99, "input_tokens": 10},
+        )
+        record = run_digest_rule(rule_id=rule.pk)
+        self.assertIsInstance(record, AIDigestRecord)
+        self.assertEqual(record.evidence[0]["canonical_action"], "assistant_reply")
+        self.assertNotIn("message_id", str(record.evidence))
+        self.assertEqual(record.confidence_score, 1)

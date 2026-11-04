@@ -5,6 +5,7 @@ from .models import (
     AICompanyCredit,
     AICreditLedger,
     AIConversation,
+    AICoworkerSecret,
     AIMessage,
     AIModelPricing,
     AIModelTemplate,
@@ -27,6 +28,14 @@ class AIAgentInline(admin.TabularInline):
 class AIWorkspaceAdmin(admin.ModelAdmin):
     list_display = ("name", "company", "active")
     inlines = [AIAgentInline]
+
+
+@admin.register(AICoworkerSecret)
+class AICoworkerSecretAdmin(admin.ModelAdmin):
+    list_display = ("agent", "scope", "participant", "key", "credential_env_var", "active", "is_available")
+    list_filter = ("scope", "active")
+    search_fields = ("agent__name", "key", "credential_env_var", "participant__display_name")
+    readonly_fields = ("is_available", "created_at", "updated_at")
 
 
 class AIMessageInline(admin.TabularInline):

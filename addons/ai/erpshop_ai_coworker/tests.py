@@ -28,6 +28,7 @@ from .models import (
     AICoworkerHeartbeat,
     AICoworkerChannel,
     AICoworkerMemory,
+    AICoworkerSecret,
     AICoworkerSubagent,
     AIMessage,
     AIModelCatalogAuditEvent,
@@ -742,3 +743,42 @@ class AICoworkerTests(TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertFalse(AITask.objects.filter(title="Unsafe field").exists())
+
+    def test_secret_references_merge_system_and_participant_environment_values(self):
+        participant = AICoworkerParticipant.objects.create(
+            agent=self.agent,
+            channel_type="telegram",
+            external_user_id="coworker-secret-user",
+            external_chat_id="coworker-secret-chat",
+        )
+        system_secret = AICoworkerSecret(
+            agent=self.agent,
+            scope=AICoworkerSecret.Scope.SYSTEM,
+            key="shared-token",
+            credential_env_var="COWORKER_SHARED_TOKEN",
+        )
+        system_secret.full_clean()
+        system_secret.save()
+        participant_secret = AICoworkerSecret(
+            agent=self.agent,
+            participant=participant,
+            scope=AICoworkerSecret.Scope.PARTICIPANT,
+            key="shared-token",
+            credential_env_var="COWORKER_PARTICIPANT_TOKEN",
+        )
+        participant_secret.full_clean()
+        participant_secret.save()
+
+        with patch.dict(
+            "os.environ",
+            {"COWORKER_SHARED_TOKEN": "system-value", "COWORKER_PARTICIPANT_TOKEN": "participant-value"},
+        ):
+            self.assertTrue(system_secret.is_available)
+            self.assertEqual(
+                AICoworkerSecret.resolve_for_participant(
+                    agent_id=self.agent.pk,
+                    participant_id=participant.pk,
+                ),
+                {"shared-token": "participant-value"},
+            )
+        self.assertFalse(system_secret.is_available)

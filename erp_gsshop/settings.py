@@ -133,6 +133,14 @@ CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://redis:6379/1
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 1800
 CELERY_BEAT_SCHEDULE = {
+    "ai-work-profile-refresh": {
+        "task": "erpshop_ai_assistant.refresh_work_profiles",
+        "schedule": 300.0,
+    },
+    "ai-digest-scheduler": {
+        "task": "erpshop_ai_assistant.queue_due_digests",
+        "schedule": 300.0,
+    },
     "ai-coworker-due-crons": {
         "task": "ai_coworker.queue_due_crons",
         "schedule": 60.0,

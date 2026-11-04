@@ -1,3 +1,5 @@
+import os
+import re
 import uuid
 from datetime import UTC, datetime
 
@@ -587,6 +589,104 @@ class AICoworkerParticipant(TimeStampedModel):
 
     def __str__(self):
         return self.display_name or self.username or self.external_user_id
+
+
+class AICoworkerSecret(TimeStampedModel):
+    """A coworker secret reference with HMX-compatible system and participant scopes.
+
+    The HMX source module persists encrypted values.  ERP GS Shop deliberately
+    keeps the secret material outside the database: every record names an
+    environment variable mounted into the web and worker services.  Resolving
+    a record is intentionally a runtime-only operation, so forms, views, and
+    audit payloads never expose its value.
+    """
+
+    class Scope(models.TextChoices):
+        PARTICIPANT = "participant", "Participant"
+        SYSTEM = "system", "System"
+
+    agent = models.ForeignKey(AIAgent, on_delete=models.CASCADE, related_name="secret_references")
+    scope = models.CharField(max_length=16, choices=Scope.choices, default=Scope.PARTICIPANT)
+    participant = models.ForeignKey(
+        AICoworkerParticipant,
+        on_delete=models.CASCADE,
+        related_name="secret_references",
+        blank=True,
+        null=True,
+    )
+    key = models.CharField(max_length=128)
+    credential_env_var = models.CharField(
+        max_length=128,
+        help_text="Environment variable holding the secret value; its value is never stored in ERP GS Shop.",
+    )
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["scope", "key", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["agent", "key"],
+                condition=models.Q(scope="system"),
+                name="unique_ai_system_secret_key",
+            ),
+            models.UniqueConstraint(
+                fields=["agent", "participant", "key"],
+                condition=models.Q(scope="participant"),
+                name="unique_ai_participant_secret_key",
+            ),
+        ]
+        indexes = [models.Index(fields=["agent", "scope", "active", "id"], name="ai_secret_resolution")]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.scope == self.Scope.SYSTEM and self.participant_id:
+            errors["participant"] = "System secrets cannot be bound to a participant."
+        if self.scope == self.Scope.PARTICIPANT and not self.participant_id:
+            errors["participant"] = "Participant secrets require a participant."
+        if self.participant_id and self.participant.agent_id != self.agent_id:
+            errors["participant"] = "The participant belongs to another coworker."
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,127}", (self.key or "").strip()):
+            errors["key"] = "Use a secret key beginning with a letter and containing only letters, numbers, dots, underscores, or hyphens."
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", (self.credential_env_var or "").strip()):
+            errors["credential_env_var"] = "Use an uppercase environment-variable name."
+        if errors:
+            raise ValidationError(errors)
+
+    @property
+    def is_available(self):
+        return bool(self.active and self.credential_env_var and os.getenv(self.credential_env_var))
+
+    @classmethod
+    def resolve_for_system(cls, *, agent_id):
+        """Return active system references for trusted runtime adapters only."""
+        return {
+            record.key: value
+            for record in cls.objects.filter(agent_id=agent_id, scope=cls.Scope.SYSTEM, active=True).only(
+                "key", "credential_env_var"
+            )
+            if (value := os.getenv(record.credential_env_var, ""))
+        }
+
+    @classmethod
+    def resolve_for_participant(cls, *, agent_id, participant_id, include_system=True):
+        """Merge system defaults with participant overrides without persisting values."""
+        resolved = cls.resolve_for_system(agent_id=agent_id) if include_system else {}
+        if participant_id:
+            for record in cls.objects.filter(
+                agent_id=agent_id,
+                participant_id=participant_id,
+                scope=cls.Scope.PARTICIPANT,
+                active=True,
+            ).only("key", "credential_env_var"):
+                value = os.getenv(record.credential_env_var, "")
+                if value:
+                    resolved[record.key] = value
+        return resolved
+
+    def __str__(self):
+        subject = self.participant or "System"
+        return f"{self.agent} · {subject} · {self.key}"
 
 
 class AIChannelSession(TimeStampedModel):

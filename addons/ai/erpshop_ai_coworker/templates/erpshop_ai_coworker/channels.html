@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Channels · AI Coworker · ERP GSSHOP{% endblock %}
+{% block page_title %}AI Coworker Channels{% endblock %}
+
+{% block content %}
+<link rel="stylesheet" href="{% static 'erpshop_ai_coworker/coworker.css' %}">
+<div class="coworker-shell">
+  <header class="coworker-hero">
+    <div><p class="eyebrow">AI Coworker · Phase 3</p><h2>Inbound channels, governed replies</h2><p>Telegram and WhatsApp Cloud callbacks are audited before a coworker receives a bounded task. WhatsApp Web uses a separately operated HTTPS bridge.</p></div>
+    <div class="coworker-actions"><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:home' %}">Workspace</a><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:webhooks' %}">Webhooks</a></div>
+  </header>
+
+  <section class="coworker-boundary"><strong>Credential boundary</strong><span>This page stores environment-variable names, never provider tokens. Keep a channel disabled until its callback URL, provider secret, and active coworker are confirmed.</span></section>
+
+  <div class="coworker-grid">
+    <main class="panel coworker-run-card">
+      <header><p class="eyebrow">{% if channel %}Edit channel{% else %}New channel{% endif %}</p><h3>{% if channel %}{{ channel.name }}{% else %}Configure an inbound channel{% endif %}</h3></header>
+      {% if form %}
+        <form method="post" action="{% if channel %}{% url 'erpshop_ai_coworker:channel_update' channel.pk %}{% else %}{% url 'erpshop_ai_coworker:channel_save' %}{% endif %}" class="coworker-form">{% csrf_token %}
+          {% for field in form %}<div class="field {% if field.errors %}has-error{% endif %}"><label for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}{% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>{% endfor %}
+          <button class="btn btn-primary" type="submit">Save channel</button>
+        </form>
+      {% endif %}
+      {% if callback_url %}
+        <div class="coworker-boundary"><strong>Provider callback URL</strong><span><code>{{ callback_url }}</code></span></div>
+        <p class="coworker-empty">Telegram: set this as the webhook URL and use <code>app_secret_env_var</code> for its callback secret. WhatsApp Cloud: use this for verification and events; set <code>verify_token_env_var</code> in the JSON.</p>
+      {% endif %}
+    </main>
+
+    <aside class="panel coworker-agents">
+      <header><p class="eyebrow">Configured</p><h3>Channels</h3></header>
+      <nav>{% for item in channels %}<a href="{% url 'erpshop_ai_coworker:channels' %}?channel={{ item.pk }}" class="{% if channel.pk == item.pk %}selected{% endif %}"><span>{{ item.name }}</span><small>{{ item.get_channel_type_display }} · {% if item.enabled %}enabled{% else %}disabled{% endif %}{% if item.coworker_link %} · {{ item.coworker_link.agent.name }}{% endif %}</small></a>{% empty %}<p class="coworker-empty">No inbound channels are configured.</p>{% endfor %}</nav>
+    </aside>
+  </div>
+
+  {% if channel %}
+  <section class="panel coworker-queue">
+    <header><div><p class="eyebrow">Audit</p><h3>Inbound events</h3></div><small>Latest {{ events|length }} events</small></header>
+    <div class="coworker-table-wrap"><table><thead><tr><th>Received</th><th>Coworker</th><th>State</th><th>Source</th><th>Error</th></tr></thead><tbody>
+      {% for event in events %}<tr><td>{{ event.received_at|date:"d M Y H:i:s" }}</td><td>{{ event.agent.name|default:"—" }}</td><td><span class="status status-{{ event.dispatch_state }}">{{ event.get_dispatch_state_display }}</span></td><td>{{ event.remote_ip|default:"—" }}</td><td>{{ event.error|default:"—" }}</td></tr>{% empty %}<tr><td colspan="5" class="coworker-empty">No inbound event has been recorded for this channel.</td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

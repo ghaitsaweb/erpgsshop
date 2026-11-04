@@ -234,6 +234,10 @@ class AITask(TimeStampedModel):
         FAILED = "failed", "Failed"
         CANCELLED = "cancelled", "Cancelled"
 
+    class Feedback(models.TextChoices):
+        HELPFUL = "helpful", "Helpful"
+        UNHELPFUL = "unhelpful", "Needs improvement"
+
     agent = models.ForeignKey(AIAgent, on_delete=models.PROTECT, related_name="tasks")
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="ai_coworker_tasks")
     branch = models.ForeignKey(
@@ -275,6 +279,9 @@ class AITask(TimeStampedModel):
     result_data = models.JSONField(default=dict, blank=True)
     result_text = models.TextField(blank=True)
     error_message = models.TextField(blank=True)
+    feedback = models.CharField(max_length=16, choices=Feedback.choices, blank=True)
+    feedback_note = models.TextField(blank=True)
+    feedback_at = models.DateTimeField(blank=True, null=True)
     cancel_requested = models.BooleanField(default=False)
     input_tokens = models.PositiveIntegerField(default=0)
     output_tokens = models.PositiveIntegerField(default=0)
@@ -456,6 +463,26 @@ class AIModelPricing(TimeStampedModel):
                     break
         if errors:
             raise ValidationError(errors)
+
+
+class AIModelCatalogAuditEvent(TimeStampedModel):
+    """Minimal, credential-free audit trail for global AI model catalog changes."""
+
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="ai_model_catalog_events",
+    )
+    event = models.CharField(max_length=80)
+    object_type = models.CharField(max_length=40)
+    object_id = models.PositiveBigIntegerField()
+    details = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-id"]
+        indexes = [models.Index(fields=["object_type", "object_id", "-id"], name="ai_model_catalog_audit")]
 
 
 class AICompanyCredit(TimeStampedModel):
@@ -828,8 +855,10 @@ class AIChannelConfiguration(TimeStampedModel):
     def clean(self):
         super().clean()
         errors = {}
-        if self.enabled and self.channel_type != self.ChannelType.WHATSAPP_WEB and not self.credential_env_var:
+        if self.enabled and not self.credential_env_var:
             errors["credential_env_var"] = "An environment credential name is required for an enabled channel."
+        if self.enabled and not self.app_secret_env_var:
+            errors["app_secret_env_var"] = "An environment callback-secret name is required for an enabled channel."
         if not isinstance(self.config, dict):
             errors["config"] = "Channel configuration must be a JSON object."
         for field in ("credential_env_var", "app_secret_env_var"):

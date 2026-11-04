@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}AI Operations · ERP GSSHOP{% endblock %}
+{% block page_title %}AI Coworker Operations{% endblock %}
+
+{% block content %}
+<link rel="stylesheet" href="{% static 'erpshop_ai_coworker/coworker.css' %}">
+<div class="coworker-shell">
+  <header class="coworker-hero">
+    <div><p class="eyebrow">AI Coworker · Operations</p><h2>Cost, reliability, and human gates</h2><p>Company-scoped provider usage and task health, with every non-read tool request held for a named human decision.</p></div>
+    <div class="coworker-actions"><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:home' %}">Workspace</a><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:runtime' %}">Runtime</a>{% if user.is_superuser %}<a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:credit_policy' %}">Credit policy</a>{% endif %}</div>
+  </header>
+
+  <section class="coworker-boundary"><strong>Credit guard</strong><span>{% if credit and credit.enforce_credits %}Enabled: new provider turns stop when balance reaches the safety limit of {{ credit.credit_limit }} {{ credit.currency }}.{% elif credit %}Observed only: enable credit enforcement in the company credit policy to stop new provider turns at the safety limit.{% else %}No company credit policy is configured; usage is still recorded for every completed provider turn.{% endif %}</span></section>
+
+  <section class="coworker-metrics">
+    <article class="panel coworker-metric"><small>Credit balance</small><strong>{% if credit %}{{ credit.credit_balance }} {{ credit.currency }}{% else %}—{% endif %}</strong><p>{% if credit %}Safety limit {{ credit.credit_limit }} · {% if credit.enforce_credits %}enforced{% else %}not enforced{% endif %}{% else %}No credit policy{% endif %}</p></article>
+    <article class="panel coworker-metric"><small>Usage · last 24h</small><strong>{{ usage_24h.runs }} runs</strong><p>{{ usage_24h.input_tokens }} input · {{ usage_24h.output_tokens }} output tokens</p></article>
+    <article class="panel coworker-metric"><small>Usage · last 7 days</small><strong>{{ usage_7d.runs }} runs</strong><p>{{ usage_7d.input_tokens }} input · {{ usage_7d.output_tokens }} output tokens · avg {{ usage_7d.average_latency_ms }} ms</p></article>
+    <article class="panel coworker-metric"><small>Task health · 7 days</small><strong>{{ task_totals.completed }}/{{ task_totals.total }} completed</strong><p>{{ task_totals.failed }} failed · {{ task_totals.queued }} queued/running · {{ task_totals.cancelled }} cancelled</p></article>
+  </section>
+
+  <section class="coworker-boundary"><strong>Quality feedback · last 7 days</strong><span>{{ feedback_totals.helpful }} helpful · {{ feedback_totals.unhelpful }} needs improvement · {{ feedback_totals.total }} rated completed tasks. Feedback is a quality signal only and never becomes a provider instruction.</span></section>
+
+  <section class="panel coworker-queue">
+    <header><div><p class="eyebrow">Human gate</p><h3>Pending tool requests</h3></div><small>Expired requests are closed automatically every minute. Approval records a decision only; no external adapter runs from this screen.</small></header>
+    <div class="coworker-table-wrap"><table><thead><tr><th>Expires</th><th>Coworker / task</th><th>Request</th><th>Preview</th><th>Decision</th></tr></thead><tbody>
+      {% for approval in pending_approvals %}<tr><td>{{ approval.expires_at|date:"d M Y H:i:s" }}</td><td>{{ approval.agent.name }}<small>{{ approval.task.title }}</small></td><td>{{ approval.tool_name }}</td><td><code>{{ approval.request_preview|truncatechars:180 }}</code></td><td><div class="coworker-approval-actions"><form method="post" action="{% url 'erpshop_ai_coworker:approval_decide' approval.pk %}">{% csrf_token %}<input type="hidden" name="decision" value="approve"><button class="btn btn-primary" type="submit">Approve</button></form><form method="post" action="{% url 'erpshop_ai_coworker:approval_decide' approval.pk %}">{% csrf_token %}<input type="hidden" name="decision" value="reject"><button class="btn btn-secondary" type="submit">Reject</button></form></div></td></tr>{% empty %}<tr><td colspan="5" class="coworker-empty">No pending non-read tool request.</td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+
+  <section class="panel coworker-queue">
+    <header><div><p class="eyebrow">Provider usage</p><h3>Usage by coworker · last 7 days</h3></div></header>
+    <div class="coworker-table-wrap"><table><thead><tr><th>Coworker</th><th>Runs</th><th>Tokens</th><th>Cost</th><th>Average latency</th></tr></thead><tbody>
+      {% for item in agent_usage %}<tr><td>{{ item.agent__name }}</td><td>{{ item.runs }}</td><td>{{ item.input_tokens }} in · {{ item.output_tokens }} out</td><td>{{ item.total_cost|floatformat:6 }} {{ item.currency }}</td><td>{{ item.average_latency_ms|floatformat:0 }} ms</td></tr>{% empty %}<tr><td colspan="5" class="coworker-empty">No completed provider usage in the last 7 days.</td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+
+  <div class="coworker-grid">
+    <section class="panel coworker-queue"><header><div><p class="eyebrow">Failures</p><h3>Recent safe failures</h3></div></header><div class="coworker-table-wrap"><table><thead><tr><th>Task</th><th>Coworker</th><th>When</th><th>Diagnostic</th></tr></thead><tbody>{% for task in recent_failures %}<tr><td><a href="{% url 'erpshop_ai_coworker:task_detail' task.pk %}">{{ task.title }}</a></td><td>{{ task.agent.name }}</td><td>{{ task.completed_at|date:"d M Y H:i" }}</td><td>{{ task.error_message|truncatechars:120 }}</td></tr>{% empty %}<tr><td colspan="4" class="coworker-empty">No failed task recorded.</td></tr>{% endfor %}</tbody></table></div></section>
+    <section class="panel coworker-queue"><header><div><p class="eyebrow">Trace</p><h3>Recent provider turns</h3></div></header><div class="coworker-table-wrap"><table><thead><tr><th>When</th><th>Coworker</th><th>Model</th><th>Cost</th></tr></thead><tbody>{% for item in recent_usage %}<tr><td>{{ item.created_at|date:"d M Y H:i" }}</td><td>{{ item.agent.name }}</td><td>{{ item.model_name }}</td><td>{{ item.total_cost|floatformat:6 }} {{ item.currency }}</td></tr>{% empty %}<tr><td colspan="4" class="coworker-empty">No provider turn recorded.</td></tr>{% endfor %}</tbody></table></div></section>
+  </div>
+</div>
+{% endblock %}

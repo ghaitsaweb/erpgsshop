@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}AI Credit Policy · ERP GSSHOP{% endblock %}
+{% block page_title %}AI Credit Policy{% endblock %}
+
+{% block content %}
+<link rel="stylesheet" href="{% static 'erpshop_ai_coworker/coworker.css' %}">
+<div class="coworker-shell">
+  <header class="coworker-hero">
+    <div><p class="eyebrow">AI Coworker · System administration</p><h2>Company credit policy and ledger</h2><p>Provider usage is debited automatically after a completed turn. Balance changes on this page are recorded as immutable ledger entries with a named actor.</p></div>
+    <div class="coworker-actions"><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:operations' %}">Operations</a><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:home' %}">Workspace</a></div>
+  </header>
+
+  <section class="coworker-boundary"><strong>Current balance</strong><span>{% if credit %}{{ credit.credit_balance }} {{ credit.currency }} · safety limit {{ credit.credit_limit }} · {% if credit.enforce_credits %}enforcement enabled{% else %}observed only{% endif %}{% else %}No credit policy has been created for this company yet.{% endif %}</span></section>
+
+  <div class="coworker-grid">
+    <section class="panel coworker-run-card"><header><p class="eyebrow">Policy</p><h3>Guard configuration</h3></header><form method="post" action="{% url 'erpshop_ai_coworker:credit_policy_save' %}" class="coworker-form">{% csrf_token %}{% for field in policy_form %}<div class="field {% if field.errors %}has-error{% endif %}"><label for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}{% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>{% endfor %}<button class="btn btn-primary" type="submit">Save policy</button></form><p class="coworker-empty">Saving a policy never changes the current balance.</p></section>
+    <section class="panel coworker-run-card"><header><p class="eyebrow">Ledger entry</p><h3>Grant, refund, or adjustment</h3></header><form method="post" action="{% url 'erpshop_ai_coworker:credit_adjust' %}" class="coworker-form">{% csrf_token %}{% for field in adjustment_form %}<div class="field {% if field.errors %}has-error{% endif %}"><label for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}{% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>{% endfor %}<button class="btn btn-primary" type="submit">Record ledger entry</button></form><p class="coworker-empty">A policy must exist first. A manual adjustment may be positive or negative.</p></section>
+  </div>
+
+  <section class="panel coworker-queue"><header><div><p class="eyebrow">Audit</p><h3>Recent credit ledger</h3></div><small>Latest {{ ledger_entries|length }} entries</small></header><div class="coworker-table-wrap"><table><thead><tr><th>When</th><th>Type</th><th>Amount</th><th>Balance after</th><th>Actor</th><th>Description</th></tr></thead><tbody>{% for entry in ledger_entries %}<tr><td>{{ entry.created_at|date:"d M Y H:i:s" }}</td><td>{{ entry.get_entry_type_display }}</td><td>{{ entry.amount }} {{ entry.currency }}</td><td>{{ entry.balance_after }} {{ entry.currency }}</td><td>{{ entry.created_by.get_username|default:"System" }}</td><td>{{ entry.description|default:"—" }}</td></tr>{% empty %}<tr><td colspan="6" class="coworker-empty">No credit ledger entry has been recorded.</td></tr>{% endfor %}</tbody></table></div></section>
+</div>
+{% endblock %}

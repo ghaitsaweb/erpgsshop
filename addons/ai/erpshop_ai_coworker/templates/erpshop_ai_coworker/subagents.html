@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}AI Coworker Subagents · ERP GSSHOP{% endblock %}
+{% block page_title %}AI Coworker Subagents{% endblock %}
+
+{% block content %}
+<link rel="stylesheet" href="{% static 'erpshop_ai_coworker/coworker.css' %}">
+<div class="coworker-shell"><header class="coworker-hero"><div><p class="eyebrow">AI Coworker · Delegation</p><h2>Bounded subagent runs</h2><p>Each delegation becomes its own auditable task, subject to the coworker's configured model limits and tool policy.</p></div><div class="coworker-actions"><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:runtime' %}">Runtime overview</a></div></header>
+<section class="panel coworker-run-card"><header><p class="eyebrow">New delegation</p><h3>Start a subagent</h3></header><form method="post" action="{% url 'erpshop_ai_coworker:subagents_start' %}" class="coworker-form">{% csrf_token %}{% for field in form %}<div class="field {% if field.errors %}has-error{% endif %}"><label for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>{% endfor %}<button class="btn btn-primary" type="submit">Queue subagent</button></form></section>
+<section class="panel coworker-queue"><header><div><p class="eyebrow">Delegation log</p><h3>Recent subagents</h3></div></header><div class="coworker-table-wrap"><table><thead><tr><th>Description</th><th>Coworker</th><th>State</th><th>Depth</th><th>Duration</th><th>Result</th></tr></thead><tbody>{% for subagent in subagents %}<tr><td>{{ subagent.description }}</td><td>{{ subagent.agent.name }}</td><td><span class="status status-{{ subagent.state }}">{{ subagent.get_state_display }}</span></td><td>{{ subagent.depth }}</td><td>{{ subagent.duration_ms }} ms</td><td>{{ subagent.result|default:subagent.error|truncatechars:160 }}</td></tr>{% empty %}<tr><td colspan="6" class="coworker-empty">No subagent has been started.</td></tr>{% endfor %}</tbody></table></div></section></div>
+{% endblock %}

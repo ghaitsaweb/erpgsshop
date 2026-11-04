@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}AI Coworker Runtime · ERP GSSHOP{% endblock %}
+{% block page_title %}AI Coworker Runtime{% endblock %}
+
+{% block content %}
+<link rel="stylesheet" href="{% static 'erpshop_ai_coworker/coworker.css' %}">
+<div class="coworker-shell">
+  <header class="coworker-hero">
+    <div><p class="eyebrow">AI Coworker · Runtime</p><h2>Durable context and runtime activity</h2><p>Memories are administrator-maintained reference context. Sessions, summaries, delegated work, and automation remain company-scoped and auditable.</p></div>
+    <div class="coworker-actions"><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:subagents' %}">Manage subagents</a><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:automation' %}">Manage automation</a></div>
+  </header>
+
+  <section class="panel coworker-run-card">
+    <header><p class="eyebrow">Durable memory</p><h3>{% if selected_agent %}{{ selected_agent.name }}{% else %}Configure a coworker first{% endif %}</h3></header>
+    {% if selected_agent %}
+      <form method="post" action="{% url 'erpshop_ai_coworker:memory_save' %}" class="coworker-form">{% csrf_token %}
+        {% for field in memory_form %}<div class="field {% if field.errors %}has-error{% endif %}"><label for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}{% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>{% endfor %}
+        <button class="btn btn-primary" type="submit">Save durable memory</button>
+      </form>
+    {% else %}<p class="coworker-empty">Create a coworker before storing runtime memory.</p>{% endif %}
+  </section>
+
+  <section class="panel coworker-queue"><header><div><p class="eyebrow">Memory registry</p><h3>Company memories</h3></div></header><div class="coworker-table-wrap"><table><thead><tr><th>Coworker</th><th>Type</th><th>Content</th><th>Updated</th></tr></thead><tbody>{% for memory in memories %}<tr><td>{{ memory.agent.name }}</td><td>{{ memory.get_memory_type_display }}</td><td>{{ memory.content|truncatechars:180 }}</td><td>{{ memory.updated_at|date:"d M Y H:i" }}</td></tr>{% empty %}<tr><td colspan="4" class="coworker-empty">No durable memory configured.</td></tr>{% endfor %}</tbody></table></div></section>
+
+  <section class="panel coworker-queue"><header><div><p class="eyebrow">Sessions</p><h3>External-channel runtime sessions</h3></div><small>Created when a configured channel receives a message.</small></header><div class="coworker-table-wrap"><table><thead><tr><th>Coworker</th><th>Channel</th><th>Participant</th><th>Active</th><th>Updated</th></tr></thead><tbody>{% for session in sessions %}<tr><td>{{ session.agent.name }}</td><td>{{ session.channel_type }}</td><td>{{ session.participant|default:"—" }}</td><td>{{ session.active|yesno:"Yes,No" }}</td><td>{{ session.updated_at|date:"d M Y H:i" }}</td></tr>{% empty %}<tr><td colspan="5" class="coworker-empty">No channel sessions yet.</td></tr>{% endfor %}</tbody></table></div></section>
+
+  <section class="panel coworker-queue"><header><div><p class="eyebrow">Compaction</p><h3>Recent session summaries</h3></div></header><div class="coworker-table-wrap"><table><thead><tr><th>Coworker</th><th>Session</th><th>Type</th><th>Summary</th></tr></thead><tbody>{% for summary in summaries %}<tr><td>{{ summary.agent.name }}</td><td>#{{ summary.session_id }}</td><td>{{ summary.get_summary_type_display }}</td><td>{{ summary.content|truncatechars:180 }}</td></tr>{% empty %}<tr><td colspan="4" class="coworker-empty">No session summary has been generated.</td></tr>{% endfor %}</tbody></table></div></section>
+</div>
+{% endblock %}

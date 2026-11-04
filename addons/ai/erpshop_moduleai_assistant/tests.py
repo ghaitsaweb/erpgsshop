@@ -22,6 +22,7 @@ from .services import (
     _response_text,
     _token_count,
     execute_message,
+    request_agent_completion,
 )
 
 
@@ -181,6 +182,55 @@ class HashyAssistantTests(TestCase):
         self.assertEqual(reply.content, "Hello from the provider")
         self.assertEqual((reply.input_tokens, reply.output_tokens), (4, 6))
         self.assertEqual(reply.provider_message_id, "reply-1")
+
+    def test_tool_capable_provider_turn_preserves_structured_calls(self):
+        config = AssistantConfiguration.objects.create(
+            company=self.company,
+            provider=AssistantConfiguration.Provider.OPENAI_COMPATIBLE,
+            api_base_url="https://provider.example/v1",
+            credential_env_var="AI_TEST_KEY",
+            model_name="test-model",
+            active=True,
+        )
+        payload = {
+            "id": "tool-reply-1",
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "erp_read", "arguments": '{"entity":"products"}'},
+                            }
+                        ],
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 8, "completion_tokens": 3},
+        }
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "erp_read",
+                    "description": "Read ERP data.",
+                    "parameters": {"type": "object", "properties": {"entity": {"type": "string"}}},
+                },
+            }
+        ]
+        with patch.dict("os.environ", {"AI_TEST_KEY": "test-only"}), patch(
+            "addons.ai.erpshop_moduleai_assistant.services.build_opener"
+        ) as opener:
+            opener.return_value.open.return_value.__enter__.return_value.read.return_value = json.dumps(payload).encode()
+            result = request_agent_completion(config, [{"role": "user", "content": "Read products."}], tools)
+
+        self.assertEqual(result["tool_calls"], [{"id": "call_1", "name": "erp_read", "arguments": {"entity": "products"}}])
+        self.assertEqual(result["finish_reason"], "tool_calls")
+        request_payload = json.loads(opener.return_value.open.call_args.args[0].data.decode())
+        self.assertEqual(request_payload["tools"][0]["function"]["name"], "erp_read")
 
     def test_provider_url_and_account_status_cannot_be_faked(self):
         with self.assertRaises(AssistantProviderError):

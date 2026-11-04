@@ -145,6 +145,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "ai_coworker.queue_due_schedules",
         "schedule": 60.0,
     },
+    "ai-coworker-expire-tool-approvals": {
+        "task": "ai_coworker.expire_due_tool_approvals",
+        "schedule": 60.0,
+    },
     "approval-workflow-runtime": {
         "task": "approval_workflow.scan_due_runtime",
         "schedule": 60.0,

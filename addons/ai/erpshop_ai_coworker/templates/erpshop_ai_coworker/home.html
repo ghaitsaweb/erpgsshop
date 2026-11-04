@@ -9,10 +9,10 @@
 <div class="coworker-shell">
   <header class="coworker-hero">
     <div><p class="eyebrow">ERPShop AI · Coworker</p><h2>Delegated analysis, within explicit boundaries</h2><p>Queue a focused planning or read-only ERP analysis task. Every run is company-scoped, bounded, asynchronous, and auditable.</p></div>
-    {% if can_manage %}<div class="coworker-actions"><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:schedules' %}">Manage schedules</a><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:settings' %}">Manage coworkers</a></div>{% endif %}
+    {% if can_manage %}<div class="coworker-actions"><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:runtime' %}">Runtime</a><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:operations' %}">Operations</a>{% if can_model_admin %}<a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:model_catalog' %}">Models</a>{% endif %}<a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:automation' %}">Automation</a><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:subagents' %}">Subagents</a><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:schedules' %}">Schedules</a><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:channels' %}">Channels</a><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:webhooks' %}">Webhooks</a><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:settings' %}">Coworkers</a></div>{% endif %}
   </header>
 
-  <section class="coworker-boundary"><strong>Current capability</strong><span>Manual or scheduled governed provider turns · maximum 100 ERP rows · no write/delete/approval/message tools · no external channel or MCP execution.</span></section>
+  <section class="coworker-boundary"><strong>Current capability</strong><span>Manual or scheduled governed provider turns · bounded multi-turn tool loop · maximum 100 ERP rows · ERP reads run automatically; every external or state-changing request is held for human approval and no external adapter runs automatically.</span></section>
 
   <div class="coworker-grid">
     <aside class="panel coworker-agents">

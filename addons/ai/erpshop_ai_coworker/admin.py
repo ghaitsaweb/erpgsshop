@@ -10,10 +10,12 @@ from .models import (
     AIModelTemplate,
     AIProvider,
     AIUsageEvent,
+    AIToolApproval,
     AITask,
     AITaskEvent,
     AIWorkspace,
 )
+from .tool_runtime import decide_approval
 
 
 class AIAgentInline(admin.TabularInline):
@@ -125,6 +127,34 @@ class AIUsageEventAdmin(admin.ModelAdmin):
         return False
 
     def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(AIToolApproval)
+class AIToolApprovalAdmin(admin.ModelAdmin):
+    list_display = ("tool_name", "task", "agent", "state", "expires_at", "decided_by", "created_at")
+    list_filter = ("state", "tool_name")
+    search_fields = ("task__title", "agent__name", "request_digest")
+    readonly_fields = (
+        "agent", "task", "tool_name", "request_digest", "request_preview", "state",
+        "decided_by", "decided_at", "expires_at", "result", "created_at", "updated_at",
+    )
+    actions = ("approve_selected", "reject_selected")
+
+    @admin.action(description="Approve selected pending tool requests")
+    def approve_selected(self, request, queryset):
+        for approval in queryset.filter(state=AIToolApproval.State.PENDING):
+            decide_approval(approval=approval, actor=request.user, approve=True)
+
+    @admin.action(description="Reject selected pending tool requests")
+    def reject_selected(self, request, queryset):
+        for approval in queryset.filter(state=AIToolApproval.State.PENDING):
+            decide_approval(approval=approval, actor=request.user, approve=False)
+
+    def has_add_permission(self, request):
         return False
 
     def has_delete_permission(self, request, obj=None):

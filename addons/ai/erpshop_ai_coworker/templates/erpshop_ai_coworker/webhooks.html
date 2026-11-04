@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Webhooks · AI Coworker · ERP GSSHOP{% endblock %}
+{% block page_title %}AI Coworker Webhooks{% endblock %}
+
+{% block content %}
+<link rel="stylesheet" href="{% static 'erpshop_ai_coworker/coworker.css' %}">
+<div class="coworker-shell">
+  <header class="coworker-hero">
+    <div><p class="eyebrow">AI Coworker · Phase 3</p><h2>Opaque, verified webhook ingress</h2><p>Each endpoint has an unguessable token, audit log, payload cap, rate limit, optional IP allowlist, and optional HMAC verification.</p></div>
+    <div class="coworker-actions"><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:home' %}">Workspace</a><a class="btn btn-secondary" href="{% url 'erpshop_ai_coworker:channels' %}">Channels</a></div>
+  </header>
+
+  {% if provisioned_url %}<section class="coworker-boundary"><strong>Copy this endpoint now</strong><span><code>{{ provisioned_url }}</code><br>This bearer URL is shown once; the database retains only its hash.</span></section>{% endif %}
+
+  <div class="coworker-grid">
+    <main class="panel coworker-run-card">
+      <header><p class="eyebrow">{% if endpoint %}Edit endpoint{% else %}New endpoint{% endif %}</p><h3>{% if selected_agent %}{{ selected_agent.name }}{% else %}Create a coworker first{% endif %}</h3></header>
+      {% if form %}<form method="post" action="{% if endpoint %}{% url 'erpshop_ai_coworker:webhook_update' selected_agent.pk endpoint.pk %}{% else %}{% url 'erpshop_ai_coworker:webhook_save' selected_agent.pk %}{% endif %}" class="coworker-form">{% csrf_token %}
+        {% for field in form %}<div class="field {% if field.errors %}has-error{% endif %}"><label for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}{% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>{% endfor %}
+        <button class="btn btn-primary" type="submit">{% if endpoint %}Save endpoint{% else %}Create endpoint{% endif %}</button>
+      </form>{% else %}<p class="coworker-empty">Create and activate a coworker before adding webhook ingress.</p>{% endif %}
+    </main>
+
+    <aside class="panel coworker-agents">
+      <header><p class="eyebrow">Coworker</p><h3>Target selection</h3></header>
+      <nav>{% for agent in agents %}<a href="{% url 'erpshop_ai_coworker:webhooks' %}?agent={{ agent.pk }}" class="{% if selected_agent.pk == agent.pk and not endpoint %}selected{% endif %}"><span>{{ agent.name }}</span><small>{{ agent.role }}</small></a>{% empty %}<p class="coworker-empty">No active coworker.</p>{% endfor %}</nav>
+    </aside>
+  </div>
+
+  <section class="panel coworker-queue">
+    <header><div><p class="eyebrow">Configured endpoints</p><h3>Webhook routes</h3></div><small>Tokens are never displayed again</small></header>
+    <div class="coworker-table-wrap"><table><thead><tr><th>Endpoint</th><th>Coworker</th><th>Active</th><th>Events</th><th>Last event</th></tr></thead><tbody>
+      {% for item in endpoints %}<tr><td><a href="{% url 'erpshop_ai_coworker:webhooks' %}?endpoint={{ item.pk }}">{{ item.name }}</a></td><td>{{ item.agent.name }}</td><td>{% if item.active %}Yes{% else %}No{% endif %}</td><td>{{ item.total_events }}</td><td>{{ item.last_event_at|date:"d M Y H:i:s"|default:"—" }}</td></tr>{% empty %}<tr><td colspan="5" class="coworker-empty">No webhook endpoint is configured.</td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+
+  {% if endpoint %}
+  <section class="panel coworker-queue">
+    <header><div><p class="eyebrow">Audit</p><h3>{{ endpoint.name }} events</h3></div><small>Latest {{ events|length }} events</small></header>
+    <div class="coworker-table-wrap"><table><thead><tr><th>Received</th><th>State</th><th>Status</th><th>Source</th><th>Error</th></tr></thead><tbody>
+      {% for event in events %}<tr><td>{{ event.received_at|date:"d M Y H:i:s" }}</td><td><span class="status status-{{ event.dispatch_state }}">{{ event.get_dispatch_state_display }}</span></td><td>{{ event.response_status|default:"—" }}</td><td>{{ event.remote_ip|default:"—" }}</td><td>{{ event.error|default:"—" }}</td></tr>{% empty %}<tr><td colspan="5" class="coworker-empty">No event has been received for this endpoint.</td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

@@ -9,6 +9,7 @@ from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
 from core.models import Company
+from core.models import Product
 from modules.apphub.models import ERPApp
 from modules.organization.models import UserOrganizationAccess
 
@@ -91,6 +92,28 @@ class HashyAssistantTests(TestCase):
         document.refresh_from_db()
         self.assertEqual(document.status, AIKnowledgeDocument.Status.ARCHIVED)
         self.assertFalse(document.active)
+
+    def test_proactive_greeting_uses_the_current_user_erp_scope(self):
+        Product.objects.create(company=self.company, sku="GREETING-1", name="Greeting product")
+        response = self.client.post(
+            reverse("erpshop_moduleai_assistant:proactive_greeting"),
+            data=json.dumps({"page_context": {"entity": "products", "view_type": "list"}, "language": "id"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["display"])
+        self.assertEqual(payload["page"], {"entity": "products", "view_type": "list"})
+        self.assertTrue(payload["intents"])
+
+    def test_proactive_greeting_rejects_unknown_entity_hints(self):
+        response = self.client.post(
+            reverse("erpshop_moduleai_assistant:proactive_greeting"),
+            data=json.dumps({"page_context": {"entity": "not-a-real-entity"}}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"display": False, "reason_code": "UNTRUSTED_PAGE_ENTITY"})
 
     def test_login_defaults_to_the_assistant_but_honors_next(self):
         self.client.logout()

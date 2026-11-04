@@ -13,6 +13,7 @@ urlpatterns = [
     path("ai/assistant/messages/<int:message_id>/feedback/", views.message_feedback, name="message_feedback"),
     path("ai/assistant/<int:session_id>/state/", views.session_state, name="session_state"),
     path("ai/assistant/settings/", views.assistant_settings, name="settings"),
+    path("ai/assistant/greeting/", views.proactive_greeting, name="proactive_greeting"),
     path("ai/assistant/knowledge/", views.knowledge_documents, name="knowledge_documents"),
     path(
         "ai/assistant/knowledge/<int:document_id>/state/",

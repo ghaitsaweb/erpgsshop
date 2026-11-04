@@ -25,6 +25,7 @@ from .models import (
     AssistantSession,
     HashyOSConnection,
 )
+from .greeting import resolve_proactive_greeting
 from .tasks import process_assistant_message
 
 
@@ -351,6 +352,28 @@ def assistant_settings(request):
             "connection_form": connection_form,
         },
     )
+
+
+@require_POST
+@assistant_access_required
+def proactive_greeting(request):
+    if len(request.body or b"") > 12_000:
+        return JsonResponse({"display": False, "reason_code": "INVALID_PAGE_CONTEXT"}, status=400)
+    try:
+        payload = json.loads((request.body or b"{}").decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return JsonResponse({"display": False, "reason_code": "INVALID_PAGE_CONTEXT"}, status=400)
+    if not isinstance(payload, dict):
+        return JsonResponse({"display": False, "reason_code": "INVALID_PAGE_CONTEXT"}, status=400)
+    context = getattr(request, "organization_context", None)
+    response = resolve_proactive_greeting(
+        user=request.user,
+        page_context=payload.get("page_context"),
+        company_id=getattr(context, "company_id", None),
+        branch_id=getattr(context, "branch_id", None),
+        language=payload.get("language", "id"),
+    )
+    return JsonResponse(response)
 
 
 def _knowledge_access_required(request):

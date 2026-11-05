@@ -1094,3 +1094,36 @@ class AIToolApproval(TimeStampedModel):
         super().clean()
         if self.agent_id and self.task_id and self.agent_id != self.task.agent_id:
             raise ValidationError({"task": "The approval task belongs to another coworker."})
+
+
+class AICoworkerConnectionCheck(TimeStampedModel):
+    """Audited, credential-free readiness probe for one coworker provider."""
+
+    class State(models.TextChoices):
+        QUEUED = "queued", "Queued"
+        RUNNING = "running", "Running"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+
+    agent = models.ForeignKey(AIAgent, on_delete=models.PROTECT, related_name="connection_checks")
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="ai_coworker_connection_checks",
+    )
+    state = models.CharField(max_length=16, choices=State.choices, default=State.QUEUED)
+    provider_name = models.CharField(max_length=100, blank=True)
+    model_name = models.CharField(max_length=160, blank=True)
+    latency_ms = models.PositiveIntegerField(default=0)
+    safe_error = models.CharField(max_length=500, blank=True)
+    started_at = models.DateTimeField(blank=True, null=True)
+    completed_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [models.Index(fields=["agent", "state", "-id"], name="ai_connection_check_recent")]
+
+    def __str__(self):
+        return f"{self.agent} · {self.get_state_display()}"

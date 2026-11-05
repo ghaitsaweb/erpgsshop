@@ -27,6 +27,7 @@ from .models import (
     AICreditLedger,
     AIConversation,
     AICoworkerCron,
+    AICoworkerConnectionCheck,
     AICoworkerHeartbeat,
     AICoworkerChannel,
     AICoworkerMemory,
@@ -45,7 +46,15 @@ from .models import (
     AIWebhookEndpoint,
 )
 from .channel_runtime import deliver_task_output, queue_inbound
-from .services import _messages, execute_coworker_task, expire_due_tool_approvals, queue_due_crons, queue_due_heartbeats, queue_subagent
+from .services import (
+    _messages,
+    execute_coworker_task,
+    expire_due_tool_approvals,
+    queue_due_crons,
+    queue_due_heartbeats,
+    queue_subagent,
+    run_connection_check,
+)
 from .tool_runtime import decide_approval, execute_approved_tool, request_approval
 
 
@@ -164,6 +173,48 @@ class AICoworkerTests(TestCase):
         self.assertEqual((task.company_id, task.branch_id, task.requested_by_id), (self.company.pk, self.branch.pk, self.user.pk))
         self.assertEqual(task.events.get().event, "queued")
         queued.assert_called_once_with(task.pk)
+
+    def test_connection_check_is_queued_for_only_the_active_company_coworker(self):
+        with patch("addons.ai.erpshop_ai_coworker.views.process_connection_check.delay") as queued:
+            response = self.client.post(reverse("erpshop_ai_coworker:connection_test", args=[self.agent.pk]))
+
+        self.assertEqual(response.status_code, 302)
+        check = AICoworkerConnectionCheck.objects.get()
+        self.assertEqual((check.agent_id, check.requested_by_id, check.state), (self.agent.pk, self.user.pk, check.State.QUEUED))
+        queued.assert_called_once_with(check.pk)
+
+    def test_connection_check_uses_one_bounded_probe_and_stores_no_provider_response(self):
+        self.agent.model_name = "readiness-test-model"
+        self.agent.save(update_fields=["model_name", "updated_at"])
+        check = AICoworkerConnectionCheck.objects.create(agent=self.agent, requested_by=self.user)
+        with patch("addons.ai.erpshop_ai_coworker.services.request_completion", return_value=PROVIDER_RESULT) as provider:
+            result = run_connection_check(check.pk)
+
+        check.refresh_from_db()
+        self.assertEqual(result["status"], AICoworkerConnectionCheck.State.COMPLETED)
+        self.assertEqual(check.state, AICoworkerConnectionCheck.State.COMPLETED)
+        self.assertEqual(check.provider_name, "company-default")
+        self.assertEqual(check.model_name, "readiness-test-model")
+        self.assertEqual(check.latency_ms, PROVIDER_RESULT["latency_ms"])
+        self.assertFalse(check.safe_error)
+        self.assertEqual(provider.call_args.args[1], [{"role": "user", "content": "Connection verification. Reply exactly: ready."}])
+        self.assertEqual(provider.call_args.args[0].max_output_tokens, 16)
+        self.assertEqual(provider.call_args.kwargs["model_name"], "readiness-test-model")
+        self.assertNotIn(PROVIDER_RESULT["content"], str(check.__dict__))
+
+    def test_connection_check_redacts_provider_error_from_the_audit_record(self):
+        check = AICoworkerConnectionCheck.objects.create(agent=self.agent, requested_by=self.user)
+        with patch(
+            "addons.ai.erpshop_ai_coworker.services.request_completion",
+            side_effect=Exception("authorization failed for secret never-store-this"),
+        ):
+            result = run_connection_check(check.pk)
+
+        check.refresh_from_db()
+        self.assertEqual(result["status"], AICoworkerConnectionCheck.State.FAILED)
+        self.assertEqual(check.state, AICoworkerConnectionCheck.State.FAILED)
+        self.assertNotIn("never-store-this", check.safe_error)
+        self.assertIn("did not complete", check.safe_error)
 
     def test_worker_uses_read_only_snapshot_and_persists_audited_result(self):
         Product.objects.bulk_create(

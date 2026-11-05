@@ -40,6 +40,7 @@ from .models import (
     AICreditLedger,
     AICoworkerChannel,
     AICoworkerCron,
+    AICoworkerConnectionCheck,
     AICoworkerHeartbeat,
     AICoworkerMemory,
     AICoworkerSubagent,
@@ -58,7 +59,7 @@ from .models import (
     AIWebhookEvent,
 )
 from .services import next_schedule_run, queue_coworker_task, queue_subagent
-from .tasks import process_coworker_task
+from .tasks import process_connection_check, process_coworker_task
 from .tool_runtime import decide_approval, execute_approved_tool
 
 
@@ -305,7 +306,16 @@ def settings(request, agent_id=None):
     return render(
         request,
         "erpshop_ai_coworker/settings.html",
-        {"agent": agent, "agents": _agents(company_id), "form": CoworkerForm(instance=agent, workspace=workspace)},
+        {
+            "agent": agent,
+            "agents": _agents(company_id),
+            "form": CoworkerForm(instance=agent, workspace=workspace),
+            "connection_checks": (
+                AICoworkerConnectionCheck.objects.filter(agent=agent).select_related("requested_by")[:10]
+                if agent
+                else []
+            ),
+        },
     )
 
 
@@ -322,7 +332,7 @@ def save_agent(request, agent_id=None):
         return render(
             request,
             "erpshop_ai_coworker/settings.html",
-            {"agent": agent, "agents": _agents(company_id), "form": form},
+            {"agent": agent, "agents": _agents(company_id), "form": form, "connection_checks": []},
             status=400,
         )
     with transaction.atomic():
@@ -340,6 +350,27 @@ def save_agent(request, agent_id=None):
         saved.save()
     django_messages.success(request, f"Coworker {saved.name} saved.")
     return redirect(f"{reverse('erpshop_ai_coworker:settings_edit', args=[saved.pk])}")
+
+
+@require_POST
+@coworker_access_required
+def test_connection(request, agent_id):
+    if not _can_manage(request.user):
+        raise Http404("Coworker settings not found.")
+    company_id, _branch_id = _active_scope(request)
+    agent = get_object_or_404(_agents(company_id), pk=agent_id)
+    check = AICoworkerConnectionCheck.objects.create(agent=agent, requested_by=request.user)
+    try:
+        process_connection_check.delay(check.pk)
+    except Exception:
+        check.state = AICoworkerConnectionCheck.State.FAILED
+        check.safe_error = "The readiness check could not be queued. Verify the worker service and retry."
+        check.completed_at = timezone.now()
+        check.save(update_fields=["state", "safe_error", "completed_at", "updated_at"])
+        django_messages.error(request, "Provider readiness check could not be queued.")
+    else:
+        django_messages.success(request, "Provider readiness check queued. Refresh this page to see the safe result.")
+    return redirect("erpshop_ai_coworker:settings_edit", agent_id=agent.pk)
 
 
 @require_GET

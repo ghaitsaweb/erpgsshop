@@ -13,7 +13,10 @@
     <section class="panel coworker-run-card"><form method="post" action="{% if agent %}{% url 'erpshop_ai_coworker:settings_update' agent.pk %}{% else %}{% url 'erpshop_ai_coworker:settings_save' %}{% endif %}" class="coworker-form">{% csrf_token %}
       {% for field in form %}<div class="field {% if field.errors %}has-error{% endif %}"><label for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}{% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}</div>{% endfor %}
       <button class="btn btn-primary" type="submit">Save coworker</button>
-    </form></section>
+    </form>
+    {% if agent %}<div class="coworker-connection-check"><header><div><h3>Provider connection</h3><p>Runs one short background readiness probe. It records only status, model, and latency—never credentials or provider response text.</p></div><form method="post" action="{% url 'erpshop_ai_coworker:connection_test' agent.pk %}">{% csrf_token %}<button class="btn btn-secondary" type="submit">Test connection</button></form></header>
+      {% if connection_checks %}<div class="coworker-table-wrap"><table><thead><tr><th>When</th><th>Status</th><th>Provider / model</th><th>Latency</th><th>Safe result</th></tr></thead><tbody>{% for check in connection_checks %}<tr><td>{{ check.created_at|date:"Y-m-d H:i" }}</td><td><span class="status status-{{ check.state }}">{{ check.get_state_display }}</span></td><td>{% if check.provider_name %}{{ check.provider_name }}{% else %}Pending configuration{% endif %}{% if check.model_name %}<small>{{ check.model_name }}</small>{% endif %}</td><td>{% if check.state == "completed" %}{{ check.latency_ms }} ms{% else %}—{% endif %}</td><td>{% if check.safe_error %}{{ check.safe_error }}{% else %}Ready{% endif %}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="coworker-empty">No readiness check has been requested for this coworker.</p>{% endif %}
+    </div>{% endif %}</section>
   </div>
 </div>
 {% endblock %}

@@ -1,6 +1,13 @@
 from celery import shared_task
 
-from .services import expire_due_tool_approvals, execute_coworker_task, queue_due_crons, queue_due_heartbeats, queue_due_schedules
+from .services import (
+    expire_due_tool_approvals,
+    execute_coworker_task,
+    queue_due_crons,
+    queue_due_heartbeats,
+    queue_due_schedules,
+    run_connection_check,
+)
 
 
 @shared_task
@@ -14,6 +21,11 @@ def process_coworker_task(self, task_id):
     if result.get("status") == "deferred":
         raise self.retry(countdown=result.get("retry_after", 5))
     return result
+
+
+@shared_task(name="ai_coworker.test_connection")
+def process_connection_check(check_id):
+    return run_connection_check(check_id)
 
 
 @shared_task(name="ai_coworker.queue_due_schedules")

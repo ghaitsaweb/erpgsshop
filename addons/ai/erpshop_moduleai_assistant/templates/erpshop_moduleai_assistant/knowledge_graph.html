@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Knowledge graph · Hashy AI Assistant{% endblock %}
+{% block page_title %}Assistant knowledge graph{% endblock %}
+
+{% block content %}
+<link rel="stylesheet" href="{% static 'erpshop_moduleai_assistant/assistant.css' %}">
+<script defer src="{% static 'erpshop_moduleai_assistant/knowledge_graph.js' %}"></script>
+<div class="hashy-knowledge-page" data-knowledge-graph data-view-url="{{ graph_view_url }}" data-overview-url="{{ graph_overview_url }}" data-search-url="{{ graph_search_url }}" data-neighbors-url="{{ graph_neighbors_url }}">
+  <header class="hashy-hero compact"><div><p class="eyebrow">ERPShop Module AI · Base knowledge</p><h2>Knowledge graph</h2><p>Read-only, company-scoped relationships between profile, categories, documents, business flows, and reviewed steps. It never exposes document text or provider credentials.</p></div><a class="btn btn-secondary" href="{% url 'erpshop_moduleai_assistant:knowledge_documents' %}">Back to knowledge</a></header>
+  <section class="panel hashy-graph-card">
+    <header class="hashy-graph-controls"><div><h3>Graph view</h3><p data-uniq="ai_base_knowledge_graph_loading">Loading knowledge graph…</p></div><div class="hashy-graph-inputs"><label>Source <select data-graph-source><option value="all">All</option><option value="profile">Profile</option><option value="category">Categories</option><option value="document">Documents</option><option value="flow">Business flows</option></select></label><label>Search <input data-graph-search type="search" maxlength="120" placeholder="Find a node"></label><label><input data-graph-edge-labels type="checkbox"> Edge labels</label><label><input data-graph-orphans type="checkbox" checked> Show orphans</label></div></header>
+    <p class="hashy-graph-status" data-graph-status></p>
+    <div class="hashy-graph-canvas" data_uniq="ai_base_knowledge_graph_canvas" aria-live="polite"></div>
+    <div class="hashy-graph-bottom"><section><h4>Search results</h4><ul data-graph-results class="hashy-graph-results"></ul></section><section><h4>Selected node</h4><div data-graph-detail class="hashy-graph-detail">Select a node to inspect its safe, company-scoped relationships.</div></section></div>
+    <p hidden data_uniq="ai_base_knowledge_graph_edge_labels"></p><p hidden data_uniq="ai_base_knowledge_graph_orphans"></p>
+  </section>
+</div>
+{% endblock %}

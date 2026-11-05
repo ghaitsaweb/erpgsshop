@@ -11,21 +11,46 @@ from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET, require_POST
 
 from modules.apphub.models import ERPApp
 
-from .forms import AIKnowledgeDocumentForm, AssistantConfigurationForm, HashyOSConnectionForm
+from .forms import (
+    AIKnowledgeCategoryForm,
+    AIKnowledgeBusinessFlowForm,
+    AIKnowledgeCompanyProfileForm,
+    AIKnowledgeDocumentForm,
+    AIKnowledgeRecordModelMappingForm,
+    AssistantConfigurationForm,
+    HashyOSConnectionForm,
+)
 from .models import (
     AssistantAttachment,
     AssistantAuditEvent,
     AssistantConfiguration,
+    AIKnowledgeCategory,
+    AIKnowledgeBusinessFlow,
+    AIKnowledgeBusinessFlowGenerationJob,
+    AIKnowledgeCompanyProfile,
     AIKnowledgeDocument,
+    AIKnowledgeRecordModelMapping,
     AssistantMessage,
     AssistantSession,
     HashyOSConnection,
 )
+from .flow_generation import FlowGenerationError, flow_generation_prerequisites, reason_about_business_flows
 from .greeting import resolve_proactive_greeting
+from .knowledge import rebuild_document_chunks
+from .knowledge_graph import (
+    build_knowledge_graph,
+    graph_neighbors,
+    graph_node,
+    graph_overview,
+    graph_path,
+    graph_search,
+    graph_trace,
+)
+from .tasks import generate_business_flow as queue_business_flow_generation
 from .tasks import process_assistant_message
 
 
@@ -41,12 +66,31 @@ def _is_json_request(request):
     return request.headers.get("X-Requested-With") == "XMLHttpRequest"
 
 
+def _json_body(request, *, max_bytes=12_000):
+    raw_body = request.body or b""
+    if len(raw_body) > max_bytes:
+        raise ValueError("Request data must be at most 12 KB.")
+    if not raw_body:
+        return {}
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Request data must be a JSON object.") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Request data must be a JSON object.")
+    return payload
+
+
 def _active_company(request):
     context = getattr(request, "organization_context", None)
     company_id = getattr(context, "company_id", None)
     if not company_id:
         raise PermissionError("Select an active company before using Hashy AI Assistant.")
     return company_id
+
+
+def _active_branch_id(request):
+    return getattr(getattr(request, "organization_context", None), "branch_id", None)
 
 
 def _can_use(user):
@@ -89,7 +133,7 @@ def _connection(company_id):
 
 
 def _session_queryset(request):
-    queryset = AssistantSession.objects.select_related("configuration", "company", "user").filter(
+    queryset = AssistantSession.objects.select_related("configuration", "company", "branch", "user").filter(
         company_id=_active_company(request)
     )
     if not request.user.is_superuser:
@@ -142,6 +186,7 @@ def assistant_home(request):
         {
             "configuration": configuration,
             "sessions": sessions.filter(status=AssistantSession.Status.ACTIVE)[:60],
+            "archived_sessions": sessions.filter(status=AssistantSession.Status.ARCHIVED)[:20],
             "selected_session": selected_session,
             "messages": message_rows,
             "has_older_messages": has_older_messages,
@@ -176,6 +221,7 @@ def new_session(request):
             return redirect(reverse("erpshop_moduleai_assistant:home"))
     session = AssistantSession.objects.create(
         company_id=company_id,
+        branch_id=_active_branch_id(request),
         configuration=configuration,
         user=request.user,
         title=title,
@@ -270,6 +316,45 @@ def archive_session(request, session_id):
     AssistantAuditEvent.objects.create(session=session, actor=request.user, event="session_archived")
     messages.success(request, "Conversation archived.")
     return redirect("erpshop_moduleai_assistant:home")
+
+
+@require_POST
+@assistant_access_required
+def restore_session(request, session_id):
+    session = _session_for_request(request, session_id, allow_archived=True)
+    if session.status == AssistantSession.Status.ACTIVE:
+        messages.info(request, "Conversation is already active.")
+    else:
+        session.status = AssistantSession.Status.ACTIVE
+        session.save(update_fields=["status", "updated_at"])
+        AssistantAuditEvent.objects.create(session=session, actor=request.user, event="session_restored")
+        messages.success(request, "Conversation restored.")
+    return redirect(f"{reverse('erpshop_moduleai_assistant:home')}?session={session.pk}")
+
+
+@require_POST
+@assistant_access_required
+def rename_session(request, session_id):
+    session = _session_for_request(request, session_id, allow_archived=True)
+    title = request.POST.get("title", "").strip()[:180]
+    if not title:
+        messages.error(request, "Conversation name cannot be empty.")
+        return redirect("erpshop_moduleai_assistant:home")
+    if session.title != title:
+        previous_title = session.title
+        session.title = title
+        session.save(update_fields=["title", "updated_at"])
+        AssistantAuditEvent.objects.create(
+            session=session,
+            actor=request.user,
+            event="session_renamed",
+            details={"previous_title": previous_title, "title": title},
+        )
+        messages.success(request, "Conversation renamed.")
+    target = reverse("erpshop_moduleai_assistant:home")
+    if session.status == AssistantSession.Status.ACTIVE:
+        target = f"{target}?session={session.pk}"
+    return redirect(target)
 
 
 @require_POST
@@ -395,16 +480,103 @@ def _extract_knowledge_upload(upload):
     return raw.decode("utf-8", errors="replace"), hashlib.sha256(raw).hexdigest(), content_type
 
 
+def _knowledge_flow_for_company(queryset, raw_flow_id):
+    try:
+        flow_id = int(raw_flow_id)
+    except (TypeError, ValueError):
+        raise Http404("Knowledge business flow not found.")
+    return get_object_or_404(queryset, pk=flow_id)
+
+
+def _knowledge_mapping_for_company(queryset, raw_mapping_id):
+    try:
+        mapping_id = int(raw_mapping_id)
+    except (TypeError, ValueError):
+        raise Http404("Knowledge record-model mapping not found.")
+    return get_object_or_404(queryset, pk=mapping_id)
+
+
 @assistant_access_required
 def knowledge_documents(request):
     """Company-scoped local base-knowledge management."""
     if not _knowledge_access_required(request):
         return redirect("erpshop_moduleai_assistant:home")
     company_id = _active_company(request)
-    documents = AIKnowledgeDocument.objects.filter(company_id=company_id)
+    documents = AIKnowledgeDocument.objects.filter(company_id=company_id).select_related("branch")
+    profile, _ = AIKnowledgeCompanyProfile.objects.get_or_create(company_id=company_id)
+    categories = AIKnowledgeCategory.objects.filter(company_id=company_id)
+    flows = AIKnowledgeBusinessFlow.objects.filter(company_id=company_id)
+    mappings = AIKnowledgeRecordModelMapping.objects.filter(company_id=company_id).select_related("branch", "business_flow")
+    document_form = AIKnowledgeDocumentForm(company_id=company_id, initial={"branch": _active_branch_id(request)})
+    profile_form = AIKnowledgeCompanyProfileForm(instance=profile)
+    category_form = AIKnowledgeCategoryForm()
+    flow_form = AIKnowledgeBusinessFlowForm()
+    mapping_form = AIKnowledgeRecordModelMappingForm(company_id=company_id, initial={"branch": _active_branch_id(request)})
+    editing_flow = None
+    editing_mapping = None
+    if request.method == "GET" and request.GET.get("flow"):
+        editing_flow = _knowledge_flow_for_company(flows, request.GET.get("flow"))
+        flow_form = AIKnowledgeBusinessFlowForm(instance=editing_flow)
+    if request.method == "GET" and request.GET.get("mapping"):
+        editing_mapping = _knowledge_mapping_for_company(mappings, request.GET.get("mapping"))
+        mapping_form = AIKnowledgeRecordModelMappingForm(instance=editing_mapping, company_id=company_id)
     if request.method == "POST":
-        form = AIKnowledgeDocumentForm(request.POST, request.FILES)
-        if form.is_valid():
+        action = request.POST.get("action", "document")
+        if action == "profile":
+            profile_form = AIKnowledgeCompanyProfileForm(request.POST, instance=profile)
+            if profile_form.is_valid():
+                profile_form.save()
+                messages.success(request, "Company knowledge profile saved.")
+                return redirect("erpshop_moduleai_assistant:knowledge_documents")
+        elif action == "category":
+            category_form = AIKnowledgeCategoryForm(request.POST)
+            if category_form.is_valid():
+                category = category_form.save(commit=False)
+                category.company_id = company_id
+                try:
+                    category.full_clean()
+                    category.save()
+                except ValidationError as exc:
+                    category_form.add_error(None, exc)
+                else:
+                    messages.success(request, "Knowledge category saved.")
+                    return redirect("erpshop_moduleai_assistant:knowledge_documents")
+        elif action in {"flow", "flow_update"}:
+            if action == "flow_update":
+                editing_flow = _knowledge_flow_for_company(flows, request.POST.get("flow_id"))
+            flow_form = AIKnowledgeBusinessFlowForm(request.POST, instance=editing_flow)
+            if flow_form.is_valid():
+                flow = flow_form.save(commit=False)
+                flow.company_id = company_id
+                try:
+                    flow.full_clean()
+                    flow.save()
+                except ValidationError as exc:
+                    flow_form.add_error(None, exc)
+                else:
+                    messages.success(request, "Business-flow reference updated." if editing_flow else "Business-flow reference saved.")
+                    return redirect("erpshop_moduleai_assistant:knowledge_documents")
+        elif action in {"mapping", "mapping_update"}:
+            if action == "mapping_update":
+                editing_mapping = _knowledge_mapping_for_company(mappings, request.POST.get("mapping_id"))
+            mapping_form = AIKnowledgeRecordModelMappingForm(request.POST, instance=editing_mapping, company_id=company_id)
+            if mapping_form.is_valid():
+                mapping = mapping_form.save(commit=False)
+                mapping.company_id = company_id
+                try:
+                    mapping.full_clean()
+                    mapping.save()
+                except ValidationError as exc:
+                    mapping_form.add_error(None, exc)
+                else:
+                    messages.success(request, "ERP record-model mapping updated." if editing_mapping else "ERP record-model mapping saved.")
+                    return redirect("erpshop_moduleai_assistant:knowledge_documents")
+        elif action == "document":
+            document_form = AIKnowledgeDocumentForm(request.POST, request.FILES, company_id=company_id)
+            form = document_form
+        else:
+            raise Http404("Unknown knowledge action.")
+        if action == "document" and form.is_valid():
             title = form.cleaned_data["title"].strip()
             if documents.filter(title=title).exists():
                 form.add_error("title", "A company knowledge document already uses this title.")
@@ -426,6 +598,7 @@ def knowledge_documents(request):
                         content_sha256 = content_sha256 or hashlib.sha256(extracted_text.encode("utf-8")).hexdigest()
                     document = AIKnowledgeDocument(
                         company_id=company_id,
+                        branch=form.cleaned_data.get("branch"),
                         title=title,
                         category=(form.cleaned_data.get("category") or "").strip(),
                         file=uploaded_file,
@@ -439,6 +612,7 @@ def knowledge_documents(request):
                     )
                     document.full_clean()
                     document.save()
+                    rebuild_document_chunks(document)
                     messages.success(
                         request,
                         "Knowledge document saved and ready for assistant context."
@@ -446,12 +620,32 @@ def knowledge_documents(request):
                         else "Knowledge file saved as pending because its content is not locally extractable.",
                     )
                     return redirect("erpshop_moduleai_assistant:knowledge_documents")
-    else:
-        form = AIKnowledgeDocumentForm()
     return render(
         request,
         "erpshop_moduleai_assistant/knowledge_documents.html",
-        {"documents": documents[:200], "form": form},
+        {
+            "documents": documents[:200],
+            "profile": profile,
+            "categories": categories[:100],
+            "flows": flows[:100],
+            "mappings": mappings[:100],
+            "form": document_form,
+            "profile_form": profile_form,
+            "category_form": category_form,
+            "flow_form": flow_form,
+            "editing_flow": editing_flow,
+            "editing_mapping": editing_mapping,
+            "mapping_form": mapping_form,
+            "flow_generation_prerequisites_url": reverse(
+                "erpshop_moduleai_assistant:knowledge_flow_generation_prerequisites"
+            ),
+            "flow_generation_url": reverse("erpshop_moduleai_assistant:generate_knowledge_flow"),
+            "flow_generation_job_url_template": reverse(
+                "erpshop_moduleai_assistant:knowledge_flow_generation_job",
+                kwargs={"job_id": "00000000-0000-0000-0000-000000000000"},
+            ),
+            "flow_reason_url": reverse("erpshop_moduleai_assistant:reason_knowledge_flow"),
+        },
     )
 
 
@@ -475,3 +669,361 @@ def set_knowledge_document_state(request, document_id):
     document.save(update_fields=["active", "status", "updated_at"])
     messages.success(request, message)
     return redirect("erpshop_moduleai_assistant:knowledge_documents")
+
+
+@require_POST
+@assistant_access_required
+def set_knowledge_category_state(request, category_id):
+    if not _knowledge_access_required(request):
+        return redirect("erpshop_moduleai_assistant:home")
+    category = get_object_or_404(AIKnowledgeCategory, pk=category_id, company_id=_active_company(request))
+    action = request.POST.get("action")
+    if action == "archive":
+        category.active = False
+        message = "Knowledge category archived. Existing document labels are retained."
+    elif action == "activate":
+        category.active = True
+        message = "Knowledge category activated."
+    else:
+        raise Http404("Unknown knowledge action.")
+    category.save(update_fields=["active", "updated_at"])
+    messages.success(request, message)
+    return redirect("erpshop_moduleai_assistant:knowledge_documents")
+
+
+@require_POST
+@assistant_access_required
+def set_knowledge_flow_state(request, flow_id):
+    if not _knowledge_access_required(request):
+        return redirect("erpshop_moduleai_assistant:home")
+    flow = get_object_or_404(AIKnowledgeBusinessFlow, pk=flow_id, company_id=_active_company(request))
+    action = request.POST.get("action")
+    if action == "archive":
+        flow.status = AIKnowledgeBusinessFlow.Status.ARCHIVED
+        message = "Business-flow reference archived. It is no longer included in Assistant context."
+    elif action == "activate":
+        flow.status = AIKnowledgeBusinessFlow.Status.ACTIVE
+        message = "Business-flow reference activated."
+    else:
+        raise Http404("Unknown knowledge action.")
+    flow.save(update_fields=["status", "updated_at"])
+    messages.success(request, message)
+    return redirect("erpshop_moduleai_assistant:knowledge_documents")
+
+
+@require_GET
+@assistant_access_required
+def knowledge_flow_detail(request, flow_id):
+    if not _knowledge_access_required(request):
+        return JsonResponse({"detail": "Assistant administrator access is required."}, status=403)
+    flow = get_object_or_404(AIKnowledgeBusinessFlow, pk=flow_id, company_id=_active_company(request))
+    return JsonResponse(
+        {
+            "id": flow.pk,
+            "name": flow.name,
+            "trigger": flow.trigger,
+            "description": flow.description,
+            "steps": flow.steps,
+            "edges": flow.edges,
+            "status": flow.status,
+        }
+    )
+
+
+@require_GET
+@assistant_access_required
+def knowledge_flow_map(request, flow_id):
+    """Return the reviewed flow in the node/edge shape used by HMX flow maps."""
+    if not _knowledge_access_required(request):
+        return JsonResponse({"detail": "Assistant administrator access is required."}, status=403)
+    flow = get_object_or_404(AIKnowledgeBusinessFlow, pk=flow_id, company_id=_active_company(request))
+    nodes_by_sequence = {}
+    for position, raw_step in enumerate(flow.steps if isinstance(flow.steps, list) else [], start=1):
+        if not isinstance(raw_step, dict):
+            continue
+        try:
+            sequence = int(raw_step.get("sequence", position))
+        except (TypeError, ValueError):
+            sequence = position
+        description = str(raw_step.get("description", "")).strip()
+        if description:
+            nodes_by_sequence[sequence] = {
+                "label": description,
+                "description": description,
+                "sort_order": sequence,
+                "metadata": {"sequence": sequence},
+            }
+    configured_edges = flow.edges if isinstance(flow.edges, list) else []
+    if not configured_edges:
+        sequences = sorted(nodes_by_sequence)
+        configured_edges = [
+            {"from_sequence": source, "to_sequence": target, "label": "next"}
+            for source, target in zip(sequences, sequences[1:])
+        ]
+    edges = []
+    for raw_edge in configured_edges:
+        try:
+            source_sequence = int(raw_edge.get("from_sequence"))
+            target_sequence = int(raw_edge.get("to_sequence"))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        source_node = nodes_by_sequence.get(source_sequence)
+        target_node = nodes_by_sequence.get(target_sequence)
+        if source_node and target_node:
+            edges.append(
+                {
+                    "source_node_label": source_node["label"],
+                    "target_node_label": target_node["label"],
+                    "label": str(raw_edge.get("label") or "next")[:160],
+                    "metadata": {"source_sequence": source_sequence, "target_sequence": target_sequence},
+                }
+            )
+    return JsonResponse(
+        {
+            "id": flow.pk,
+            "name": flow.name,
+            "description": flow.description,
+            "nodes": [nodes_by_sequence[sequence] for sequence in sorted(nodes_by_sequence)],
+            "edges": edges,
+        }
+    )
+
+
+def _flow_generation_job_payload(job):
+    return {
+        "job_id": str(job.job_id),
+        "status": job.state,
+        "error_reason": job.error_reason,
+        "business_flow_map_id": job.result_flow_id,
+        "flow_id": job.result_flow_id,
+    }
+
+
+@require_GET
+@assistant_access_required
+def knowledge_flow_generation_prerequisites(request):
+    if not _knowledge_access_required(request):
+        return JsonResponse({"detail": "Assistant administrator access is required."}, status=403)
+    company_id = _active_company(request)
+    return JsonResponse(flow_generation_prerequisites(company_id, _configuration(company_id)))
+
+
+@require_POST
+@assistant_access_required
+def generate_knowledge_flow(request):
+    if not _knowledge_access_required(request):
+        return JsonResponse({"detail": "Assistant administrator access is required."}, status=403)
+    try:
+        payload = _json_body(request)
+    except ValueError as exc:
+        return JsonResponse({"detail": str(exc)}, status=400)
+    overwrite_manual = payload.get("overwriteManual", payload.get("overwrite_manual", False))
+    if not isinstance(overwrite_manual, bool):
+        return JsonResponse({"detail": "overwriteManual must be a boolean."}, status=400)
+    company_id = _active_company(request)
+    configuration = _configuration(company_id)
+    prerequisites = flow_generation_prerequisites(company_id, configuration)
+    if not prerequisites["can_generate"]:
+        return JsonResponse({"detail": "Business-flow generation is not ready.", "prerequisites": prerequisites}, status=409)
+    job = AIKnowledgeBusinessFlowGenerationJob(
+        company_id=company_id,
+        configuration=configuration,
+        requested_by=request.user,
+        overwrite_manual=overwrite_manual,
+        input_snapshot={"requested_via": "knowledge_flow_generation", "references": prerequisites["references"]},
+    )
+    job.full_clean()
+    job.save()
+    try:
+        queue_business_flow_generation.delay(str(job.job_id))
+    except Exception:
+        job.state = AIKnowledgeBusinessFlowGenerationJob.State.FAILED
+        job.error_reason = "The background worker could not be reached. No provider request was sent."
+        job.completed_at = timezone.now()
+        job.save(update_fields=["state", "error_reason", "completed_at", "updated_at"])
+        return JsonResponse(_flow_generation_job_payload(job), status=503)
+    return JsonResponse(_flow_generation_job_payload(job), status=202)
+
+
+@require_GET
+@assistant_access_required
+def knowledge_flow_generation_job(request, job_id):
+    if not _knowledge_access_required(request):
+        return JsonResponse({"detail": "Assistant administrator access is required."}, status=403)
+    job = get_object_or_404(
+        AIKnowledgeBusinessFlowGenerationJob.objects.select_related("result_flow"),
+        company_id=_active_company(request),
+        job_id=job_id,
+    )
+    return JsonResponse(_flow_generation_job_payload(job))
+
+
+@require_POST
+@assistant_access_required
+def reason_knowledge_flow(request):
+    if not _knowledge_access_required(request):
+        return JsonResponse({"detail": "Assistant administrator access is required."}, status=403)
+    try:
+        payload = _json_body(request)
+        query = payload.get("query", "")
+        if not isinstance(query, str):
+            raise ValueError("query must be text.")
+        result = reason_about_business_flows(_active_company(request), query)
+    except (FlowGenerationError, ValueError) as exc:
+        return JsonResponse({"detail": str(exc)}, status=400)
+    return JsonResponse(result)
+
+
+@require_POST
+@assistant_access_required
+def set_knowledge_mapping_state(request, mapping_id):
+    if not _knowledge_access_required(request):
+        return redirect("erpshop_moduleai_assistant:home")
+    mapping = get_object_or_404(AIKnowledgeRecordModelMapping, pk=mapping_id, company_id=_active_company(request))
+    action = request.POST.get("action")
+    if action == "archive":
+        mapping.active = False
+        message = "ERP record-model mapping archived. It is retained for auditability."
+    elif action == "activate":
+        mapping.active = True
+        message = "ERP record-model mapping activated."
+    else:
+        raise Http404("Unknown knowledge action.")
+    mapping.save(update_fields=["active", "updated_at"])
+    messages.success(request, message)
+    return redirect("erpshop_moduleai_assistant:knowledge_documents")
+
+
+def _knowledge_graph_access(request):
+    if _knowledge_access_required(request):
+        return True
+    return False
+
+
+@require_GET
+@assistant_access_required
+def knowledge_graph_page(request):
+    if not _knowledge_graph_access(request):
+        return redirect("erpshop_moduleai_assistant:knowledge_documents")
+    return render(
+        request,
+        "erpshop_moduleai_assistant/knowledge_graph.html",
+        {
+            "graph_view_url": reverse("erpshop_moduleai_assistant:knowledge_graph_view"),
+            "graph_overview_url": reverse("erpshop_moduleai_assistant:knowledge_graph_overview"),
+            "graph_search_url": reverse("erpshop_moduleai_assistant:knowledge_graph_search"),
+            "graph_neighbors_url": reverse("erpshop_moduleai_assistant:knowledge_graph_neighbors"),
+        },
+    )
+
+
+@require_GET
+@assistant_access_required
+def knowledge_graph_status(request):
+    if not _knowledge_graph_access(request):
+        return JsonResponse({"detail": "Assistant administrator access is required."}, status=403)
+    company_id = _active_company(request)
+    return JsonResponse({"status": "ready", "overview": graph_overview(company_id, branch_id=_active_branch_id(request))})
+
+
+@require_GET
+@assistant_access_required
+def knowledge_graph_overview(request):
+    if not _knowledge_graph_access(request):
+        return JsonResponse({"detail": "Assistant administrator access is required."}, status=403)
+    return JsonResponse(graph_overview(_active_company(request), branch_id=_active_branch_id(request)))
+
+
+@require_GET
+@assistant_access_required
+def knowledge_graph_view(request):
+    if not _knowledge_graph_access(request):
+        return JsonResponse({"detail": "Assistant administrator access is required."}, status=403)
+    return JsonResponse(
+        build_knowledge_graph(
+            _active_company(request),
+            branch_id=_active_branch_id(request),
+            limit=request.GET.get("limit"),
+            source=request.GET.get("source", "all"),
+            node_type=request.GET.get("type", ""),
+        )
+    )
+
+
+@require_GET
+@assistant_access_required
+def knowledge_graph_search(request):
+    if not _knowledge_graph_access(request):
+        return JsonResponse({"detail": "Assistant administrator access is required."}, status=403)
+    return JsonResponse(
+        graph_search(
+            _active_company(request),
+            request.GET.get("q", ""),
+            branch_id=_active_branch_id(request),
+            limit=request.GET.get("limit"),
+            source=request.GET.get("source", "all"),
+            node_type=request.GET.get("type", ""),
+        )
+    )
+
+
+@require_GET
+@assistant_access_required
+def knowledge_graph_node(request, node_id):
+    if not _knowledge_graph_access(request):
+        return JsonResponse({"detail": "Assistant administrator access is required."}, status=403)
+    node = graph_node(_active_company(request), node_id[:180], branch_id=_active_branch_id(request))
+    if node is None:
+        return JsonResponse({"detail": "Knowledge graph node not found."}, status=404)
+    return JsonResponse({"node": node})
+
+
+@require_GET
+@assistant_access_required
+def knowledge_graph_neighbors(request):
+    if not _knowledge_graph_access(request):
+        return JsonResponse({"detail": "Assistant administrator access is required."}, status=403)
+    result = graph_neighbors(
+        _active_company(request),
+        request.GET.get("node_id", "")[:180],
+        branch_id=_active_branch_id(request),
+        depth=request.GET.get("depth", 1),
+        limit=request.GET.get("limit"),
+    )
+    if result is None:
+        return JsonResponse({"detail": "Knowledge graph node not found."}, status=404)
+    return JsonResponse(result)
+
+
+@require_GET
+@assistant_access_required
+def knowledge_graph_path(request):
+    if not _knowledge_graph_access(request):
+        return JsonResponse({"detail": "Assistant administrator access is required."}, status=403)
+    result = graph_path(
+        _active_company(request),
+        request.GET.get("from_node_id", "")[:180],
+        request.GET.get("to_node_id", "")[:180],
+        branch_id=_active_branch_id(request),
+        max_length=request.GET.get("max_length", 6),
+    )
+    if result is None:
+        return JsonResponse({"detail": "One or more knowledge graph nodes were not found."}, status=404)
+    return JsonResponse(result)
+
+
+@require_GET
+@assistant_access_required
+def knowledge_graph_trace(request):
+    if not _knowledge_graph_access(request):
+        return JsonResponse({"detail": "Assistant administrator access is required."}, status=403)
+    result = graph_trace(
+        _active_company(request),
+        request.GET.get("target_type", ""),
+        request.GET.get("target_id", "")[:120],
+        branch_id=_active_branch_id(request),
+        limit=request.GET.get("limit"),
+    )
+    if result is None:
+        return JsonResponse({"detail": "Knowledge graph target was not found."}, status=404)
+    return JsonResponse(result)

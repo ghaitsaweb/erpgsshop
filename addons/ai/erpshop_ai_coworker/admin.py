@@ -6,6 +6,7 @@ from .models import (
     AICreditLedger,
     AIConversation,
     AICoworkerSecret,
+    AICoworkerConnectionCheck,
     AIMessage,
     AIModelPricing,
     AIModelTemplate,
@@ -36,6 +37,23 @@ class AICoworkerSecretAdmin(admin.ModelAdmin):
     list_filter = ("scope", "active")
     search_fields = ("agent__name", "key", "credential_env_var", "participant__display_name")
     readonly_fields = ("is_available", "created_at", "updated_at")
+
+
+@admin.register(AICoworkerConnectionCheck)
+class AICoworkerConnectionCheckAdmin(admin.ModelAdmin):
+    list_display = ("agent", "state", "provider_name", "model_name", "latency_ms", "requested_by", "created_at")
+    list_filter = ("state",)
+    search_fields = ("agent__name", "provider_name", "model_name")
+    readonly_fields = tuple(field.name for field in AICoworkerConnectionCheck._meta.fields)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 class AIMessageInline(admin.TabularInline):
@@ -155,12 +173,12 @@ class AIToolApprovalAdmin(admin.ModelAdmin):
 
     @admin.action(description="Approve selected pending tool requests")
     def approve_selected(self, request, queryset):
-        for approval in queryset.filter(state=AIToolApproval.State.PENDING):
+        for approval in queryset.filter(state=AIToolApproval.State.PENDING).iterator(chunk_size=100):
             decide_approval(approval=approval, actor=request.user, approve=True)
 
     @admin.action(description="Reject selected pending tool requests")
     def reject_selected(self, request, queryset):
-        for approval in queryset.filter(state=AIToolApproval.State.PENDING):
+        for approval in queryset.filter(state=AIToolApproval.State.PENDING).iterator(chunk_size=100):
             decide_approval(approval=approval, actor=request.user, approve=False)
 
     def has_add_permission(self, request):

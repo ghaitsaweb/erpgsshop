@@ -15,6 +15,7 @@ urlpatterns = [
     path("ai/coworker/settings/save/", views.save_agent, name="settings_save"),
     path("ai/coworker/settings/<int:agent_id>/", views.settings, name="settings_edit"),
     path("ai/coworker/settings/<int:agent_id>/save/", views.save_agent, name="settings_update"),
+    path("ai/coworker/settings/<int:agent_id>/connection-test/", views.test_connection, name="connection_test"),
     path("ai/coworker/runtime/", views.runtime, name="runtime"),
     path("ai/coworker/runtime/memory/save/", views.save_memory, name="memory_save"),
     path("ai/coworker/operations/", views.operations, name="operations"),

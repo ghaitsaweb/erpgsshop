@@ -1,5 +1,6 @@
 from celery import shared_task
 
+from .flow_generation import execute_flow_generation
 from .services import execute_message
 from .work_intelligence import refresh_due_work_profiles
 from .digest import queue_due_digests
@@ -8,6 +9,11 @@ from .digest import queue_due_digests
 @shared_task(bind=True, autoretry_for=(OSError,), retry_backoff=True, retry_kwargs={"max_retries": 2})
 def process_assistant_message(self, message_id):
     return execute_message(message_id)
+
+
+@shared_task(name="erpshop_ai_assistant.generate_business_flow")
+def generate_business_flow(job_id):
+    return execute_flow_generation(job_id)
 
 
 @shared_task(name="erpshop_ai_assistant.refresh_work_profiles")

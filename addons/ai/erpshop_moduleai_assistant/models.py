@@ -11,6 +11,7 @@ from django.db import models
 from django.utils import timezone
 
 from core.models import Company, TimeStampedModel
+from modules.organization.models import Branch
 
 
 ENVIRONMENT_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
@@ -132,6 +133,7 @@ class AssistantSession(TimeStampedModel):
         ARCHIVED = "archived", "Archived"
 
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="hashy_assistant_sessions")
+    branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name="hashy_assistant_sessions", blank=True, null=True)
     configuration = models.ForeignKey(AssistantConfiguration, on_delete=models.PROTECT, related_name="sessions")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="hashy_assistant_sessions")
     title = models.CharField(max_length=180, default="New conversation")
@@ -150,12 +152,18 @@ class AssistantSession(TimeStampedModel):
                 fields=["company", "status", "-last_activity_at", "-id"],
                 name="ai_session_company_recent",
             ),
+            models.Index(
+                fields=["company", "branch", "status", "-last_activity_at", "-id"],
+                name="ai_session_branch_recent",
+            ),
         ]
 
     def clean(self):
         super().clean()
         if self.configuration_id and self.company_id and self.configuration.company_id != self.company_id:
             raise ValidationError({"configuration": "The assistant configuration must belong to this session company."})
+        if self.branch_id and self.company_id and self.branch.company_id != self.company_id:
+            raise ValidationError({"branch": "The assistant branch must belong to the session company."})
 
     def __str__(self):
         return self.title
@@ -662,6 +670,7 @@ class AIKnowledgeDocument(TimeStampedModel):
         ARCHIVED = "archived", "Archived"
 
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="ai_knowledge_documents")
+    branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name="ai_knowledge_documents", blank=True, null=True)
     title = models.CharField(max_length=255)
     category = models.CharField(max_length=100, blank=True)
     file = models.FileField(upload_to=knowledge_document_path, blank=True)
@@ -678,7 +687,10 @@ class AIKnowledgeDocument(TimeStampedModel):
     class Meta:
         ordering = ["category", "title", "id"]
         constraints = [models.UniqueConstraint(fields=["company", "title"], name="unique_ai_knowledge_title")]
-        indexes = [models.Index(fields=["company", "active", "status", "id"], name="ai_knowledge_context")]
+        indexes = [
+            models.Index(fields=["company", "active", "status", "id"], name="ai_knowledge_context"),
+            models.Index(fields=["company", "branch", "active", "status", "id"], name="ai_knowledge_doc_branch"),
+        ]
 
     def clean(self):
         super().clean()
@@ -686,6 +698,268 @@ class AIKnowledgeDocument(TimeStampedModel):
             raise ValidationError({"extracted_text": "Extracted knowledge text must be at most 200,000 characters."})
         if self.status == self.Status.READY and not (self.extracted_text or self.file):
             raise ValidationError({"status": "Ready knowledge requires extracted text or a source file."})
+        if self.branch_id and self.company_id and self.branch.company_id != self.company_id:
+            raise ValidationError({"branch": "The knowledge branch must belong to the document company."})
 
     def __str__(self):
         return self.title
+
+
+class AIKnowledgeChunk(TimeStampedModel):
+    """A bounded retrieval unit for a company knowledge document.
+
+    Chunks remain in the Assistant add-on: they are chat reference material,
+    not Coworker memory or automation input.  The denormalized company field
+    makes the tenant boundary explicit on every retrieval query.
+    """
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="ai_knowledge_chunks")
+    branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name="ai_knowledge_chunks", blank=True, null=True)
+    document = models.ForeignKey(AIKnowledgeDocument, on_delete=models.CASCADE, related_name="chunks")
+    ordinal = models.PositiveIntegerField()
+    content = models.TextField()
+    content_sha256 = models.CharField(max_length=64, db_index=True)
+
+    class Meta:
+        ordering = ["document_id", "ordinal", "id"]
+        constraints = [
+            models.UniqueConstraint(fields=["document", "ordinal"], name="unique_ai_knowledge_chunk_ordinal"),
+        ]
+        indexes = [
+            models.Index(fields=["company", "document", "ordinal"], name="ai_knowledge_chunk_scope"),
+            models.Index(fields=["company", "branch", "document", "ordinal"], name="ai_knowledge_chunk_branch"),
+        ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if not (self.content or "").strip():
+            errors["content"] = "Knowledge chunks cannot be empty."
+        if self.document_id and self.company_id and self.document.company_id != self.company_id:
+            errors["company"] = "The knowledge chunk must belong to the document company."
+        if self.document_id and self.branch_id and self.document.branch_id != self.branch_id:
+            errors["branch"] = "The knowledge chunk must belong to the document branch."
+        if errors:
+            raise ValidationError(errors)
+
+    def __str__(self):
+        return f"{self.document} · {self.ordinal + 1}"
+
+
+class AIKnowledgeCompanyProfile(TimeStampedModel):
+    """Explicit, company-scoped reference profile for Assistant knowledge."""
+
+    company = models.OneToOneField(Company, on_delete=models.PROTECT, related_name="ai_knowledge_profile")
+    summary = models.TextField(blank=True)
+    operating_context = models.TextField(blank=True)
+    active = models.BooleanField(default=True)
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if len(self.summary or "") > 12_000:
+            errors["summary"] = "Company profile summary must be at most 12,000 characters."
+        if len(self.operating_context or "") > 12_000:
+            errors["operating_context"] = "Company operating context must be at most 12,000 characters."
+        if errors:
+            raise ValidationError(errors)
+
+    def __str__(self):
+        return f"{self.company} · knowledge profile"
+
+
+class AIKnowledgeCategory(TimeStampedModel):
+    """A reusable company-owned category vocabulary for local knowledge."""
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="ai_knowledge_categories")
+    name = models.CharField(max_length=100)
+    description = models.CharField(max_length=500, blank=True)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["name", "id"]
+        constraints = [models.UniqueConstraint(fields=["company", "name"], name="unique_ai_knowledge_category")]
+        indexes = [models.Index(fields=["company", "active", "name"], name="ai_knowledge_category_scope")]
+
+    def __str__(self):
+        return self.name
+
+
+class AIKnowledgeBusinessFlow(TimeStampedModel):
+    """A small, company-owned reference flow for consistent Assistant guidance."""
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        ACTIVE = "active", "Active"
+        ARCHIVED = "archived", "Archived"
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="ai_knowledge_business_flows")
+    name = models.CharField(max_length=180)
+    trigger = models.CharField(max_length=255, blank=True)
+    description = models.TextField(blank=True)
+    steps = models.JSONField(default=list, blank=True)
+    edges = models.JSONField(default=list, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+
+    class Meta:
+        ordering = ["name", "id"]
+        constraints = [models.UniqueConstraint(fields=["company", "name"], name="unique_ai_knowledge_business_flow")]
+        indexes = [models.Index(fields=["company", "status", "-updated_at"], name="ai_knowledge_flow_scope")]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if len(self.description or "") > 6_000:
+            errors["description"] = "Business-flow description must be at most 6,000 characters."
+        if not isinstance(self.steps, list) or not self.steps or len(self.steps) > 20:
+            errors["steps"] = "Business flows require 1 to 20 ordered steps."
+        else:
+            for index, step in enumerate(self.steps, start=1):
+                text = step.get("description", "").strip() if isinstance(step, dict) else ""
+                if not text or len(text) > 500:
+                    errors["steps"] = f"Step {index} must contain up to 500 characters."
+                    break
+        if not isinstance(self.edges, list) or len(self.edges) > 40:
+            errors["edges"] = "Business flows can contain at most 40 directed edges."
+        elif isinstance(self.steps, list):
+            for index, edge in enumerate(self.edges, start=1):
+                try:
+                    from_sequence = int(edge.get("from_sequence"))
+                    to_sequence = int(edge.get("to_sequence"))
+                except (AttributeError, TypeError, ValueError):
+                    errors["edges"] = f"Edge {index} requires valid source and target steps."
+                    break
+                if not 1 <= from_sequence <= len(self.steps) or not 1 <= to_sequence <= len(self.steps):
+                    errors["edges"] = f"Edge {index} references a step outside this flow."
+                    break
+                if len(str(edge.get("label", ""))) > 160:
+                    errors["edges"] = f"Edge {index} label must be at most 160 characters."
+                    break
+        if errors:
+            raise ValidationError(errors)
+
+    def __str__(self):
+        return self.name
+
+
+class AIKnowledgeBusinessFlowGenerationJob(TimeStampedModel):
+    """Auditable, provider-backed generation of a reviewed flow reference.
+
+    A completed job creates or updates only ``AIKnowledgeBusinessFlow``.  It
+    never executes the resulting steps against ERP data.
+    """
+
+    class State(models.TextChoices):
+        QUEUED = "queued", "Queued"
+        RUNNING = "running", "Running"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+
+    job_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="ai_knowledge_flow_generation_jobs")
+    configuration = models.ForeignKey(
+        AssistantConfiguration,
+        on_delete=models.PROTECT,
+        related_name="knowledge_flow_generation_jobs",
+    )
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="ai_knowledge_flow_generation_jobs",
+    )
+    overwrite_manual = models.BooleanField(default=False)
+    state = models.CharField(max_length=16, choices=State.choices, default=State.QUEUED, db_index=True)
+    input_snapshot = models.JSONField(default=dict, blank=True)
+    result_flow = models.ForeignKey(
+        AIKnowledgeBusinessFlow,
+        on_delete=models.SET_NULL,
+        related_name="generation_jobs",
+        blank=True,
+        null=True,
+    )
+    error_reason = models.CharField(max_length=500, blank=True)
+    input_tokens = models.PositiveIntegerField(default=0)
+    output_tokens = models.PositiveIntegerField(default=0)
+    latency_ms = models.PositiveIntegerField(default=0)
+    provider_message_id = models.CharField(max_length=180, blank=True)
+    started_at = models.DateTimeField(blank=True, null=True)
+    completed_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [models.Index(fields=["company", "state", "-created_at"], name="ai_flow_generation_queue")]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.configuration_id and self.company_id and self.configuration.company_id != self.company_id:
+            errors["configuration"] = "The generation configuration must belong to the job company."
+        if self.result_flow_id and self.company_id and self.result_flow.company_id != self.company_id:
+            errors["result_flow"] = "The generated flow must belong to the job company."
+        if errors:
+            raise ValidationError(errors)
+
+    def __str__(self):
+        return f"{self.company} · flow generation · {self.job_id}"
+
+
+class AIKnowledgeRecordModelMapping(TimeStampedModel):
+    """Company-owned link between a local ERP entity and reviewed AI knowledge."""
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="ai_knowledge_record_mappings")
+    branch = models.ForeignKey(
+        Branch,
+        on_delete=models.PROTECT,
+        related_name="ai_knowledge_record_mappings",
+        blank=True,
+        null=True,
+        help_text="Leave blank when the mapping applies to every branch in the company.",
+    )
+    record_model = models.CharField(max_length=100)
+    display_name = models.CharField(max_length=180)
+    category = models.CharField(max_length=100, blank=True)
+    module_name = models.CharField(max_length=128, blank=True)
+    feature_tags = models.JSONField(default=list, blank=True)
+    business_flow = models.ForeignKey(
+        AIKnowledgeBusinessFlow,
+        on_delete=models.SET_NULL,
+        related_name="record_model_mappings",
+        blank=True,
+        null=True,
+    )
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["display_name", "record_model", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "record_model"],
+                condition=models.Q(branch__isnull=True),
+                name="unique_ai_knowledge_record_model_companywide",
+            ),
+            models.UniqueConstraint(
+                fields=["company", "branch", "record_model"],
+                name="unique_ai_knowledge_record_model_branch",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["company", "active", "record_model"], name="ai_knowledge_record_scope"),
+            models.Index(fields=["company", "branch", "active", "record_model"], name="ai_knowledge_mapping_branch"),
+        ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if not isinstance(self.feature_tags, list) or len(self.feature_tags) > 20:
+            errors["feature_tags"] = "Use at most 20 feature tags."
+        elif any(not isinstance(tag, str) or not tag.strip() or len(tag.strip()) > 64 for tag in self.feature_tags):
+            errors["feature_tags"] = "Each feature tag must contain up to 64 characters."
+        if self.branch_id and self.company_id and self.branch.company_id != self.company_id:
+            errors["branch"] = "The mapped branch must belong to the same company."
+        if self.business_flow_id and self.company_id and self.business_flow.company_id != self.company_id:
+            errors["business_flow"] = "The mapped business flow must belong to the same company."
+        if errors:
+            raise ValidationError(errors)
+
+    def __str__(self):
+        return self.display_name or self.record_model

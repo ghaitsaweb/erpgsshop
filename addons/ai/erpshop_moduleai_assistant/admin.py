@@ -7,6 +7,11 @@ from .models import (
     AIDigestRuleSource,
     AIDigestRuleSourceAction,
     AIHashyInteractionSignalOutbox,
+    AIKnowledgeChunk,
+    AIKnowledgeBusinessFlow,
+    AIKnowledgeBusinessFlowGenerationJob,
+    AIKnowledgeCategory,
+    AIKnowledgeCompanyProfile,
     AIKnowledgeDocument,
     AIWorkEpisode,
     AIWorkEpisodeEvent,
@@ -54,6 +59,31 @@ class AssistantMessageAdmin(admin.ModelAdmin):
 
 admin.site.register(AssistantAttachment)
 admin.site.register(AssistantAuditEvent)
+
+
+@admin.register(AIKnowledgeBusinessFlow)
+class AIKnowledgeBusinessFlowAdmin(admin.ModelAdmin):
+    list_display = ("name", "company", "status", "updated_at")
+    list_filter = ("status", "company")
+    search_fields = ("name", "trigger", "description")
+    readonly_fields = ("created_at", "updated_at")
+
+
+@admin.register(AIKnowledgeBusinessFlowGenerationJob)
+class AIKnowledgeBusinessFlowGenerationJobAdmin(admin.ModelAdmin):
+    list_display = ("job_id", "company", "state", "result_flow", "requested_by", "created_at")
+    list_filter = ("state", "company")
+    search_fields = ("job_id", "result_flow__name", "requested_by__username")
+    readonly_fields = tuple(field.name for field in AIKnowledgeBusinessFlowGenerationJob._meta.fields)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(AIWorkEpisode)
@@ -155,3 +185,33 @@ class AIKnowledgeDocumentAdmin(admin.ModelAdmin):
     list_filter = ("status", "active", "company", "category")
     search_fields = ("title", "category", "original_name")
     readonly_fields = ("content_sha256", "byte_size", "created_at", "updated_at")
+
+
+@admin.register(AIKnowledgeChunk)
+class AIKnowledgeChunkAdmin(admin.ModelAdmin):
+    list_display = ("document", "company", "ordinal", "updated_at")
+    list_filter = ("company",)
+    search_fields = ("document__title", "content")
+    readonly_fields = tuple(field.name for field in AIKnowledgeChunk._meta.fields)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(AIKnowledgeCompanyProfile)
+class AIKnowledgeCompanyProfileAdmin(admin.ModelAdmin):
+    list_display = ("company", "active", "updated_at")
+    list_filter = ("active",)
+
+
+@admin.register(AIKnowledgeCategory)
+class AIKnowledgeCategoryAdmin(admin.ModelAdmin):
+    list_display = ("name", "company", "active")
+    list_filter = ("active", "company")
+    search_fields = ("name", "description")

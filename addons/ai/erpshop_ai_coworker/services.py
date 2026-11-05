@@ -1,5 +1,6 @@
 import json
 import logging
+from copy import copy
 from datetime import datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -27,6 +28,7 @@ from .models import (
     AIAgent,
     AICompanyCredit,
     AICoworkerCron,
+    AICoworkerConnectionCheck,
     AICoworkerHeartbeat,
     AICoworkerMemory,
     AICoworkerSubagent,
@@ -68,10 +70,10 @@ SKILL_PROMPTS = {
 }
 
 
-def _runtime_configuration(task):
+def _runtime_configuration_for_agent(agent, company_id):
     """Resolve the HMX-style model template without moving secrets into the database."""
-    fallback = AssistantConfiguration.objects.filter(company_id=task.company_id).first()
-    template = task.agent.model_template
+    fallback = AssistantConfiguration.objects.filter(company_id=company_id).first()
+    template = agent.model_template
     if template is None:
         if fallback is None:
             raise AssistantProviderError("No company AI provider configuration exists.")
@@ -103,6 +105,84 @@ def _runtime_configuration(task):
         ),
         template,
     )
+
+
+def _runtime_configuration(task):
+    return _runtime_configuration_for_agent(task.agent, task.company_id)
+
+
+def _connection_check_failure_message():
+    """Return a diagnostic that cannot disclose a provider response or secret."""
+    return "The provider did not complete the readiness check. Verify the selected model and service credential configuration."
+
+
+def run_connection_check(check_id):
+    """Perform one minimal provider probe and retain only safe operational metadata."""
+    with transaction.atomic():
+        check = (
+            AICoworkerConnectionCheck.objects.select_for_update(of=("self",))
+            .select_related("agent__workspace", "agent__model_template__provider")
+            .filter(pk=check_id, state=AICoworkerConnectionCheck.State.QUEUED)
+            .first()
+        )
+        if check is None:
+            return {"status": "ignored"}
+        check.state = AICoworkerConnectionCheck.State.RUNNING
+        check.started_at = timezone.now()
+        check.safe_error = ""
+        check.save(update_fields=["state", "started_at", "safe_error", "updated_at"])
+
+    template = check.agent.model_template
+    provider_name = template.provider.name if template else "company-default"
+    model_name = template.model_name if template else check.agent.model_name
+    try:
+        configuration, template = _runtime_configuration_for_agent(check.agent, check.agent.workspace.company_id)
+        probe_configuration = copy(configuration)
+        probe_configuration.max_output_tokens = 16
+        model_name = template.model_name if template else (check.agent.model_name or configuration.model_name)
+        result = request_completion(
+            probe_configuration,
+            [{"role": "user", "content": "Connection verification. Reply exactly: ready."}],
+            user_agent="ERP-GSSHOP-AI-Coworker-Connection-Test/1.0",
+            model_name=model_name,
+        )
+    except (AssistantProviderError, HTTPError, URLError, TimeoutError, OSError, ValidationError, ValueError):
+        logger.info("AI Coworker provider readiness check failed safely: %s", check_id)
+        with transaction.atomic():
+            check = AICoworkerConnectionCheck.objects.select_for_update(of=("self",)).get(pk=check_id)
+            check.state = AICoworkerConnectionCheck.State.FAILED
+            check.safe_error = _connection_check_failure_message()
+            check.completed_at = timezone.now()
+            check.provider_name = provider_name[:100]
+            check.model_name = model_name[:160]
+            check.save(update_fields=["state", "provider_name", "model_name", "safe_error", "completed_at", "updated_at"])
+        return {"status": check.state, "check_id": check.pk}
+    except Exception:
+        logger.error("Unexpected AI Coworker provider readiness check failure: %s", check_id)
+        with transaction.atomic():
+            check = AICoworkerConnectionCheck.objects.select_for_update(of=("self",)).get(pk=check_id)
+            check.state = AICoworkerConnectionCheck.State.FAILED
+            check.safe_error = _connection_check_failure_message()
+            check.completed_at = timezone.now()
+            check.provider_name = provider_name[:100]
+            check.model_name = model_name[:160]
+            check.save(update_fields=["state", "provider_name", "model_name", "safe_error", "completed_at", "updated_at"])
+        return {"status": check.state, "check_id": check.pk}
+
+    with transaction.atomic():
+        check = AICoworkerConnectionCheck.objects.select_for_update(of=("self",)).get(pk=check_id)
+        check.state = AICoworkerConnectionCheck.State.COMPLETED
+        check.provider_name = provider_name[:100]
+        check.model_name = model_name[:160]
+        check.latency_ms = max(0, int(result.get("latency_ms") or 0))
+        check.safe_error = ""
+        check.completed_at = timezone.now()
+        check.save(
+            update_fields=[
+                "state", "provider_name", "model_name", "latency_ms", "safe_error", "completed_at", "updated_at"
+            ]
+        )
+    return {"status": check.state, "check_id": check.pk}
 
 
 def _pricing_for(template, *, now):
@@ -681,6 +761,7 @@ def _run_agent(task, configuration, template, snapshot):
     iteration_limit = max(1, min(MAX_AGENT_ITERATIONS, int(configured_limit or 1)))
     total_input_tokens = total_output_tokens = total_latency_ms = 0
 
+    # scale-guard: allow SG003 — at most 12 configured provider iterations can append an audited message.
     for iteration in range(1, iteration_limit + 1):
         result = request_agent_completion(
             configuration,

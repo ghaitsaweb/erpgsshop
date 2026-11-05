@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
+from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
@@ -14,6 +15,9 @@ from modules.apphub.models import ERPApp
 from modules.organization.models import UserOrganizationAccess
 
 from .forms import HashyOSConnectionForm
+from .flow_generation import _generation_messages, execute_flow_generation, flow_generation_prerequisites, reason_about_business_flows
+from .knowledge import rebuild_document_chunks, retrieve_knowledge
+from .knowledge_graph import build_knowledge_graph
 from .models import (
     AIWorkProfileRefreshSetting,
     AIWorkProfileSignal,
@@ -22,7 +26,13 @@ from .models import (
     AIDigestRule,
     AIDigestRuleSource,
     AIDigestRuleSourceAction,
+    AIKnowledgeChunk,
+    AIKnowledgeBusinessFlow,
+    AIKnowledgeBusinessFlowGenerationJob,
+    AIKnowledgeCategory,
+    AIKnowledgeCompanyProfile,
     AIKnowledgeDocument,
+    AIKnowledgeRecordModelMapping,
     AssistantConfiguration,
     AssistantMessage,
     AssistantSession,
@@ -45,6 +55,7 @@ from .digest import run_digest_rule
 class HashyAssistantTests(TestCase):
     def setUp(self):
         self.company = Company.objects.create(code="AI", name="AI Test Company")
+        self.branch = self.company.branches.get(is_main=True)
         self.user = get_user_model().objects.create_superuser(
             username="hashy-admin", email="hashy-admin@example.test", password="safe-password"
         )
@@ -64,6 +75,7 @@ class HashyAssistantTests(TestCase):
         self.assertEqual(start.status_code, 302)
         session = AssistantSession.objects.get(title="Budget review")
         self.assertEqual(session.company, self.company)
+        self.assertEqual(session.branch, self.branch)
         with patch("addons.ai.erpshop_moduleai_assistant.views.process_assistant_message.delay") as task:
             sent = self.client.post(
                 reverse("erpshop_moduleai_assistant:send_message", args=[session.pk]),
@@ -92,6 +104,457 @@ class HashyAssistantTests(TestCase):
         document.refresh_from_db()
         self.assertEqual(document.status, AIKnowledgeDocument.Status.ARCHIVED)
         self.assertFalse(document.active)
+
+    def test_branch_scoped_knowledge_includes_only_company_wide_and_active_session_branch(self):
+        other_branch = self.company.branches.create(code="AI-OPS", name="Operations Branch", sequence=20)
+        company_wide = AIKnowledgeDocument.objects.create(
+            company=self.company,
+            title="Company receipt policy",
+            extracted_text="Every reimbursement needs an original receipt.",
+            status=AIKnowledgeDocument.Status.READY,
+        )
+        current_branch = AIKnowledgeDocument.objects.create(
+            company=self.company,
+            branch=self.branch,
+            title="Main branch receipt routing",
+            extracted_text="Main branch receipt routing sends reimbursement receipts to the Jakarta finance desk.",
+            status=AIKnowledgeDocument.Status.READY,
+        )
+        other_branch_document = AIKnowledgeDocument.objects.create(
+            company=self.company,
+            branch=other_branch,
+            title="Operations receipt routing",
+            extracted_text="Operations receipt routing sends reimbursement receipts to the warehouse controller.",
+            status=AIKnowledgeDocument.Status.READY,
+        )
+        for document in (company_wide, current_branch, other_branch_document):
+            rebuild_document_chunks(document)
+
+        main_result = retrieve_knowledge(self.company.pk, "receipt reimbursement routing", branch_id=self.branch.pk)
+        other_result = retrieve_knowledge(self.company.pk, "receipt reimbursement routing", branch_id=other_branch.pk)
+        self.assertIn("Company receipt policy", main_result["context"])
+        self.assertIn("Main branch receipt routing", main_result["context"])
+        self.assertNotIn("Operations receipt routing", main_result["context"])
+        self.assertIn("Operations receipt routing", other_result["context"])
+        self.assertNotIn("Main branch receipt routing", other_result["context"])
+
+        config = AssistantConfiguration.objects.create(company=self.company, allow_knowledge_context=True)
+        session = AssistantSession.objects.create(
+            company=self.company,
+            branch=self.branch,
+            configuration=config,
+            user=self.user,
+        )
+        messages = _request_messages(session, knowledge_query="Where do I route a reimbursement receipt?")
+        context = "\n".join(message["content"] for message in messages)
+        self.assertIn("Main branch receipt routing", context)
+        self.assertNotIn("Operations receipt routing", context)
+
+    def test_knowledge_profile_and_category_are_company_scoped_and_in_context(self):
+        profile_response = self.client.post(
+            reverse("erpshop_moduleai_assistant:knowledge_documents"),
+            {
+                "action": "profile",
+                "summary": "A multi-branch retail company.",
+                "operating_context": "Receipts are reviewed by finance before reimbursement.",
+                "active": "on",
+            },
+        )
+        self.assertRedirects(profile_response, reverse("erpshop_moduleai_assistant:knowledge_documents"))
+        profile = AIKnowledgeCompanyProfile.objects.get(company=self.company)
+        self.assertEqual(profile.summary, "A multi-branch retail company.")
+
+        category_response = self.client.post(
+            reverse("erpshop_moduleai_assistant:knowledge_documents"),
+            {"action": "category", "name": "Finance", "description": "Finance policies", "active": "on"},
+        )
+        self.assertRedirects(category_response, reverse("erpshop_moduleai_assistant:knowledge_documents"))
+        category = AIKnowledgeCategory.objects.get(name="Finance")
+        self.assertEqual(category.company, self.company)
+        self.assertFalse(AIKnowledgeCategory.objects.filter(company__code="AI2", name="Finance").exists())
+
+        archived_category = self.client.post(
+            reverse("erpshop_moduleai_assistant:knowledge_category_state", args=[category.pk]), {"action": "archive"}
+        )
+        self.assertRedirects(archived_category, reverse("erpshop_moduleai_assistant:knowledge_documents"))
+        category.refresh_from_db()
+        self.assertFalse(category.active)
+
+        config = AssistantConfiguration.objects.create(company=self.company, allow_knowledge_context=True)
+        session = AssistantSession.objects.create(company=self.company, configuration=config, user=self.user)
+        context = "\n".join(message["content"] for message in _request_messages(session))
+        self.assertIn("A multi-branch retail company.", context)
+        self.assertIn("Receipts are reviewed by finance", context)
+
+    def test_active_business_flow_is_company_scoped_and_added_as_bounded_reference_context(self):
+        response = self.client.post(
+            reverse("erpshop_moduleai_assistant:knowledge_documents"),
+            {
+                "action": "flow",
+                "name": "Expense reimbursement",
+                "trigger": "An employee submits an eligible expense.",
+                "description": "Reviewed reimbursement handoff between employee, manager, and finance.",
+                "steps_text": "Collect the original receipt.\nObtain manager approval.\nFinance validates the claim.",
+                "edges_text": "1 -> 2 : submit\n2 -> 3 : approve",
+                "status": AIKnowledgeBusinessFlow.Status.ACTIVE,
+            },
+        )
+        self.assertRedirects(response, reverse("erpshop_moduleai_assistant:knowledge_documents"))
+        flow = AIKnowledgeBusinessFlow.objects.get(name="Expense reimbursement")
+        self.assertEqual(flow.company, self.company)
+        self.assertEqual(len(flow.steps), 3)
+        self.assertEqual(len(flow.edges), 2)
+        self.assertFalse(AIKnowledgeBusinessFlow.objects.filter(company__code="AI2", name=flow.name).exists())
+
+        updated = self.client.post(
+            reverse("erpshop_moduleai_assistant:knowledge_documents"),
+            {
+                "action": "flow_update",
+                "flow_id": flow.pk,
+                "name": flow.name,
+                "trigger": "A corrected employee claim is submitted.",
+                "description": "Updated reimbursement handoff.",
+                "steps_text": "Collect the original receipt.\nFinance validates the claim.\nNotify the employee.",
+                "edges_text": "1 -> 2 : validate\n2 -> 3 : notify",
+                "status": AIKnowledgeBusinessFlow.Status.ACTIVE,
+            },
+        )
+        self.assertRedirects(updated, reverse("erpshop_moduleai_assistant:knowledge_documents"))
+        flow.refresh_from_db()
+        self.assertEqual(flow.description, "Updated reimbursement handoff.")
+        self.assertEqual(flow.edges[1]["label"], "notify")
+        detail = self.client.get(reverse("erpshop_moduleai_assistant:knowledge_flow_detail", args=[flow.pk]))
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.json()["name"], flow.name)
+        flow_map = self.client.get(reverse("erpshop_moduleai_assistant:knowledge_flow_map", args=[flow.pk]))
+        self.assertEqual(flow_map.status_code, 200)
+        self.assertEqual(
+            [node["label"] for node in flow_map.json()["nodes"]],
+            ["Collect the original receipt.", "Finance validates the claim.", "Notify the employee."],
+        )
+        self.assertEqual(flow_map.json()["edges"][0]["source_node_label"], "Collect the original receipt.")
+        self.assertEqual(flow_map.json()["edges"][0]["target_node_label"], "Finance validates the claim.")
+        knowledge_page = self.client.get(reverse("erpshop_moduleai_assistant:knowledge_documents"))
+        self.assertContains(knowledge_page, "Generate reviewed draft")
+        self.assertContains(knowledge_page, "data-flow-tools")
+
+        foreign_company = Company.objects.create(code="AI2", name="Other AI Company")
+        AIKnowledgeBusinessFlow.objects.create(
+            company=foreign_company,
+            name="Foreign process",
+            description="Must remain outside this company context.",
+            steps=[{"sequence": 1, "description": "Do not expose this step."}],
+            status=AIKnowledgeBusinessFlow.Status.ACTIVE,
+        )
+        config = AssistantConfiguration.objects.create(company=self.company, allow_knowledge_context=True)
+        session = AssistantSession.objects.create(company=self.company, configuration=config, user=self.user)
+        messages, sources = _request_messages(session, knowledge_query="How do I submit an expense?", include_knowledge_sources=True)
+        context = "\n".join(message["content"] for message in messages)
+        self.assertIn("Expense reimbursement", context)
+        self.assertIn("[F1]", context)
+        self.assertNotIn("Foreign process", context)
+        self.assertEqual(sources["citations"][0]["label"], "F1")
+
+        archived = self.client.post(
+            reverse("erpshop_moduleai_assistant:knowledge_flow_state", args=[flow.pk]), {"action": "archive"}
+        )
+        self.assertRedirects(archived, reverse("erpshop_moduleai_assistant:knowledge_documents"))
+        flow.refresh_from_db()
+        self.assertEqual(flow.status, AIKnowledgeBusinessFlow.Status.ARCHIVED)
+
+    def test_branch_scoped_record_mappings_include_only_company_wide_and_active_branch(self):
+        other_branch = self.company.branches.create(code="AI-OPS", name="Operations Branch", sequence=20)
+        company_wide = AIKnowledgeRecordModelMapping.objects.create(
+            company=self.company,
+            record_model="products",
+            display_name="Company product catalog",
+        )
+        main_branch = AIKnowledgeRecordModelMapping.objects.create(
+            company=self.company,
+            branch=self.branch,
+            record_model="products",
+            display_name="Main branch product catalog",
+        )
+        other_branch_mapping = AIKnowledgeRecordModelMapping.objects.create(
+            company=self.company,
+            branch=other_branch,
+            record_model="products",
+            display_name="Operations product catalog",
+        )
+
+        main_graph = build_knowledge_graph(self.company.pk, branch_id=self.branch.pk, limit=100)
+        operations_graph = build_knowledge_graph(self.company.pk, branch_id=other_branch.pk, limit=100)
+        company_graph = build_knowledge_graph(self.company.pk, limit=100)
+        main_mapping_ids = {node["id"] for node in main_graph["graph"]["nodes"] if node["source"] == "mapping"}
+        operations_mapping_ids = {
+            node["id"] for node in operations_graph["graph"]["nodes"] if node["source"] == "mapping"
+        }
+        company_mapping_ids = {node["id"] for node in company_graph["graph"]["nodes"] if node["source"] == "mapping"}
+        self.assertEqual(main_mapping_ids, {f"record_model:{company_wide.pk}", f"record_model:{main_branch.pk}"})
+        self.assertEqual(
+            operations_mapping_ids,
+            {f"record_model:{company_wide.pk}", f"record_model:{other_branch_mapping.pk}"},
+        )
+        self.assertEqual(company_mapping_ids, {f"record_model:{company_wide.pk}"})
+        self.assertEqual(main_graph["meta"]["scope"], "company-wide and active branch")
+
+        foreign_company = Company.objects.create(code="AIMAP", name="Foreign mapping company")
+        invalid_mapping = AIKnowledgeRecordModelMapping(
+            company=self.company,
+            branch=foreign_company.branches.get(is_main=True),
+            record_model="warehouses",
+            display_name="Invalid foreign branch mapping",
+        )
+        with self.assertRaises(ValidationError):
+            invalid_mapping.full_clean()
+
+    def test_business_flow_generation_prerequisites_and_reason_are_company_scoped(self):
+        prerequisites = self.client.get(
+            reverse("erpshop_moduleai_assistant:knowledge_flow_generation_prerequisites")
+        )
+        self.assertEqual(prerequisites.status_code, 200)
+        self.assertFalse(prerequisites.json()["can_generate"])
+        blocked = self.client.post(
+            reverse("erpshop_moduleai_assistant:generate_knowledge_flow"),
+            data=json.dumps({"overwriteManual": False}),
+            content_type="application/json",
+        )
+        self.assertEqual(blocked.status_code, 409)
+
+        local_flow = AIKnowledgeBusinessFlow.objects.create(
+            company=self.company,
+            name="Expense reimbursement",
+            trigger="Employee submits an expense claim.",
+            description="Manager and finance review an expense claim.",
+            steps=[{"sequence": 1, "description": "Collect the original receipt."}],
+            status=AIKnowledgeBusinessFlow.Status.ACTIVE,
+        )
+        foreign_company = Company.objects.create(code="AIREASON", name="Foreign reason company")
+        AIKnowledgeBusinessFlow.objects.create(
+            company=foreign_company,
+            name="Foreign reimbursement",
+            steps=[{"sequence": 1, "description": "Do not disclose this flow."}],
+            status=AIKnowledgeBusinessFlow.Status.ACTIVE,
+        )
+        reason = self.client.post(
+            reverse("erpshop_moduleai_assistant:reason_knowledge_flow"),
+            data=json.dumps({"query": "expense receipt"}),
+            content_type="application/json",
+        )
+        self.assertEqual(reason.status_code, 200)
+        self.assertEqual(reason.json()["matches"][0]["id"], local_flow.pk)
+        self.assertEqual(reason.json()["reasoning_summary"]["kind"], "decision_summary_not_raw_chain_of_thought")
+        self.assertNotIn("Foreign reimbursement", str(reason.json()))
+
+    def test_business_flow_generation_job_creates_a_draft_only_after_provider_result(self):
+        configuration = AssistantConfiguration.objects.create(company=self.company)
+        job = AIKnowledgeBusinessFlowGenerationJob.objects.create(
+            company=self.company,
+            configuration=configuration,
+            requested_by=self.user,
+        )
+        generated = {
+            "name": "Supplier onboarding",
+            "trigger": "A supplier needs approval.",
+            "description": "Reviewed supplier onboarding reference.",
+            "steps": [
+                {"description": "Collect supplier information."},
+                {"description": "Review the supplier documentation."},
+            ],
+            "edges": [{"from_sequence": 1, "to_sequence": 2, "label": "review"}],
+        }
+        with patch(
+            "addons.ai.erpshop_moduleai_assistant.flow_generation.request_completion",
+            return_value={
+                "content": json.dumps(generated),
+                "input_tokens": 12,
+                "output_tokens": 34,
+                "latency_ms": 56,
+                "provider_message_id": "flow-generation-test",
+            },
+        ):
+            result = execute_flow_generation(str(job.job_id))
+        self.assertEqual(result["status"], AIKnowledgeBusinessFlowGenerationJob.State.COMPLETED)
+        job.refresh_from_db()
+        self.assertEqual(job.state, AIKnowledgeBusinessFlowGenerationJob.State.COMPLETED)
+        self.assertEqual(job.result_flow.status, AIKnowledgeBusinessFlow.Status.DRAFT)
+        self.assertEqual(job.result_flow.steps[1]["description"], "Review the supplier documentation.")
+        self.assertEqual((job.input_tokens, job.output_tokens, job.latency_ms), (12, 34, 56))
+        job_response = self.client.get(
+            reverse("erpshop_moduleai_assistant:knowledge_flow_generation_job", args=[job.job_id])
+        )
+        self.assertEqual(job_response.status_code, 200)
+        self.assertEqual(job_response.json()["business_flow_map_id"], job.result_flow_id)
+
+    def test_flow_generation_and_reason_queries_are_bounded_as_reference_data_grows(self):
+        configuration = AssistantConfiguration.objects.create(company=self.company)
+        AIKnowledgeBusinessFlow.objects.create(
+            company=self.company,
+            name="Expense reimbursement",
+            trigger="Expense receipt review",
+            steps=[{"sequence": 1, "description": "Review the expense receipt."}],
+            status=AIKnowledgeBusinessFlow.Status.ACTIVE,
+        )
+        with CaptureQueriesContext(connection) as small_queries:
+            flow_generation_prerequisites(self.company.pk, configuration)
+            _generation_messages(self.company.pk)
+            reason_about_business_flows(self.company.pk, "expense receipt")
+
+        for index in range(12):
+            AIKnowledgeDocument.objects.create(
+                company=self.company,
+                title=f"Company-wide generation reference {index}",
+                extracted_text="Approved company-wide reference material.",
+                status=AIKnowledgeDocument.Status.READY,
+            )
+            AIKnowledgeBusinessFlow.objects.create(
+                company=self.company,
+                name=f"Additional flow {index}",
+                steps=[{"sequence": 1, "description": "Additional reviewed step."}],
+                status=AIKnowledgeBusinessFlow.Status.ACTIVE,
+            )
+        with CaptureQueriesContext(connection) as larger_queries:
+            flow_generation_prerequisites(self.company.pk, configuration)
+            _generation_messages(self.company.pk)
+            reason_about_business_flows(self.company.pk, "expense receipt")
+
+        self.assertEqual(len(small_queries), len(larger_queries))
+
+    def test_knowledge_graph_contract_is_company_scoped_and_has_fixed_query_growth(self):
+        category = AIKnowledgeCategory.objects.create(
+            company=self.company,
+            name="Finance",
+            description="Reviewed financial guidance.",
+        )
+        document = AIKnowledgeDocument.objects.create(
+            company=self.company,
+            title="Expense policy",
+            category=category.name,
+            extracted_text="A receipt is required for reimbursement.",
+            status=AIKnowledgeDocument.Status.READY,
+        )
+        flow = AIKnowledgeBusinessFlow.objects.create(
+            company=self.company,
+            name="Expense reimbursement",
+            description="Reimbursement handoff.",
+            steps=[
+                {"sequence": 1, "description": "Collect the original receipt."},
+                {"sequence": 2, "description": "Finance validates the claim."},
+            ],
+            status=AIKnowledgeBusinessFlow.Status.ACTIVE,
+        )
+        mapping_response = self.client.post(
+            reverse("erpshop_moduleai_assistant:knowledge_documents"),
+            {
+                "action": "mapping",
+                "record_model": "products",
+                "display_name": "Products",
+                "category": category.name,
+                "module_name": "Inventory",
+                "feature_tags_text": "stock, replenishment",
+                "business_flow": flow.pk,
+                "active": "on",
+            },
+        )
+        self.assertRedirects(mapping_response, reverse("erpshop_moduleai_assistant:knowledge_documents"))
+        mapping = AIKnowledgeRecordModelMapping.objects.get(record_model="products")
+        self.assertEqual(mapping.company, self.company)
+        self.assertEqual(mapping.feature_tags, ["stock", "replenishment"])
+        updated_mapping = self.client.post(
+            reverse("erpshop_moduleai_assistant:knowledge_documents"),
+            {
+                "action": "mapping_update",
+                "mapping_id": mapping.pk,
+                "record_model": "products",
+                "display_name": "Product catalog",
+                "category": category.name,
+                "module_name": "Inventory",
+                "feature_tags_text": "stock, catalog",
+                "business_flow": flow.pk,
+                "active": "on",
+            },
+        )
+        self.assertRedirects(updated_mapping, reverse("erpshop_moduleai_assistant:knowledge_documents"))
+        mapping.refresh_from_db()
+        self.assertEqual((mapping.display_name, mapping.feature_tags), ("Product catalog", ["stock", "catalog"]))
+        foreign_company = Company.objects.create(code="AIGRAPH", name="Foreign graph company")
+        AIKnowledgeDocument.objects.create(
+            company=foreign_company,
+            title="Foreign document",
+            extracted_text="This must not enter the active company graph.",
+            status=AIKnowledgeDocument.Status.READY,
+        )
+
+        with CaptureQueriesContext(connection) as small_queries:
+            graph = build_knowledge_graph(self.company.pk, limit=50)
+        for index in range(12):
+            AIKnowledgeDocument.objects.create(
+                company=self.company,
+                title=f"Additional policy {index}",
+                extracted_text="Reviewed local policy.",
+                status=AIKnowledgeDocument.Status.READY,
+            )
+        with CaptureQueriesContext(connection) as larger_queries:
+            larger_graph = build_knowledge_graph(self.company.pk, limit=50)
+
+        node_ids = {node["id"] for node in graph["graph"]["nodes"]}
+        self.assertIn(f"category:{category.pk}", node_ids)
+        self.assertIn(f"document:{document.pk}", node_ids)
+        self.assertIn(f"flow:{flow.pk}", node_ids)
+        self.assertIn(f"record_model:{mapping.pk}", node_ids)
+        self.assertIn(f"step:{flow.pk}:1", node_ids)
+        self.assertNotIn("Foreign document", str(graph))
+        self.assertIn(
+            (f"category:{category.pk}", f"document:{document.pk}", "categorizes"),
+            {(edge["source"], edge["target"], edge["label"]) for edge in graph["graph"]["edges"]},
+        )
+        self.assertIn(
+            (f"flow:{flow.pk}", f"record_model:{mapping.pk}", "uses entity"),
+            {(edge["source"], edge["target"], edge["label"]) for edge in graph["graph"]["edges"]},
+        )
+        self.assertEqual(len(small_queries), len(larger_queries))
+        self.assertLessEqual(len(larger_graph["graph"]["nodes"]), 200)
+
+        self.assertEqual(self.client.get(reverse("erpshop_moduleai_assistant:knowledge_graph_status")).status_code, 200)
+        overview = self.client.get(reverse("erpshop_moduleai_assistant:knowledge_graph_overview"))
+        self.assertEqual(overview.status_code, 200)
+        self.assertEqual(overview.json()["counts"]["documents"], 13)
+        self.assertEqual(overview.json()["counts"]["record_model_mappings"], 1)
+        view = self.client.get(reverse("erpshop_moduleai_assistant:knowledge_graph_view"), {"limit": "50"})
+        self.assertEqual(view.status_code, 200)
+        self.assertIn("nodes", view.json()["graph"])
+        search = self.client.get(reverse("erpshop_moduleai_assistant:knowledge_graph_search"), {"q": "expense"})
+        self.assertEqual(search.status_code, 200)
+        self.assertIn(f"document:{document.pk}", {node["id"] for node in search.json()["results"]})
+        detail = self.client.get(reverse("erpshop_moduleai_assistant:knowledge_graph_node", args=[f"document:{document.pk}"]))
+        self.assertEqual(detail.status_code, 200)
+        neighbors = self.client.get(
+            reverse("erpshop_moduleai_assistant:knowledge_graph_neighbors"), {"node_id": f"category:{category.pk}"}
+        )
+        self.assertEqual(neighbors.status_code, 200)
+        self.assertIn(f"document:{document.pk}", {node["id"] for node in neighbors.json()["neighbors"]})
+        path = self.client.get(
+            reverse("erpshop_moduleai_assistant:knowledge_graph_path"),
+            {"from_node_id": f"category:{category.pk}", "to_node_id": f"document:{document.pk}"},
+        )
+        self.assertEqual(path.status_code, 200)
+        self.assertEqual([node["id"] for node in path.json()["nodes"]], [f"category:{category.pk}", f"document:{document.pk}"])
+        trace = self.client.get(
+            reverse("erpshop_moduleai_assistant:knowledge_graph_trace"),
+            {"target_type": "document", "target_id": document.pk},
+        )
+        self.assertEqual(trace.status_code, 200)
+        self.assertEqual(trace.json()["node"]["id"], f"document:{document.pk}")
+        archived_mapping = self.client.post(
+            reverse("erpshop_moduleai_assistant:knowledge_mapping_state", args=[mapping.pk]), {"action": "archive"}
+        )
+        self.assertRedirects(archived_mapping, reverse("erpshop_moduleai_assistant:knowledge_documents"))
+        mapping.refresh_from_db()
+        self.assertFalse(mapping.active)
+        graph_page = self.client.get(reverse("erpshop_moduleai_assistant:knowledge_graph_page"))
+        self.assertEqual(graph_page.status_code, 200)
+        self.assertContains(graph_page, "ai_base_knowledge_graph_canvas")
+        self.assertContains(graph_page, "Loading knowledge graph")
 
     def test_proactive_greeting_uses_the_current_user_erp_scope(self):
         Product.objects.create(company=self.company, sku="GREETING-1", name="Greeting product")
@@ -171,6 +634,29 @@ class HashyAssistantTests(TestCase):
         self.assertEqual(older.status_code, 200)
         self.assertEqual(len(older.context["messages"]), 25)
         self.assertFalse(older.context["has_older_messages"])
+
+    def test_session_owner_can_rename_archive_and_restore_a_conversation(self):
+        config = AssistantConfiguration.objects.create(company=self.company)
+        session = AssistantSession.objects.create(company=self.company, configuration=config, user=self.user, title="Initial name")
+
+        renamed = self.client.post(
+            reverse("erpshop_moduleai_assistant:rename_session", args=[session.pk]), {"title": "Travel review"}
+        )
+        self.assertRedirects(renamed, f"{reverse('erpshop_moduleai_assistant:home')}?session={session.pk}")
+        session.refresh_from_db()
+        self.assertEqual(session.title, "Travel review")
+        self.assertTrue(session.audit_events.filter(event="session_renamed").exists())
+
+        archived = self.client.post(reverse("erpshop_moduleai_assistant:archive_session", args=[session.pk]))
+        self.assertRedirects(archived, reverse("erpshop_moduleai_assistant:home"))
+        session.refresh_from_db()
+        self.assertEqual(session.status, AssistantSession.Status.ARCHIVED)
+
+        restored = self.client.post(reverse("erpshop_moduleai_assistant:restore_session", args=[session.pk]))
+        self.assertRedirects(restored, f"{reverse('erpshop_moduleai_assistant:home')}?session={session.pk}")
+        session.refresh_from_db()
+        self.assertEqual(session.status, AssistantSession.Status.ACTIVE)
+        self.assertTrue(session.audit_events.filter(event="session_restored").exists())
 
     def test_provider_history_query_count_does_not_grow_with_messages(self):
         config = AssistantConfiguration.objects.create(company=self.company, allow_file_content=True)
@@ -397,7 +883,95 @@ class HashyAssistantTests(TestCase):
             extracted_text="This must not cross company scope.",
             status=AIKnowledgeDocument.Status.READY,
         )
-        messages = _request_messages(session)
+        rebuild_document_chunks(AIKnowledgeDocument.objects.get(title="Credit policy"))
+        rebuild_document_chunks(AIKnowledgeDocument.objects.get(title="Other policy"))
+        messages = _request_messages(session, knowledge_query="What credit terms apply?")
         context = "\n".join(message["content"] for message in messages)
         self.assertIn("Credit terms are net 30.", context)
         self.assertNotIn("This must not cross company scope.", context)
+
+    def test_knowledge_retrieval_indexes_relevant_chunks_with_company_scope(self):
+        finance = AIKnowledgeDocument.objects.create(
+            company=self.company,
+            title="Expense policy",
+            category="Finance",
+            extracted_text="Every expense reimbursement requires an original receipt and finance approval.",
+            status=AIKnowledgeDocument.Status.READY,
+        )
+        irrelevant = AIKnowledgeDocument.objects.create(
+            company=self.company,
+            title="Warehouse policy",
+            category="Operations",
+            extracted_text="Stock counts occur every Friday before closing.",
+            status=AIKnowledgeDocument.Status.READY,
+        )
+        other_company = Company.objects.create(code="AI3", name="Third AI Company")
+        foreign = AIKnowledgeDocument.objects.create(
+            company=other_company,
+            title="Foreign policy",
+            extracted_text="Foreign expense reimbursement must never appear here.",
+            status=AIKnowledgeDocument.Status.READY,
+        )
+        self.assertEqual(rebuild_document_chunks(finance), 1)
+        self.assertEqual(rebuild_document_chunks(irrelevant), 1)
+        self.assertEqual(rebuild_document_chunks(foreign), 1)
+        self.assertEqual(AIKnowledgeChunk.objects.filter(document=finance).count(), 1)
+
+        result = retrieve_knowledge(self.company.pk, "Which receipt is needed for expense reimbursement?")
+
+        self.assertIn("Expense policy", result["context"])
+        self.assertNotIn("Warehouse policy", result["context"])
+        self.assertNotIn("Foreign policy", result["context"])
+        self.assertEqual(result["citations"][0]["title"], "Expense policy")
+        self.assertGreater(result["confidence_percent"], 0)
+
+    def test_completed_answer_keeps_knowledge_source_provenance(self):
+        config = AssistantConfiguration.objects.create(company=self.company, allow_knowledge_context=True)
+        session = AssistantSession.objects.create(company=self.company, configuration=config, user=self.user)
+        document = AIKnowledgeDocument.objects.create(
+            company=self.company,
+            title="Travel policy",
+            extracted_text="Travel reimbursement requires a boarding pass.",
+            status=AIKnowledgeDocument.Status.READY,
+        )
+        rebuild_document_chunks(document)
+        queued = AssistantMessage.objects.create(
+            session=session,
+            role=AssistantMessage.Role.USER,
+            content="What is required for travel reimbursement?",
+            state=AssistantMessage.State.PENDING,
+        )
+        provider_result = {
+            "content": "A boarding pass is required [K1].",
+            "input_tokens": 12,
+            "output_tokens": 8,
+            "provider_message_id": "test-response",
+            "latency_ms": 5,
+        }
+        with patch("addons.ai.erpshop_moduleai_assistant.services.request_completion", return_value=provider_result):
+            execute_message(queued.pk)
+        response = session.messages.get(role=AssistantMessage.Role.ASSISTANT)
+        self.assertEqual(response.metadata["knowledge_citations"][0]["title"], "Travel policy")
+        self.assertGreater(response.metadata["knowledge_relevance_percent"], 0)
+
+    def test_knowledge_retrieval_query_count_is_stable_as_chunk_count_grows(self):
+        def add_documents(prefix, count):
+            for index in range(count):
+                document = AIKnowledgeDocument.objects.create(
+                    company=self.company,
+                    title=f"{prefix} {index}",
+                    extracted_text=f"Expense policy {index} requires a receipt for reimbursement.",
+                    status=AIKnowledgeDocument.Status.READY,
+                )
+                rebuild_document_chunks(document)
+
+        add_documents("Small", 2)
+        with CaptureQueriesContext(connection) as small_queries:
+            small_result = retrieve_knowledge(self.company.pk, "expense reimbursement receipt")
+        add_documents("Large", 10)
+        with CaptureQueriesContext(connection) as large_queries:
+            large_result = retrieve_knowledge(self.company.pk, "expense reimbursement receipt")
+
+        self.assertTrue(small_result["citations"])
+        self.assertTrue(large_result["citations"])
+        self.assertEqual(len(small_queries), len(large_queries))

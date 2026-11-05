@@ -44,6 +44,9 @@
           <p class="hashy-empty">No chat yet. Start a focused conversation for this company.</p>
         {% endfor %}
       </nav>
+      {% if archived_sessions %}
+        <details class="hashy-archived-sessions"><summary>Archived conversations ({{ archived_sessions|length }})</summary><ul>{% for session in archived_sessions %}<li><span>{{ session.title }}</span><form method="post" action="{% url 'erpshop_moduleai_assistant:restore_session' session.pk %}">{% csrf_token %}<button type="submit">Restore</button></form></li>{% endfor %}</ul></details>
+      {% endif %}
       <section class="hashy-safety-card">
         <strong>Governed by design</strong>
         <p>Provider keys never enter this database. Only selected company data and files explicitly sent in this chat are considered.</p>
@@ -53,7 +56,7 @@
     <section class="hashy-chat-pane">
       {% if selected_session %}
         <header class="hashy-chat-head">
-          <div><p class="eyebrow">Active session</p><h3>{{ selected_session.title }}</h3></div>
+          <div><p class="eyebrow">Active session{% if selected_session.branch %} · {{ selected_session.branch.name }}{% else %} · company-wide{% endif %}</p><h3>{{ selected_session.title }}</h3><form method="post" action="{% url 'erpshop_moduleai_assistant:rename_session' selected_session.pk %}" class="hashy-session-rename">{% csrf_token %}<input name="title" value="{{ selected_session.title }}" maxlength="180" aria-label="Conversation name"><button type="submit">Rename</button></form></div>
           <form method="post" action="{% url 'erpshop_moduleai_assistant:archive_session' selected_session.pk %}">{% csrf_token %}<button class="btn btn-secondary" type="submit">Archive</button></form>
         </header>
         <div class="hashy-message-list" data-assistant-messages>
@@ -64,6 +67,12 @@
               <header><strong>{% if message.role == 'assistant' %}Hashy{% elif message.role == 'user' %}You{% else %}System{% endif %}</strong><span>{% if message.state == 'pending' %}Working…{% elif message.state == 'failed' %}Needs attention{% else %}{{ message.created_at|date:"H:i" }}{% endif %}</span></header>
               {% if message.content %}<div class="hashy-message-content">{{ message.content|linebreaksbr }}</div>{% else %}<div class="hashy-message-content hashy-thinking">Preparing a safe provider request…</div>{% endif %}
               {% if message.attachments.all %}<ul class="hashy-attachments">{% for attachment in message.attachments.all %}<li>▣ {{ attachment.original_name }} <small>{{ attachment.byte_size|filesizeformat }}</small></li>{% endfor %}</ul>{% endif %}
+              {% if message.metadata.knowledge_citations %}
+                <footer class="hashy-knowledge-sources">
+                  <span>Knowledge sources supplied{% if message.metadata.knowledge_relevance_percent %} · {{ message.metadata.knowledge_relevance_percent }}% retrieval relevance{% endif %}</span>
+                  <ul>{% for citation in message.metadata.knowledge_citations %}<li>[{{ citation.label }}] {{ citation.title }} · {{ citation.category }}</li>{% endfor %}</ul>
+                </footer>
+              {% endif %}
               {% if message.role == 'assistant' and message.state == 'completed' %}
                 <footer class="hashy-feedback" data-feedback-for="{{ message.pk }}">
                   <span>Was this useful?</span>

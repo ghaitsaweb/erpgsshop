@@ -6,6 +6,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from django.conf import settings
+from django.contrib.postgres.indexes import GinIndex
+from django.contrib.postgres.search import SearchVector
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
@@ -728,6 +730,7 @@ class AIKnowledgeChunk(TimeStampedModel):
         indexes = [
             models.Index(fields=["company", "document", "ordinal"], name="ai_knowledge_chunk_scope"),
             models.Index(fields=["company", "branch", "document", "ordinal"], name="ai_knowledge_chunk_branch"),
+            GinIndex(SearchVector("content", config="simple"), name="ai_knowledge_chunk_fts"),
         ]
 
     def clean(self):

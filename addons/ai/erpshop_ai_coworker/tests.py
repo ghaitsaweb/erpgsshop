@@ -31,6 +31,7 @@ from .models import (
     AICoworkerHeartbeat,
     AICoworkerChannel,
     AICoworkerMemory,
+    AICoworkerParticipant,
     AICoworkerSecret,
     AICoworkerSubagent,
     AIMessage,
@@ -561,9 +562,13 @@ class AICoworkerTests(TestCase):
         )
         self.assertEqual(response.status_code, 302)
         approval.refresh_from_db()
-        self.assertEqual(approval.state, AIToolApproval.State.APPROVED)
+        self.assertEqual(approval.state, AIToolApproval.State.EXECUTED)
+        self.assertEqual(approval.result["status"], "not_configured")
         self.assertEqual(approval.decided_by_id, self.user.pk)
         self.assertTrue(task.events.filter(event="tool_approved", actor=self.user).exists())
+        self.assertTrue(task.events.filter(
+            event="tool_executed", details__approval_id=approval.pk, details__status="not_configured"
+        ).exists())
 
     def test_expired_tool_approvals_are_closed_idempotently_by_the_scheduler(self):
         self.agent.allowed_tools = ["erp_read", "web_search"]

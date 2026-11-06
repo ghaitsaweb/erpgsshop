@@ -347,7 +347,15 @@ class HashyAssistantTests(TestCase):
         self.assertNotIn("Foreign reimbursement", str(reason.json()))
 
     def test_business_flow_generation_job_creates_a_draft_only_after_provider_result(self):
-        configuration = AssistantConfiguration.objects.create(company=self.company)
+        configuration = AssistantConfiguration.objects.create(
+            company=self.company,
+            provider=AssistantConfiguration.Provider.OPENAI_COMPATIBLE,
+            api_base_url="https://provider.example/v1",
+            credential_env_var="AI_TEST_KEY",
+            model_name="test-model",
+            active=True,
+        )
+        AIKnowledgeCompanyProfile.objects.create(company=self.company, summary="Supplier onboarding reference.")
         job = AIKnowledgeBusinessFlowGenerationJob.objects.create(
             company=self.company,
             configuration=configuration,
@@ -363,7 +371,7 @@ class HashyAssistantTests(TestCase):
             ],
             "edges": [{"from_sequence": 1, "to_sequence": 2, "label": "review"}],
         }
-        with patch(
+        with patch.dict("os.environ", {"AI_TEST_KEY": "test-only"}), patch(
             "addons.ai.erpshop_moduleai_assistant.flow_generation.request_completion",
             return_value={
                 "content": json.dumps(generated),
@@ -833,8 +841,10 @@ class HashyAssistantTests(TestCase):
         self.assertGreaterEqual(signal.confidence, 0)
         self.assertNotIn("Sensitive", str(signal.profile_payload))
         self.assertEqual(len(profile_context_for(company_id=self.company.pk, actor_id=self.user.pk)), 1)
-        outbox = AIWorkSignalOutbox.objects.get(company=self.company)
-        self.assertNotIn("Sensitive", str(outbox.payload))
+        outbox_payloads = list(AIWorkSignalOutbox.objects.filter(company=self.company).values_list("payload", flat=True))
+        self.assertEqual(len(outbox_payloads), 3)
+        for payload in outbox_payloads:
+            self.assertNotIn("Sensitive", str(payload))
 
     def test_digest_rule_uses_only_privacy_filtered_work_signal_metadata(self):
         rule = AIDigestRule.objects.create(

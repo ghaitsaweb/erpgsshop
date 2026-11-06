@@ -12,6 +12,7 @@ import hashlib
 import re
 from collections import Counter
 
+from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
 from django.db import transaction
 from django.db.models import Q
 
@@ -36,13 +37,13 @@ _STOP_WORDS = frozenset(
 )
 
 
-def query_terms(value: str) -> tuple[str, ...]:
+def query_terms(value: str, *, min_length=3) -> tuple[str, ...]:
     """Return stable query terms without synonym or provider expansion."""
 
     seen = set()
     terms = []
     for word in _WORD_RE.findall((value or "").lower()):
-        if len(word) < 3 or word in _STOP_WORDS or word in seen:
+        if len(word) < min_length or word in _STOP_WORDS or word in seen:
             continue
         seen.add(word)
         terms.append(word)
@@ -137,6 +138,26 @@ def _fallback_chunks(company_id: int, terms: tuple[str, ...], branch_id=None):
     return candidates[:MAX_DATABASE_CANDIDATES]
 
 
+def _indexed_chunk_candidates(company_id: int, terms: tuple[str, ...], branch_id=None):
+    """Rank a bounded candidate set with the matching PostgreSQL GIN expression."""
+
+    query = SearchQuery(" | ".join(terms), config="simple", search_type="raw")
+    vector = SearchVector("content", config="simple")
+    return (
+        AIKnowledgeChunk.objects.filter(
+            company_id=company_id,
+            document__active=True,
+            document__status=AIKnowledgeDocument.Status.READY,
+        )
+        .filter(_branch_scope(branch_id))
+        .annotate(search_vector=vector, search_rank=SearchRank(vector, query, normalization=2))
+        .filter(search_vector=query)
+        .select_related("document")
+        .only("id", "document_id", "ordinal", "content", "document__title", "document__category")
+        .order_by("-search_rank", "document_id", "ordinal")[:MAX_DATABASE_CANDIDATES]
+    )
+
+
 def retrieve_knowledge(company_id: int, query: str, *, branch_id=None) -> dict:
     """Return relevant company-scoped excerpts plus provenance for one turn."""
 
@@ -144,21 +165,7 @@ def retrieve_knowledge(company_id: int, query: str, *, branch_id=None) -> dict:
     if not terms:
         return {"context": "", "citations": [], "confidence_percent": 0}
 
-    predicate = Q()
-    for term in terms:
-        predicate |= Q(content__icontains=term)
-    indexed_chunks = list(
-        AIKnowledgeChunk.objects.filter(
-            company_id=company_id,
-            document__active=True,
-            document__status=AIKnowledgeDocument.Status.READY,
-        )
-        .filter(_branch_scope(branch_id))
-        .filter(predicate)
-        .select_related("document")
-        .only("id", "document_id", "ordinal", "content", "document__title", "document__category")
-        .order_by("document_id", "ordinal")[:MAX_DATABASE_CANDIDATES]
-    )
+    indexed_chunks = list(_indexed_chunk_candidates(company_id, terms, branch_id))
     candidates = [(chunk.document, chunk.ordinal, chunk.content) for chunk in indexed_chunks]
     candidates.extend(_fallback_chunks(company_id, terms, branch_id))
 

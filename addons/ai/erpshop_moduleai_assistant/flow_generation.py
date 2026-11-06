@@ -7,6 +7,8 @@ import re
 from django.db import transaction
 from django.utils import timezone
 
+from .business_flows import search_business_flows
+from .knowledge import query_terms
 from .models import (
     AIKnowledgeBusinessFlow,
     AIKnowledgeBusinessFlowGenerationJob,
@@ -19,7 +21,6 @@ from .services import request_completion
 logger = logging.getLogger(__name__)
 
 MAX_GENERATION_DOCUMENTS = 6
-MAX_REASON_FLOWS = 100
 MAX_REASON_RESULTS = 5
 
 
@@ -196,6 +197,11 @@ def execute_flow_generation(job_id):
         job.save(update_fields=["state", "started_at", "error_reason", "updated_at"])
 
     try:
+        if job.configuration.company_id != job.company_id:
+            raise FlowGenerationError("The generation configuration must belong to the job company.")
+        prerequisites = flow_generation_prerequisites(job.company_id, job.configuration)
+        if not prerequisites["can_generate"]:
+            raise FlowGenerationError("Business-flow generation is no longer ready. Check the provider and approved references.")
         messages, snapshot = _generation_messages(job.company_id)
         result = request_completion(
             job.configuration,
@@ -258,50 +264,22 @@ def execute_flow_generation(job_id):
 
 def reason_about_business_flows(company_id, query):
     """Return evidence-based flow matches, never hidden provider reasoning."""
-    terms = list(dict.fromkeys(re.findall(r"[\w-]{2,}", (query or "").casefold())))[:24]
+    terms = query_terms(query, min_length=2)
     if not terms:
-        raise FlowGenerationError("Provide a business-flow question with at least one two-character term.")
-    flows = list(
-        AIKnowledgeBusinessFlow.objects.filter(company_id=company_id, status=AIKnowledgeBusinessFlow.Status.ACTIVE)
-        .only("id", "name", "trigger", "description", "steps")
-        .order_by("-updated_at", "-id")[:MAX_REASON_FLOWS]
-    )
+        raise FlowGenerationError("Provide a business-flow question with at least one searchable word of two characters.")
     matches = []
-    for flow in flows:
-        fields = {
-            "name": flow.name.casefold(),
-            "trigger": flow.trigger.casefold(),
-            "description": flow.description.casefold(),
-            "steps": " ".join(
-                str(step.get("description") or "").casefold()
-                for step in (flow.steps or [])
-                if isinstance(step, dict)
-            ),
-        }
-        matched_terms = [term for term in terms if any(term in value for value in fields.values())]
-        if not matched_terms:
-            continue
-        score = sum(
-            4 if term in fields["name"] else 2 if term in fields["trigger"] else 1
-            for term in matched_terms
-        )
-        supporting_steps = [
-            str(step.get("description") or "")[:500]
-            for step in (flow.steps or [])
-            if isinstance(step, dict) and any(term in str(step.get("description") or "").casefold() for term in matched_terms)
-        ][:3]
+    for match in search_business_flows(company_id, query, limit=MAX_REASON_RESULTS):
+        flow = match["flow"]
         matches.append(
             {
                 "id": flow.pk,
                 "name": flow.name,
                 "trigger": flow.trigger,
-                "matched_terms": matched_terms,
-                "score": score,
-                "supporting_steps": supporting_steps,
+                "matched_terms": match["matched_terms"],
+                "score": match["score"],
+                "supporting_steps": match["supporting_steps"],
             }
         )
-    matches.sort(key=lambda item: (-item["score"], item["name"], item["id"]))
-    matches = matches[:MAX_REASON_RESULTS]
     confidence = min(100, round((matches[0]["score"] / max(1, len(terms) * 4)) * 100)) if matches else 0
     return {
         "query": query.strip()[:500],

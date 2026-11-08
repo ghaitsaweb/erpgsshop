@@ -1,0 +1,29 @@
+minimum_pre_commit_version: "3.8.0"
+
+default_language_version:
+  python: python3
+
+repos:
+  - repo: local
+    hooks:
+      - id: erp-scale-guard
+        name: ERP GS Shop Scale Guard (SG001-SG004)
+        entry: python3 tools/scale_guard.py
+        args:
+          - --root
+          - .
+          - --baseline
+          - tools/scale_guard_baseline.json
+          - --check
+          - --list
+        language: system
+        types: [python]
+        files: '^(addons|core|erp_gsshop|modules)/.*\.py$'
+        exclude: '(^|/)(migrations|tests?|demo|demos|management|versions)/|(^|/)(test_.*|tests|tests_.*|.*_test)\.py$'
+
+      - id: erp-scale-guard-tests
+        name: ERP GS Shop Scale Guard unit tests
+        entry: python3 -m unittest discover -s tools/tests -p test_*.py
+        language: system
+        pass_filenames: false
+        files: '^(tools/scale_guard\.py|tools/tests/test_.*\.py|tools/scale_guard_baseline\.json|\.agents/skills/precommit-scale-guard/scripts/.*\.py|\.pre-commit-config\.yaml)$'

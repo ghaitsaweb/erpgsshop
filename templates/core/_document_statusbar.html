@@ -1,0 +1,40 @@
+{% if current_status and status_choices %}
+  <div class="document-statusbar" aria-label="{{ status_aria_label|default:'Document status' }}">
+    <button class="document-statusbar__summary" type="button" aria-haspopup="true">
+      {% for value, label in status_choices %}
+        {% if current_status == value %}
+          <span class="document-statusbar__active-icon status-{{ value }}" aria-hidden="true">
+            {% include "core/_status_icon.html" with status_value=value %}
+          </span>
+          <span class="document-statusbar__active-copy">
+            <small>Step {{ forloop.counter }} of {{ status_choices|length }}</small>
+            <strong>{{ label }}</strong>
+          </span>
+        {% endif %}
+      {% endfor %}
+      <span class="document-statusbar__trigger">
+        Details
+        <span class="document-statusbar__chevron" aria-hidden="true">⌄</span>
+      </span>
+    </button>
+
+    <div class="document-statusbar__flow" role="list" aria-label="Status flow">
+      {% for value, label in status_choices %}
+        <div
+          class="document-statusbar__step status-{{ value }}{% if current_status == value %} current{% endif %}"
+          role="listitem"
+          {% if current_status == value %}aria-current="step"{% endif %}
+        >
+          {% if not forloop.last %}<span class="document-statusbar__connector" aria-hidden="true"></span>{% endif %}
+          <span class="document-statusbar__marker" aria-hidden="true">
+            {% include "core/_status_icon.html" with status_value=value %}
+          </span>
+          <span class="document-statusbar__step-copy">
+            <small>Step {{ forloop.counter }} of {{ status_choices|length }}</small>
+            <strong>{{ label }}</strong>
+          </span>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+{% endif %}

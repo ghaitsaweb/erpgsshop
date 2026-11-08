@@ -16,11 +16,12 @@
           {% endfor %}
         {% endif %}
       </div>
-      {% if object %}
-        <div class="document-statusbar" aria-label="Training status">
-          {% for value, label in status_choices %}<span class="{% if current_status == value %}current{% endif %}">{{ label }}</span>{% endfor %}
-        </div>
-      {% endif %}
+      <div class="document-commandbar__right">
+        {% include "core/_record_navigator.html" %}
+        {% if object %}
+          {% include "core/_document_statusbar.html" with status_aria_label="Training status" %}
+        {% endif %}
+      </div>
     </header>
 
     <form id="training-conduct-form" method="post" class="tc-form" novalidate>

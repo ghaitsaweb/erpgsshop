@@ -17,12 +17,14 @@ def locked_leave_buckets(employee_id, leave_type_id, start_date, end_date, years
         .filter(employee_id=employee_id, leave_type_id=leave_type_id, status="approved")
         .filter(Q(year__in=years) | Q(valid_from__lte=end_date, expires_on__gte=start_date))
         .order_by("year", "pk")
+        .iterator(chunk_size=500)
     )
     allocation_ids = [allocation.pk for allocation in allocations]
     buckets = list(
         LeaveBucket.objects.select_for_update()
         .filter(allocation_id__in=allocation_ids)
         .order_by("expiry_date", "pk")
+        .iterator(chunk_size=500)
     )
     existing_ids = {bucket.allocation_id for bucket in buckets}
     missing = [allocation for allocation in allocations if allocation.pk not in existing_ids]
@@ -44,11 +46,12 @@ def locked_leave_buckets(employee_id, leave_type_id, start_date, end_date, years
                 ),
             )
             for allocation in missing
-        ])
+        ], batch_size=500)
         buckets = list(
             LeaveBucket.objects.select_for_update()
             .filter(allocation_id__in=allocation_ids)
             .order_by("expiry_date", "pk")
+            .iterator(chunk_size=500)
         )
     return allocations, buckets
 
@@ -112,11 +115,13 @@ def expire_leave_buckets(*, today=None, batch_size=500, max_batches=20):
     # scale-guard: allow SG001 — at most 100 batches of at most 1,000 locked buckets are processed.
     for _batch in range(max_batches):
         with transaction.atomic():
-            buckets = list(
-                LeaveBucket.objects.select_for_update(skip_locked=True)
+            buckets = [
+                bucket
+                for bucket in LeaveBucket.objects.select_for_update(skip_locked=True)
                 .filter(status=LeaveBucket.Status.ACTIVE, expiry_date__lt=today)
                 .order_by("expiry_date", "pk")[:batch_size]
-            )
+                .iterator(chunk_size=batch_size)
+            ]
             if not buckets:
                 return touched
             reserved_by_bucket = {
@@ -133,6 +138,10 @@ def expire_leave_buckets(*, today=None, batch_size=500, max_batches=20):
                 bucket.forfeited_days += max(remaining - reserved, Decimal("0"))
                 bucket.status = LeaveBucket.Status.EXPIRED if remaining > 0 else LeaveBucket.Status.EXHAUSTED
                 bucket.updated_at = now
-            LeaveBucket.objects.bulk_update(buckets, ["forfeited_days", "status", "updated_at"])
+            LeaveBucket.objects.bulk_update(
+                buckets,
+                ["forfeited_days", "status", "updated_at"],
+                batch_size=batch_size,
+            )
             touched += len(buckets)
     return touched

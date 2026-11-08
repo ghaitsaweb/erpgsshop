@@ -180,6 +180,12 @@ def ensure_hr_roles(**_kwargs):
         CAREER_SUPERVISOR: _permissions(CAREER_MODELS, {"view", "add", "change"}),
         CAREER_USER: _permissions({"employee", "careertransitionrequest"}, {"view", "add", "change"}),
     }
+    role_names = tuple(role_permissions)
+    Group.objects.bulk_create(
+        [Group(name=role_name) for role_name in role_names],
+        ignore_conflicts=True,
+        batch_size=100,
+    )
+    groups = Group.objects.in_bulk(role_names, field_name="name")
     for role_name, permissions in role_permissions.items():
-        group, _created = Group.objects.get_or_create(name=role_name)
-        group.permissions.add(*permissions)
+        groups[role_name].permissions.add(*permissions)

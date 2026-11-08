@@ -1,0 +1,57 @@
+{% if record_navigation %}
+  <nav class="record-navigator" aria-label="Record navigation">
+    {% if record_navigation.previous_url %}
+      <a class="record-navigator__button" href="{{ record_navigation.previous_url }}" aria-label="Previous record" title="Previous record">‹</a>
+    {% else %}
+      <span class="record-navigator__button disabled" aria-hidden="true">‹</span>
+    {% endif %}
+    <input
+      class="record-navigator__current"
+      type="number"
+      min="1"
+      value="{{ record_navigation.current_pk }}"
+      inputmode="numeric"
+      aria-label="Go to record number"
+      title="Type a record number and press Enter"
+      data-record-current="{{ record_navigation.current_pk }}"
+      data-record-jump-url="{% url 'entity_jump' record_navigation.entity %}"
+      data-record-query="{{ record_navigation.query_string }}"
+    >
+    {% if record_navigation.next_url %}
+      <a class="record-navigator__button" href="{{ record_navigation.next_url }}" aria-label="Next record" title="Next record">›</a>
+    {% else %}
+      <span class="record-navigator__button disabled" aria-hidden="true">›</span>
+    {% endif %}
+  </nav>
+  <script>
+    (() => {
+      const input = document.currentScript.previousElementSibling?.querySelector('[data-record-jump-url]');
+      if (!input) return;
+      const jump = () => {
+        const value = Number.parseInt(input.value, 10);
+        const current = Number.parseInt(input.dataset.recordCurrent, 10);
+        if (!Number.isInteger(value) || value < 1) {
+          input.value = input.dataset.recordCurrent;
+          return;
+        }
+        if (value === current) return;
+        const url = new URL(input.dataset.recordJumpUrl, window.location.origin);
+        url.searchParams.set('record', String(value));
+        url.searchParams.set('current', String(current));
+        if (input.dataset.recordQuery) url.searchParams.set('return_query', input.dataset.recordQuery);
+        window.location.assign(url);
+      };
+      input.addEventListener('change', jump);
+      input.addEventListener('keydown', event => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          jump();
+        } else if (event.key === 'Escape') {
+          input.value = input.dataset.recordCurrent;
+          input.blur();
+        }
+      });
+      input.addEventListener('focus', () => input.select());
+    })();
+  </script>
+{% endif %}

@@ -6,6 +6,10 @@
   <div class="toolbar list-toolbar">
     <form method="get" class="search-form">
       <input class="form-control" type="search" name="q" value="{{ query }}" placeholder="Search {{ config.title|lower }}…">
+      {% if smart_action_scope %}
+        <input type="hidden" name="smart_action" value="{{ smart_action_scope.definition.key }}">
+        <input type="hidden" name="source_id" value="{{ smart_action_scope.source.pk }}">
+      {% endif %}
       <input type="hidden" name="layout" value="{{ layout }}" data-entity-layout-input>
       <button class="btn btn-secondary" type="submit">Search</button>
     </form>
@@ -63,6 +67,9 @@
         <details class="list-action-menu">
           <summary>Action</summary>
           <div class="list-action-popover">
+            {% if can_merge_sales %}
+              <button type="submit" formaction="{% url 'sales_merge' %}"><span aria-hidden="true">⇄</span> Merge Quotations</button>
+            {% endif %}
             <button type="button" data-open-delete-wizard><span aria-hidden="true">×</span> Delete</button>
           </div>
         </details>
@@ -71,6 +78,14 @@
     {% endif %}
     {% if can_add %}<a class="btn btn-primary" href="{% url 'entity_create' entity %}">+ Add {{ config.singular }}</a>{% endif %}
   </div>
+
+  {% if smart_action_scope %}
+    <div class="info-strip">
+      Showing {{ smart_action_scope.definition.label }} linked to {{ smart_action_scope.source_singular }}
+      {% if smart_action_scope.can_open_source %}<a href="{% url 'entity_edit' smart_action_scope.source_entity smart_action_scope.source.pk %}">{{ smart_action_scope.source }}</a>{% else %}{{ smart_action_scope.source }}{% endif %}.
+      Create and delete are disabled in this trace view.
+    </div>
+  {% endif %}
 
   {% if config.admin_detail %}
     <div class="info-strip">Create the document here, then use <a href="{% url 'admin:index' %}">Administration</a> to add detailed line items.</div>
@@ -105,9 +120,9 @@
       {% empty %}<div class="panel empty">No employees found. Add the first employee.</div>{% endfor %}
       {% if page.paginator.num_pages > 1 %}
         <div class="pagination">
-          {% if page.has_previous %}<a href="?q={{ query|urlencode }}&layout=kanban&page={{ page.previous_page_number }}">← Previous</a>{% endif %}
+          {% if page.has_previous %}<a href="?q={{ query|urlencode }}&layout=kanban&page={{ page.previous_page_number }}{% if scope_query %}&{{ scope_query }}{% endif %}">← Previous</a>{% endif %}
           <span>Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
-          {% if page.has_next %}<a href="?q={{ query|urlencode }}&layout=kanban&page={{ page.next_page_number }}">Next →</a>{% endif %}
+          {% if page.has_next %}<a href="?q={{ query|urlencode }}&layout=kanban&page={{ page.next_page_number }}{% if scope_query %}&{{ scope_query }}{% endif %}">Next →</a>{% endif %}
         </div>
       {% endif %}
     </div>
@@ -125,9 +140,9 @@
       {% empty %}<div class="panel empty">No records found. Add the first {{ config.singular|lower }}.</div>{% endfor %}
       {% if page.paginator.num_pages > 1 %}
         <div class="pagination">
-          {% if page.has_previous %}<a href="?q={{ query|urlencode }}&layout=kanban&page={{ page.previous_page_number }}">← Previous</a>{% endif %}
+          {% if page.has_previous %}<a href="?q={{ query|urlencode }}&layout=kanban&page={{ page.previous_page_number }}{% if scope_query %}&{{ scope_query }}{% endif %}">← Previous</a>{% endif %}
           <span>Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
-          {% if page.has_next %}<a href="?q={{ query|urlencode }}&layout=kanban&page={{ page.next_page_number }}">Next →</a>{% endif %}
+          {% if page.has_next %}<a href="?q={{ query|urlencode }}&layout=kanban&page={{ page.next_page_number }}{% if scope_query %}&{{ scope_query }}{% endif %}">Next →</a>{% endif %}
         </div>
       {% endif %}
     </div>
@@ -150,9 +165,9 @@
     </div>
     {% if page.paginator.num_pages > 1 %}
       <div class="pagination">
-        {% if page.has_previous %}<a href="?q={{ query }}&page={{ page.previous_page_number }}">← Previous</a>{% endif %}
+        {% if page.has_previous %}<a href="?q={{ query|urlencode }}&page={{ page.previous_page_number }}{% if scope_query %}&{{ scope_query }}{% endif %}">← Previous</a>{% endif %}
         <span>Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
-        {% if page.has_next %}<a href="?q={{ query }}&page={{ page.next_page_number }}">Next →</a>{% endif %}
+        {% if page.has_next %}<a href="?q={{ query|urlencode }}&page={{ page.next_page_number }}{% if scope_query %}&{{ scope_query }}{% endif %}">Next →</a>{% endif %}
       </div>
     {% endif %}
   </div>

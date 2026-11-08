@@ -9,7 +9,12 @@ class PurchaseConfig(AppConfig):
     verbose_name = "GSSHOP Purchase"
 
     def ready(self):
+        from .invoice_extension import register_purchase_invoice_extension
         from .security import ensure_purchase_roles
+        from .services import register_purchase_workflow_hooks
+
+        register_purchase_invoice_extension()
+        register_purchase_workflow_hooks()
 
         post_migrate.connect(
             ensure_purchase_roles,

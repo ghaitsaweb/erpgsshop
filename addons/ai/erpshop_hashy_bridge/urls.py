@@ -13,4 +13,7 @@ urlpatterns = [
     path("hashy/v1/search_read", views.search_read, name="search_read"),
     path("hashy/v1/read_group", views.read_group, name="read_group"),
     path("hashy/v1/batch", views.batch, name="batch"),
+    path("hashy/v1/form_create", views.form_create, name="form_create"),
+    path("hashy/v1/form_write", views.form_write, name="form_write"),
+    path("hashy/v1/report", views.report, name="report"),
 ]

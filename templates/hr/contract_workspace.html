@@ -9,7 +9,7 @@
         <div class="contract-head-state"><span class="document-state status-draft">Not saved</span><a class="btn btn-secondary" href="{% url 'entity_list' 'contracts' %}">Back to contracts</a></div>
       {% else %}
         <div><p class="eyebrow">Employee lifecycle · Contract workspace</p><h2>{{ contract.employee.name }} <small>· {{ contract.employee.employee_id }}</small></h2><p>{{ contract.get_contract_type_display }} · {{ contract.start_date }}{% if contract.end_date %} to {{ contract.end_date }}{% else %} · Open ended{% endif %}</p></div>
-        <div class="contract-head-state"><span class="document-state status-{{ contract.status }}">{{ contract.get_status_display }}</span><a class="btn btn-secondary" href="{% url 'entity_list' 'contracts' %}">Back to contracts</a></div>
+        <div class="contract-head-state">{% include "core/_record_navigator.html" %}<span class="document-state status-{{ contract.status }}">{{ contract.get_status_display }}</span><a class="btn btn-secondary" href="{% url 'entity_list' 'contracts' %}">Back to contracts</a></div>
       {% endif %}
     </header>
 

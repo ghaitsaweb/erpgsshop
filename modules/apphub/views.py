@@ -132,7 +132,11 @@ def app_manager(request):
             | Q(summary__icontains=query)
             | Q(slug__icontains=query)
         )
-    apps = [app for app in queryset if can_access_app(request.user, app.slug)]
+    apps = [
+        app
+        for app in queryset.iterator(chunk_size=100)
+        if can_access_app(request.user, app.slug)
+    ]
     groups = OrderedDict()
     for app in apps:
         app.launch_url = _workspace_url(app)
@@ -191,6 +195,7 @@ def upgrade_application(request, slug):
     confirmation_phrase = f"{mode_label.upper()} {app.slug}"
 
     try:
+        # scale-guard: allow SG002 — manifest-backed application catalogue is deployment-bounded
         installed_apps = list(ERPApp.objects.filter(enabled=True))
         targets = upgrade_target_apps(app, installed_apps, include_dependants=include_dependants)
         django_labels = django_labels_for(targets)
@@ -296,7 +301,11 @@ def app_workspace(request, slug):
 
     related_apps = [
         related_app
-        for related_app in ERPApp.objects.filter(category=app.category).exclude(pk=app.pk)
+        for related_app in (
+            ERPApp.objects.filter(category=app.category)
+            .exclude(pk=app.pk)
+            .iterator(chunk_size=100)
+        )
         if can_access_app(request.user, related_app.slug)
     ][:5]
     dependencies = ERPApp.objects.filter(slug__in=app.dependencies).order_by("name")
@@ -403,16 +412,22 @@ def accounting_feature(request, feature):
     if not app.enabled:
         messages.info(request, "Install Accounting to open this feature.")
         return redirect("app_workspace", slug="accounting")
-    analytics = build_accounting_analytics(feature, request.user)
+    analytics = build_accounting_analytics(feature, request.user, request.GET)
     if analytics is None:
         raise Http404("Accounting analytics not found.")
+    query_string = request.GET.urlencode()
+
+    def export_url(route_name):
+        url = reverse(route_name, args=[feature])
+        return f"{url}?{query_string}" if query_string else url
+
     return render(request, "apphub/hr_analytics.html", {
         "app": app,
         "feature": definition,
         "analytics": analytics,
-        "export_url": reverse("accounting_feature_export", args=[feature]),
-        "export_pdf_url": reverse("accounting_feature_export_pdf", args=[feature]),
-        "export_excel_url": reverse("accounting_feature_export_excel", args=[feature]),
+        "export_url": export_url("accounting_feature_export"),
+        "export_pdf_url": export_url("accounting_feature_export_pdf"),
+        "export_excel_url": export_url("accounting_feature_export_excel"),
     })
 
 
@@ -424,7 +439,7 @@ def accounting_feature_export(request, feature):
     app = get_object_or_404(ERPApp, slug="accounting", enabled=True)
     if not can_access_app(request.user, app.slug):
         return _app_access_denied(request)
-    analytics = build_accounting_analytics(feature, request.user)
+    analytics = build_accounting_analytics(feature, request.user, request.GET)
     if analytics is None:
         raise Http404("Accounting analytics not found.")
     response = HttpResponse(content_type="text/csv; charset=utf-8")
@@ -437,9 +452,23 @@ def accounting_feature_export(request, feature):
     for metric in analytics["metrics"]:
         writer.writerow([metric["label"], metric["value"], metric["detail"]])
     writer.writerow([])
-    writer.writerow([analytics["breakdown_title"], "Total"])
-    for row in analytics["breakdown"]:
-        writer.writerow([row["label"], row["total"]])
+    if analytics.get("view_type") == "profit_loss":
+        headers = ["Description", "Current Period"]
+        if analytics["has_comparison"]:
+            headers.extend(["Comparison", "Variance", "Variance %"])
+        writer.writerow(headers)
+        for row in analytics["statement_rows"]:
+            values = [row["label"], row.get("current", "")]
+            if analytics["has_comparison"]:
+                values.extend([
+                    row.get("comparison", ""), row.get("variance", ""),
+                    row.get("variance_percent", ""),
+                ])
+            writer.writerow(values)
+    else:
+        writer.writerow([analytics["breakdown_title"], "Total"])
+        for row in analytics["breakdown"]:
+            writer.writerow([row["label"], row["total"]])
     return response
 
 
@@ -450,7 +479,7 @@ def _accounting_export_data(request, feature):
     app = get_object_or_404(ERPApp, slug="accounting", enabled=True)
     if not can_access_app(request.user, app.slug):
         return None, None
-    analytics = build_accounting_analytics(feature, request.user)
+    analytics = build_accounting_analytics(feature, request.user, request.GET)
     if analytics is None:
         raise Http404("Accounting analytics not found.")
     return item["label"], analytics
@@ -604,6 +633,7 @@ def change_installation(request, slug):
         messages.error(request, "Only an administrator can install or uninstall applications.")
         return redirect(destination)
 
+    # scale-guard: allow SG002 — manifest-backed application catalogue is deployment-bounded
     apps = list(ERPApp.objects.select_for_update().all())
     apps_by_slug = {item.slug: item for item in apps}
     app = get_object_or_404(ERPApp, slug=slug)

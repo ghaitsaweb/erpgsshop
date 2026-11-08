@@ -506,16 +506,18 @@ def expire_due_tool_approvals(*, now=None, batch_size=100):
             .filter(state=AIToolApproval.State.PENDING, expires_at__lte=now)
             .order_by("expires_at", "id")[:batch_size]
         )
-        # scale-guard: allow SG003 — the scheduled expiry batch is capped at 100 locked approvals.
+        events = []
         for approval in approvals:
             approval.state = AIToolApproval.State.EXPIRED
-            approval.save(update_fields=["state", "updated_at"])
-            AITaskEvent.objects.create(
+            approval.updated_at = now
+            events.append(AITaskEvent(
                 task_id=approval.task_id,
                 event="tool_expired",
                 details={"approval_id": approval.pk, "tool": approval.tool_name},
-            )
+            ))
             expired_ids.append(approval.pk)
+        AIToolApproval.objects.bulk_update(approvals, ["state", "updated_at"], batch_size=batch_size)
+        AITaskEvent.objects.bulk_create(events, batch_size=batch_size)
     return expired_ids
 
 
@@ -776,6 +778,7 @@ def _run_agent(task, configuration, template, snapshot):
         calls = result.get("tool_calls", [])
         messages.append({"role": "assistant", "content": result["content"], "tool_calls": calls})
         if calls and task.conversation_id:
+            # scale-guard: allow SG003 — provider iterations are hard-capped at 12 per agent run.
             AIMessage.objects.create(
                 conversation=task.conversation,
                 role=AIMessage.Role.ASSISTANT,

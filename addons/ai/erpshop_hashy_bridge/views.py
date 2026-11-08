@@ -177,3 +177,18 @@ def read_group(request):
 @bridge_endpoint("batch", api.batch)
 def batch(request):
     pass
+
+
+@bridge_endpoint("form_create", api.writes_disabled)
+def form_create(request):
+    pass
+
+
+@bridge_endpoint("form_write", api.writes_disabled)
+def form_write(request):
+    pass
+
+
+@bridge_endpoint("report", api.report)
+def report(request):
+    pass

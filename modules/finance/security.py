@@ -172,6 +172,12 @@ def ensure_accounting_roles(**_kwargs):
         ACCOUNTING_PETTY_CASH_OFFICER: _permissions(PETTY_CASH_MODELS - {"pettycashcategory"}, operational),
         ACCOUNTING_PETTY_CASH_MANAGER: _permissions(PETTY_CASH_MODELS, operational),
     }
+    role_names = tuple(role_permissions)
+    Group.objects.bulk_create(
+        [Group(name=role_name) for role_name in role_names],
+        ignore_conflicts=True,
+        batch_size=100,
+    )
+    groups = Group.objects.in_bulk(role_names, field_name="name")
     for role_name, permissions in role_permissions.items():
-        group, _created = Group.objects.get_or_create(name=role_name)
-        group.permissions.add(*permissions)
+        groups[role_name].permissions.add(*permissions)

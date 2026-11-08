@@ -6,6 +6,7 @@ remaining local by default: it stores no prompt text, ERP values, or secrets,
 and its outbox supports only an explicit mock delivery mode.
 """
 
+from collections import defaultdict
 from datetime import timedelta
 from decimal import Decimal
 
@@ -152,26 +153,66 @@ def _refresh_episode(episode, *, touched_scopes, touched_interactions):
     scope.save()
     touched_scopes.add((episode.company_id, episode.actor_id, episode.workflow_scope))
 
-    interaction_updates = 0
+    selected_events = defaultdict(list)
     for event in events:
-        if not (event.selected and event.semantic_bucket):
-            continue
-        aggregate, _created = AIWorkflowInteractionAggregate.objects.select_for_update().get_or_create(
-            company=episode.company,
-            actor=episode.actor,
+        if event.selected and event.semantic_bucket:
+            selected_events[event.semantic_bucket].append(event)
+
+    buckets = tuple(selected_events)
+    if not buckets:
+        return 1, 0
+    aggregate_scope = AIWorkflowInteractionAggregate.objects.select_for_update().filter(
+        company_id=episode.company_id,
+        actor_id=episode.actor_id,
+        workflow_scope=episode.workflow_scope,
+        semantic_bucket__in=buckets,
+    )
+    aggregates = {row.semantic_bucket: row for row in aggregate_scope}
+    missing = [
+        AIWorkflowInteractionAggregate(
+            company_id=episode.company_id,
+            actor_id=episode.actor_id,
             workflow_scope=episode.workflow_scope,
-            semantic_bucket=event.semantic_bucket,
+            semantic_bucket=bucket,
         )
+        for bucket in buckets
+        if bucket not in aggregates
+    ]
+    if missing:
+        AIWorkflowInteractionAggregate.objects.bulk_create(missing, ignore_conflicts=True, batch_size=500)
+        aggregates = {row.semantic_bucket: row for row in aggregate_scope.all()}
+
+    changed = []
+    now = timezone.now()
+    interaction_updates = 0
+    for bucket, bucket_events in selected_events.items():
+        aggregate = aggregates[bucket]
         old_count = aggregate.selection_count
         old_total = aggregate.average_confidence * old_count
-        aggregate.selection_count = old_count + 1
-        aggregate.episode_count = max(aggregate.episode_count, 0) + 1
-        aggregate.average_confidence = (old_total + event.confidence) / aggregate.selection_count
+        event_count = len(bucket_events)
+        aggregate.selection_count = old_count + event_count
+        aggregate.episode_count = max(aggregate.episode_count, 0) + event_count
+        aggregate.average_confidence = (
+            old_total + sum((event.confidence for event in bucket_events), Decimal("0"))
+        ) / aggregate.selection_count
         aggregate.evidence_episode_ids = _append_evidence(aggregate.evidence_episode_ids, episode.pk)
-        aggregate.last_event_at = event.occurred_at
-        aggregate.save()
-        touched_interactions.add((episode.company_id, episode.actor_id, episode.workflow_scope, event.semantic_bucket))
-        interaction_updates += 1
+        aggregate.last_event_at = max(event.occurred_at for event in bucket_events)
+        aggregate.updated_at = now
+        changed.append(aggregate)
+        touched_interactions.add((episode.company_id, episode.actor_id, episode.workflow_scope, bucket))
+        interaction_updates += event_count
+    AIWorkflowInteractionAggregate.objects.bulk_update(
+        changed,
+        [
+            "selection_count",
+            "episode_count",
+            "average_confidence",
+            "evidence_episode_ids",
+            "last_event_at",
+            "updated_at",
+        ],
+        batch_size=500,
+    )
     return 1, interaction_updates
 
 

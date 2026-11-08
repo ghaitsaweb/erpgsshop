@@ -8,6 +8,7 @@ from django.forms import inlineformset_factory
 from django.http import StreamingHttpResponse
 from django.shortcuts import redirect, render
 
+from core.record_navigation import build_record_navigation
 from modules.organization.context import scope_form as scope_organization_form
 from modules.organization.context import scope_queryset as scope_organization_queryset
 
@@ -151,7 +152,13 @@ def training_conduct_list(request, config, can_add, can_change):
     return render(request, "hr/training_conduct_list.html", context)
 
 
-def training_conduct_form(request, config, instance=None, can_change=True):
+def training_conduct_form(
+    request,
+    config,
+    instance=None,
+    can_change=True,
+    navigation_queryset=None,
+):
     creating = instance is None
     if creating:
         instance = TrainingConduct()
@@ -227,5 +234,15 @@ def training_conduct_form(request, config, instance=None, can_change=True):
         "workflow_actions": workflow_actions,
         "current_status": current_status,
         "status_choices": TrainingConduct.Status.choices,
+        "record_navigation": (
+            build_record_navigation(
+                navigation_queryset,
+                instance,
+                "training-conducts",
+                request.GET.urlencode(),
+            )
+            if not creating and navigation_queryset is not None
+            else None
+        ),
     }
     return render(request, "hr/training_conduct_form.html", context)

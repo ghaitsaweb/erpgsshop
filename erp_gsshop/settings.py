@@ -173,6 +173,22 @@ CELERY_BEAT_SCHEDULE = {
         "task": "finance.run_due_recurring_journals",
         "schedule": 3600.0,
     },
+    "sales-expire-quotations": {
+        "task": "sales.expire_quotations",
+        "schedule": 86400.0,
+    },
+    "purchase-expire-vendor-pricelists": {
+        "task": "purchase.expire_vendor_pricelists",
+        "schedule": 86400.0,
+    },
+    "purchase-recalculate-vendor-performance": {
+        "task": "purchase.recalculate_vendor_performance",
+        "schedule": 86400.0,
+    },
+    "purchase-refresh-vendor-legal-document-expiry": {
+        "task": "purchase.refresh_vendor_legal_document_expiry",
+        "schedule": 86400.0,
+    },
     "hr-expire-leave-buckets": {
         "task": "hr.expire_leave_buckets",
         "schedule": 86400.0,

@@ -150,9 +150,9 @@ class Command(BaseCommand):
         changed_orders = []
         status_map = {
             "draft": SaleOrder.Status.DRAFT,
-            "sent": SaleOrder.Status.DRAFT,
-            "sale": SaleOrder.Status.CONFIRMED,
-            "done": SaleOrder.Status.COMPLETED,
+            "sent": SaleOrder.Status.SENT,
+            "sale": SaleOrder.Status.SALE,
+            "done": SaleOrder.Status.CLOSED,
             "cancel": SaleOrder.Status.CANCELLED,
         }
         for source_text, row in order_data.items():

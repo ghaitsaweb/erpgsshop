@@ -1,0 +1,4 @@
+interface:
+  display_name: "ERP Large-Scale Performance"
+  short_description: "Keep growing ERP data paths bounded"
+  default_prompt: "Use $large-scale-feature-performance to review this ERP data path for million-record scale."

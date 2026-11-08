@@ -22,6 +22,10 @@ from .models import (
     AIWorkProfileRefreshSetting,
     AIWorkProfileSignal,
     AIWorkSignalOutbox,
+    AIWorkEpisode,
+    AIWorkEpisodeEvent,
+    AIWorkflowInteractionAggregate,
+    AIWorkflowScopeAggregate,
     AIDigestRecord,
     AIDigestRule,
     AIDigestRuleSource,
@@ -48,7 +52,7 @@ from .services import (
     execute_message,
     request_agent_completion,
 )
-from .work_intelligence import profile_context_for, record_assistant_turn, refresh_work_profiles
+from .work_intelligence import _refresh_episode, profile_context_for, record_assistant_turn, refresh_work_profiles
 from .digest import run_digest_rule
 
 
@@ -845,6 +849,61 @@ class HashyAssistantTests(TestCase):
         self.assertEqual(len(outbox_payloads), 3)
         for payload in outbox_payloads:
             self.assertNotIn("Sensitive", str(payload))
+
+    def test_work_intelligence_interaction_queries_do_not_grow_per_event(self):
+        def episode_with_events(label, event_count):
+            episode = AIWorkEpisode.objects.create(
+                company=self.company,
+                actor=self.user,
+                workflow_scope=label,
+                state=AIWorkEpisode.State.COMPLETED,
+            )
+            AIWorkEpisodeEvent.objects.bulk_create(
+                [
+                    AIWorkEpisodeEvent(
+                        episode=episode,
+                        event_type=AIWorkEpisodeEvent.Type.OUTCOME,
+                        semantic_bucket=f"bucket-{index}",
+                        selected=True,
+                        confidence="0.5000",
+                    )
+                    for index in range(event_count)
+                ]
+            )
+            AIWorkflowScopeAggregate.objects.create(
+                company=self.company,
+                actor=self.user,
+                workflow_scope=label,
+            )
+            AIWorkflowInteractionAggregate.objects.bulk_create(
+                [
+                    AIWorkflowInteractionAggregate(
+                        company=self.company,
+                        actor=self.user,
+                        workflow_scope=label,
+                        semantic_bucket=f"bucket-{index}",
+                    )
+                    for index in range(event_count)
+                ]
+            )
+            return episode
+
+        small = episode_with_events("query-growth-small", 2)
+        large = episode_with_events("query-growth-large", 12)
+        with CaptureQueriesContext(connection) as small_queries:
+            _refresh_episode(small, touched_scopes=set(), touched_interactions=set())
+        with CaptureQueriesContext(connection) as large_queries:
+            _refresh_episode(large, touched_scopes=set(), touched_interactions=set())
+
+        print(
+            "Work intelligence aggregation: 2 vs 12 selected events; "
+            f"SQL queries {len(small_queries)} -> {len(large_queries)}."
+        )
+        self.assertEqual(len(small_queries), len(large_queries))
+        self.assertEqual(
+            AIWorkflowInteractionAggregate.objects.filter(workflow_scope="query-growth-large").count(),
+            12,
+        )
 
     def test_digest_rule_uses_only_privacy_filtered_work_signal_metadata(self):
         rule = AIDigestRule.objects.create(

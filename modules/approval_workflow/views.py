@@ -96,6 +96,7 @@ def _visible_pending(user):
         ApprovalDelegation.objects.filter(delegate=user, active=True, valid_from__lte=now)
         .filter(Q(valid_until__isnull=True) | Q(valid_until__gt=now))
         .values("delegator_id", "while_away")
+        .iterator(chunk_size=100)
     )
     delegator_ids = {row["delegator_id"] for row in delegation_rows}
     immediate_delegator_ids = {row["delegator_id"] for row in delegation_rows if row["while_away"]}

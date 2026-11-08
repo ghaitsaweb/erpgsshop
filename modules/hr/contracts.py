@@ -68,6 +68,7 @@ def refresh_contract_compensation(contract, actor, effective_date=None):
         .filter(Q(end_date__isnull=True) | Q(end_date__gte=effective_date))
         .select_related("component")
         .order_by("component__name", "pk")
+        .iterator(chunk_size=500)
     )
     basic_salary = _basic_salary(contract)
     allowance_total = sum((line.amount for line in allowances), Decimal("0.00"))
@@ -107,7 +108,7 @@ def refresh_contract_compensation(contract, actor, effective_date=None):
         )
         for index, line in enumerate(allowances, start=1)
     )
-    CompensationBenefitLine.objects.bulk_create(component_lines)
+    CompensationBenefitLine.objects.bulk_create(component_lines, batch_size=500)
     return snapshot
 
 

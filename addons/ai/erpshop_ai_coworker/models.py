@@ -7,6 +7,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
+from django.db.models import Q
 from django.utils import timezone
 
 from core.models import Company, TimeStampedModel
@@ -455,14 +456,18 @@ class AIModelPricing(TimeStampedModel):
         if self.effective_to is not None and self.effective_to <= self.effective_from:
             errors["effective_to"] = "The end must be after the effective start."
         if self.active and self.template_id and not errors:
-            candidate_max = self.max_context_tokens or 10**12
             candidate_end = self.effective_to or datetime.max.replace(tzinfo=UTC)
-            for other in AIModelPricing.objects.filter(template_id=self.template_id, active=True).exclude(pk=self.pk):
-                other_max = other.max_context_tokens or 10**12
-                other_end = other.effective_to or datetime.max.replace(tzinfo=UTC)
-                if self.min_context_tokens < other_max and other.min_context_tokens < candidate_max and self.effective_from < other_end and other.effective_from < candidate_end:
-                    errors["effective_from"] = "This pricing tier overlaps an active price tier."
-                    break
+            overlaps = (
+                AIModelPricing.objects.filter(template_id=self.template_id, active=True)
+                .exclude(pk=self.pk)
+                .filter(Q(max_context_tokens__isnull=True) | Q(max_context_tokens__gt=self.min_context_tokens))
+                .filter(Q(effective_to__isnull=True) | Q(effective_to__gt=self.effective_from))
+                .filter(effective_from__lt=candidate_end)
+            )
+            if self.max_context_tokens is not None:
+                overlaps = overlaps.filter(min_context_tokens__lt=self.max_context_tokens)
+            if overlaps.exists():
+                errors["effective_from"] = "This pricing tier overlaps an active price tier."
         if errors:
             raise ValidationError(errors)
 
@@ -664,7 +669,7 @@ class AICoworkerSecret(TimeStampedModel):
             record.key: value
             for record in cls.objects.filter(agent_id=agent_id, scope=cls.Scope.SYSTEM, active=True).only(
                 "key", "credential_env_var"
-            )
+            ).iterator(chunk_size=100)
             if (value := os.getenv(record.credential_env_var, ""))
         }
 
@@ -678,7 +683,7 @@ class AICoworkerSecret(TimeStampedModel):
                 participant_id=participant_id,
                 scope=cls.Scope.PARTICIPANT,
                 active=True,
-            ).only("key", "credential_env_var"):
+            ).only("key", "credential_env_var").iterator(chunk_size=100):
                 value = os.getenv(record.credential_env_var, "")
                 if value:
                     resolved[record.key] = value

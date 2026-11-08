@@ -59,6 +59,7 @@ def ensure_primary_registry():
 
 def list_database_inventory():
     ensure_primary_registry()
+    # scale-guard: allow SG002 — operator-managed database catalogue, not tenant transaction rows
     records = {item.name: item for item in ManagedDatabase.objects.using("default").all()}
     names = list(records)
     rows = {}

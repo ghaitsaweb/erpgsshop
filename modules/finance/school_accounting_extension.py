@@ -44,6 +44,20 @@ from .provisioning import (
     register_company_accounting_provisioner,
 )
 
+SCHOOL_INVOICE_BATCH_SIZE = 500
+SCHOOL_PROVISION_BATCH_SIZE = 500
+
+
+def _bounded_batches(rows, size):
+    batch = []
+    for row in rows:
+        batch.append(row)
+        if len(batch) == size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
+
 
 def _add_months(value, months):
     month_index = value.month - 1 + months
@@ -174,7 +188,9 @@ def generate_student_fee_schedule_lines(schedule, actor=None):
             if period_date > locked.effective_end_date:
                 break
     existing_keys = set(
-        StudentFeeScheduleLine.objects.filter(schedule=locked).values_list("period_key", flat=True)
+        StudentFeeScheduleLine.objects.filter(schedule=locked)
+        .values_list("period_key", flat=True)
+        .iterator(chunk_size=500)
     )
     StudentFeeScheduleLine.objects.bulk_create(
         [line for line in generated if line.period_key not in existing_keys]
@@ -203,17 +219,20 @@ def generate_due_school_invoices(schedule, actor=None, *, run_type=SchoolBilling
     locked = StudentFeeSchedule.objects.select_for_update().select_related("student__school").get(pk=schedule.pk)
     if locked.status != StudentFeeSchedule.Status.ACTIVE:
         raise ValidationError("Only active fee schedules can generate invoices.")
-    lines = list(
-        StudentFeeScheduleLine.objects.select_for_update()
+    due_scope = (
+        StudentFeeScheduleLine.objects.select_for_update(of=("self",))
         .select_related("fee_item", "revenue_account_snapshot", "schedule__student__accounting_profile__billing_contact")
         .filter(schedule=locked, status=StudentFeeScheduleLine.Status.PENDING, invoice_date__lte=run_date)
         .order_by("invoice_date", "id")
     )
+    due_count = due_scope.count()
+    lines = list(due_scope[:SCHOOL_INVOICE_BATCH_SIZE])
     billing_run = SchoolBillingRun.objects.create(
         school=locked.student.school,
         run_type=run_type,
         run_date=run_date,
-        requested_count=len(lines),
+        requested_count=due_count,
+        skipped_count=max(0, due_count - len(lines)),
         requested_by=actor,
     )
     if not lines:
@@ -489,24 +508,37 @@ def process_school_library_return_with_failure_state(fine_record, actor=None):
 
 
 def provision_school_accounting(*, company, accounts, journals, actor=None):
-    schools = list(School.objects.filter(company=company).only("id"))
-    existing_school_ids = set(
-        SchoolAccountingSettings.objects.filter(school_id__in=[school.pk for school in schools]).values_list(
-            "school_id", flat=True
-        )
+    created_count = 0
+    schools = (
+        School.objects.filter(company=company)
+        .only("id")
+        .order_by("pk")
+        .iterator(chunk_size=SCHOOL_PROVISION_BATCH_SIZE)
     )
-    created = SchoolAccountingSettings.objects.bulk_create([
-        SchoolAccountingSettings(
-            school=school,
-            journal=journals["SCH"],
-            receivable_account=accounts["1100"],
-            default_revenue_account=accounts["4110"],
-            late_return_revenue_account=accounts["4120"],
+    for school_batch in _bounded_batches(schools, SCHOOL_PROVISION_BATCH_SIZE):
+        school_ids = [school.pk for school in school_batch]
+        # scale-guard: allow SG001 — one query per bounded 500-school provisioning batch
+        existing_school_ids = set(
+            SchoolAccountingSettings.objects.filter(school_id__in=school_ids).values_list(
+                "school_id", flat=True
+            )
         )
-        for school in schools
-        if school.pk not in existing_school_ids
-    ])
-    return {"extension": "school_accounting", "settings_created": len(created)}
+        created = SchoolAccountingSettings.objects.bulk_create(
+            [
+                SchoolAccountingSettings(
+                    school=school,
+                    journal=journals["SCH"],
+                    receivable_account=accounts["1100"],
+                    default_revenue_account=accounts["4110"],
+                    late_return_revenue_account=accounts["4120"],
+                )
+                for school in school_batch
+                if school.pk not in existing_school_ids
+            ],
+            batch_size=SCHOOL_PROVISION_BATCH_SIZE,
+        )
+        created_count += len(created)
+    return {"extension": "school_accounting", "settings_created": created_count}
 
 
 def register_school_accounting_extension():

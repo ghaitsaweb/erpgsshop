@@ -85,6 +85,13 @@ def _has_limit(call: ast.Call) -> bool:
     return any(keyword.arg in {"limit", "page_size", "batch_size"} for keyword in call.keywords)
 
 
+def _orm_receiver_signal(call_name: str) -> bool:
+    return bool(
+        ".objects" in call_name
+        or re.search(r"(?:^|\.)(?:queryset|qs)\.", call_name)
+    )
+
+
 class ScaleVisitor(ast.NodeVisitor):
     def __init__(self, path: str, lines: list[str]):
         self.path = path
@@ -122,6 +129,15 @@ class ScaleVisitor(ast.NodeVisitor):
         self.loop_nodes.pop()
         self.loop_depth -= 1
 
+    def _direct_queryset_loop(self) -> bool:
+        for loop in self.loop_nodes:
+            if not isinstance(loop, (ast.For, ast.AsyncFor)):
+                continue
+            iterator = loop.iter
+            if isinstance(iterator, ast.Call) and _method(iterator) in {"all", "filter", "search"}:
+                return True
+        return False
+
     def visit_For(self, node: ast.For) -> None:
         if isinstance(node.iter, ast.Call) and _method(node.iter) in {"all", "filter", "search"} and not _has_limit(node.iter):
             self._add("SG002", "medium", node.iter, "Loop iterates an ORM result without an explicit business bound or chunking.")
@@ -156,18 +172,18 @@ class ScaleVisitor(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         method = _method(node)
         call_name = _call_name(node.func)
-        finding_node = self.loop_nodes[-1] if self.loop_nodes else node
+        finding_node = node
         if method == "search" and _empty_domain(node) and not _has_limit(node):
             self._add("SG002", "high", node, "Unbounded search with an empty domain; add a real scope or process in chunks.")
         if self.loop_depth and method in WRITE_METHODS:
-            strong_orm_signal = method in HMX_METHODS or ".objects" in call_name or "queryset" in call_name or ".qs" in call_name
+            strong_orm_signal = method in HMX_METHODS or _orm_receiver_signal(call_name)
             if strong_orm_signal or method in {"save", "create", "delete"}:
-                severity = "high" if strong_orm_signal or method == "delete" else "medium"
+                severity = "high" if method in HMX_METHODS or self._direct_queryset_loop() else "medium"
                 self._add("SG003", severity, finding_node, f"Possible per-record write `{call_name}` inside a growing loop.")
         elif self.loop_depth and method in READ_METHODS:
-            orm_signal = method in HMX_METHODS or ".objects" in call_name or method not in {"get", "count"}
+            orm_signal = method in HMX_METHODS or _orm_receiver_signal(call_name) or method not in {"get", "count"}
             if orm_signal:
-                severity = "high" if method in HMX_METHODS or ".objects" in call_name else "medium"
+                severity = "high" if method in HMX_METHODS or self._direct_queryset_loop() else "medium"
                 self._add("SG001", severity, finding_node, f"Possible ORM read `{call_name}` inside a growing loop.")
         if method.startswith("_compute_"):
             severity = "high" if self.loop_depth else "medium"

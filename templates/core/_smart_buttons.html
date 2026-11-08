@@ -1,0 +1,15 @@
+{% if smart_actions %}
+  <div class="smart-button-box" name="smart_button_box" aria-label="Related records">
+    <div class="smart-button-list" name="smart_button_list">
+      {% for action in smart_actions %}
+        <a class="smart-button oe_stat_button" href="{{ action.href }}" data-smart-action="{{ action.key }}" aria-label="Open {{ action.label }}">
+          <span class="smart-button__icon" aria-hidden="true">{{ action.icon }}</span>
+          <span class="smart-button__content">
+            {% if action.show_count %}<strong class="smart-button__statinfo">{{ action.count }}</strong>{% endif %}
+            <small>{{ action.label }}</small>
+          </span>
+        </a>
+      {% endfor %}
+    </div>
+  </div>
+{% endif %}

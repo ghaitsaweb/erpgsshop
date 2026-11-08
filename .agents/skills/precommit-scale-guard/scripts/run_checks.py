@@ -37,6 +37,7 @@ def changed_files(repo: Path, scope: str) -> tuple[str, list[str]]:
 def precommit_binary(repo: Path) -> str | None:
     candidates = [
         shutil.which("pre-commit"),
+        str(Path(sys.executable).with_name("pre-commit")),
         str(repo / ".venv" / "bin" / "pre-commit"),
         str(repo / "venv" / "bin" / "pre-commit"),
     ]
@@ -61,19 +62,27 @@ def run_precommit(repo: Path, files: list[str]) -> tuple[str, int]:
     return status, result.returncode
 
 
-def run_native_scale_guard(repo: Path, merge_base: str | None) -> tuple[str, int]:
+def run_native_scale_guard(repo: Path, files: list[str], merge_base: str | None) -> tuple[str, int]:
     checker = repo / "tools" / "scale_guard.py"
     if not checker.is_file():
         print("native Scale Guard: NOT AVAILABLE — tools/scale_guard.py is absent")
         return "NOT AVAILABLE", 0
-    if not merge_base:
-        print("native Scale Guard: NOT RUN — pass a verified --merge-base")
-        return "NOT RUN", 0
-    command = [sys.executable, str(checker), "--root", str(repo), "--changed", merge_base]
+    command = [sys.executable, str(checker), "--root", str(repo)]
+    if merge_base:
+        command.extend(["--changed", merge_base])
+    else:
+        source_roots = ("addons/", "core/", "erp_gsshop/", "modules/")
+        python_files = [
+            name for name in files if name.endswith(".py") and name.startswith(source_roots)
+        ]
+        if not python_files:
+            print("native Scale Guard: NOT APPLICABLE — selected scope has no application Python files")
+            return "NOT APPLICABLE", 0
+        command.extend(python_files)
     baseline = repo / "tools" / "scale_guard_baseline.json"
     if baseline.is_file():
         command.extend(["--baseline", str(baseline)])
-    command.extend(["--severity", "high", "--check", "--list"])
+    command.extend(["--check", "--list"])
     result = run(command, repo)
     status = "PASS" if result.returncode == 0 else "FAIL"
     print(f"native Scale Guard: {status}")
@@ -81,9 +90,12 @@ def run_native_scale_guard(repo: Path, merge_base: str | None) -> tuple[str, int
 
 
 def run_bundled_scale_guard(repo: Path, files: list[str]) -> tuple[str, int]:
-    python_files = [name for name in files if name.endswith(".py")]
+    source_roots = ("addons/", "core/", "erp_gsshop/", "modules/")
+    python_files = [
+        name for name in files if name.endswith(".py") and name.startswith(source_roots)
+    ]
     if not python_files:
-        print("bundled SG001-SG004 scan: NOT APPLICABLE — no changed Python files")
+        print("bundled SG001-SG004 scan: NOT APPLICABLE — no changed application Python files")
         return "NOT APPLICABLE", 0
     scanner = Path(__file__).with_name("scale_guard_scan.py")
     result = run([sys.executable, str(scanner), "--repo", str(repo), "--check", *python_files], repo)
@@ -110,8 +122,12 @@ def main() -> int:
     print(f"repository: {root}")
     print(f"scope: {scope}; files: {len(files)}")
     _, precommit_code = run_precommit(root, files)
-    _, native_code = run_native_scale_guard(root, args.merge_base)
-    _, bundled_code = run_bundled_scale_guard(root, files)
+    native_status, native_code = run_native_scale_guard(root, files, args.merge_base)
+    if native_status == "NOT AVAILABLE":
+        _, bundled_code = run_bundled_scale_guard(root, files)
+    else:
+        print("bundled SG001-SG004 scan: NOT APPLICABLE — native checker is available")
+        bundled_code = 0
     print("unit tests: NOT RUN — select the repository-supported isolated test command for changed behavior")
     print("scale tests: NOT RUN — run query-growth or plan checks when the changed path has scale risk")
     return 1 if any((precommit_code, native_code, bundled_code)) else 0

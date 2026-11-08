@@ -101,7 +101,7 @@ def provision_country_profile(profile):
     now = timezone.now()
     existing_templates = {
         (row.form_code, row.version): row
-        for row in StatutoryReportTemplate.objects.filter(profile=profile)
+        for row in StatutoryReportTemplate.objects.filter(profile=profile).iterator(chunk_size=100)
     }
     template_creates = []
     template_updates = []
@@ -131,7 +131,10 @@ def provision_country_profile(profile):
             ["name", "output_format", "field_mapping", "validation_rules", "active", "updated_at"],
         )
 
-    existing_taxes = {row.code: row for row in LocalizationTaxCode.objects.filter(profile=profile)}
+    existing_taxes = {
+        row.code: row
+        for row in LocalizationTaxCode.objects.filter(profile=profile).iterator(chunk_size=100)
+    }
     tax_creates = []
     tax_updates = []
     for definition in pack.taxes:

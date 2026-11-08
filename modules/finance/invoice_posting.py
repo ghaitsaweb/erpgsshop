@@ -26,6 +26,7 @@ class InvoicePostingOverride:
     journal: object | None = None
     description: str = ""
     after_post: Callable | None = None
+    total: object | None = None
 
 
 _CONTRIBUTORS = []

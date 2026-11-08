@@ -14,6 +14,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.http import content_disposition_header
 
+from core.record_navigation import build_record_navigation
 from modules.approval_workflow.models import ApprovalInstance
 from modules.approval_workflow.services import can_user_act
 
@@ -48,6 +49,7 @@ CONTRACT_TABS = (
     ("audit", "Audit trail"),
 )
 TAB_NAMES = {key for key, _label in CONTRACT_TABS}
+CONTRACT_WORKSPACE_LIST_LIMIT = 100
 
 
 def _workspace_url(contract, tab):
@@ -358,24 +360,37 @@ def contract_workspace(request, config, scoped_queryset, pk, *, can_change, can_
 
     form_context = _form_context(contract, scope_form, bound_forms)
     compensation_snapshots = list(
-        contract.compensation_snapshots.select_related("approver").prefetch_related("component_lines__component")
+        contract.compensation_snapshots.select_related("approver")
+        .prefetch_related("component_lines__component")
+        .order_by("-pk")[:CONTRACT_WORKSPACE_LIST_LIMIT]
     )
-    allowances = list(contract.allowance_lines.select_related("component"))
-    overtime_components = list(contract.overtime_components.select_related("component"))
-    letters = list(contract.letters.select_related("template", "generated_by"))
-    attachments = list(contract.attachments.select_related("uploaded_by"))
-    allowance_history = list(contract.allowance_history.select_related("allowance__component", "changed_by"))
+    allowances = list(
+        contract.allowance_lines.select_related("component").order_by("-pk")[:CONTRACT_WORKSPACE_LIST_LIMIT]
+    )
+    overtime_components = list(
+        contract.overtime_components.select_related("component").order_by("-pk")[:CONTRACT_WORKSPACE_LIST_LIMIT]
+    )
+    letters = list(
+        contract.letters.select_related("template", "generated_by").order_by("-pk")[:CONTRACT_WORKSPACE_LIST_LIMIT]
+    )
+    attachments = list(
+        contract.attachments.select_related("uploaded_by").order_by("-pk")[:CONTRACT_WORKSPACE_LIST_LIMIT]
+    )
+    allowance_history = list(
+        contract.allowance_history.select_related("allowance__component", "changed_by")
+        .order_by("-pk")[:CONTRACT_WORKSPACE_LIST_LIMIT]
+    )
     audits = list(
         HRWorkflowAudit.objects.filter(entity="contracts", record_id=contract.pk)
         .select_related("actor")
-        .order_by("-occurred_at", "-pk")
+        .order_by("-occurred_at", "-pk")[:CONTRACT_WORKSPACE_LIST_LIMIT]
     )
     content_type = ContentType.objects.get_for_model(contract, for_concrete_model=False)
     approvals = list(
         ApprovalInstance.objects.filter(content_type=content_type, object_id=contract.pk)
         .select_related("rule", "submitted_by")
         .prefetch_related("actions__performed_by", "actions__effective_approver")
-        .order_by("-submitted_at", "-pk")
+        .order_by("-submitted_at", "-pk")[:CONTRACT_WORKSPACE_LIST_LIMIT]
     )
     approval = approvals[0] if approvals else None
     approval_can_act = bool(approval and can_user_act(approval, request.user))
@@ -394,7 +409,7 @@ def contract_workspace(request, config, scoped_queryset, pk, *, can_change, can_
     linked_payslips = list(
         Payslip.objects.filter(contract=contract)
         .select_related("payroll_run")
-        .order_by("-period_end", "-pk")
+        .order_by("-period_end", "-pk")[:CONTRACT_WORKSPACE_LIST_LIMIT]
     )
     linkable_payslips = list(
         Payslip.objects.filter(
@@ -404,13 +419,13 @@ def contract_workspace(request, config, scoped_queryset, pk, *, can_change, can_
         )
         .filter(period_start__lte=impact_end)
         .select_related("payroll_run")
-        .order_by("-period_end", "-pk")
+        .order_by("-period_end", "-pk")[:CONTRACT_WORKSPACE_LIST_LIMIT]
     )
     linked_payroll_run_ids = {payslip.payroll_run_id for payslip in linked_payslips if payslip.payroll_run_id}
     linked_payroll_runs = list(
         PayrollRun.objects.filter(pk__in=linked_payroll_run_ids)
         .select_related("period")
-        .order_by("-period__date_end", "-pk")
+        .order_by("-period__date_end", "-pk")[:CONTRACT_WORKSPACE_LIST_LIMIT]
     )
     period_matched_payroll_runs = list(
         PayrollRun.objects.filter(
@@ -420,7 +435,7 @@ def contract_workspace(request, config, scoped_queryset, pk, *, can_change, can_
         )
         .exclude(pk__in=linked_payroll_run_ids)
         .select_related("period")
-        .order_by("-period__date_end", "-pk")
+        .order_by("-period__date_end", "-pk")[:CONTRACT_WORKSPACE_LIST_LIMIT]
     )
     days_to_expiry = (contract.end_date - timezone.localdate()).days if contract.end_date else None
     return render(
@@ -452,6 +467,12 @@ def contract_workspace(request, config, scoped_queryset, pk, *, can_change, can_
             "period_matched_payroll_runs": period_matched_payroll_runs,
             "audits": audits,
             "days_to_expiry": days_to_expiry,
+            "record_navigation": build_record_navigation(
+                scoped_queryset,
+                contract,
+                "contracts",
+                request.GET.urlencode(),
+            ),
             **form_context,
         },
     )

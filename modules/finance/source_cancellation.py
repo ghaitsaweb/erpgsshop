@@ -26,7 +26,7 @@ _ADAPTERS = {
         "core.Invoice", "cancelled", frozenset({"posted", "paid"}), ("account_invoice", "core.invoice")
     ),
     "core.saleorder": CancellationAdapter(
-        "core.SaleOrder", "cancelled", frozenset({"confirmed", "completed"}), ("core.saleorder",)
+        "core.SaleOrder", "cancelled", frozenset({"sale", "closed"}), ("core.saleorder",)
     ),
     "core.purchaseorder": CancellationAdapter(
         "core.PurchaseOrder", "cancelled", frozenset({"confirmed", "completed"}), ("core.purchaseorder",)

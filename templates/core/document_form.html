@@ -10,19 +10,72 @@
         {% if editable %}<button form="document-record-form" class="btn btn-primary" type="submit">Save {{ config.singular }}</button>{% endif %}
         {% if object and document.has_pdf != False %}<a class="btn btn-secondary" href="{% url 'document_pdf' entity object.pk %}" target="_blank" rel="noopener">Print PDF</a>{% endif %}
         {% for action in available_actions %}
-          <form method="post" action="{% url 'document_action' entity object.pk action.key %}">
-            {% csrf_token %}
-            <button class="btn {% if action.primary %}btn-primary{% else %}btn-secondary{% endif %}" type="submit">{{ action.label }}</button>
-          </form>
+          {% if action.href %}
+            <a class="btn {% if action.primary %}btn-primary{% else %}btn-secondary{% endif %}" href="{{ action.href }}">{{ action.label }}</a>
+          {% elif action.reason_label or action.close_reason_choices or action.validity_date_label or action.email_dialog or action.acknowledgement_label %}
+            <button class="btn {% if action.primary %}btn-primary{% else %}btn-secondary{% endif %}" type="button" data-open-workflow-dialog="workflow-dialog-{{ action.key }}">{{ action.label }}</button>
+            <dialog class="workflow-dialog" id="workflow-dialog-{{ action.key }}">
+              <form method="post" action="{% url 'document_action' entity object.pk action.key %}">
+                {% csrf_token %}
+                <h3>{{ action.label }} {{ config.singular }}</h3>
+                {% if action.reason_label %}
+                  <label for="workflow-reason-{{ action.key }}">{{ action.reason_label }}</label>
+                  <textarea id="workflow-reason-{{ action.key }}" name="reason" rows="4" required></textarea>
+                {% endif %}
+                {% if action.close_reason_choices %}
+                  <label for="workflow-close-reason">Close reason</label>
+                  <select id="workflow-close-reason" name="reason" required>
+                    <option value="">Choose a reason</option>
+                    {% for value, label in action.close_reason_choices %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+                  </select>
+                  <label for="workflow-close-note">Additional note</label>
+                  <textarea id="workflow-close-note" name="note" rows="3"></textarea>
+                {% endif %}
+                {% if action.validity_date_label %}
+                  <label for="workflow-validity-date">{{ action.validity_date_label }}</label>
+                  <input id="workflow-validity-date" type="date" name="validity_date" required>
+                {% endif %}
+                {% if action.email_dialog %}
+                  <label for="workflow-email-to">To</label>
+                  <input id="workflow-email-to" type="text" name="email_to" value="{{ object.customer.email }}" placeholder="customer@example.com" required>
+                  <label for="workflow-email-cc">CC</label>
+                  <input id="workflow-email-cc" type="text" name="email_cc" placeholder="finance@example.com, manager@example.com">
+                  <label for="workflow-email-subject">Subject</label>
+                  <input id="workflow-email-subject" type="text" name="subject" maxlength="255" value="Quotation {{ object.number }} for {{ object.customer.name }}" required>
+                  <label for="workflow-email-body">Message</label>
+                  <textarea id="workflow-email-body" name="body_html" rows="7" required>Hello {{ object.customer.name }},
+
+Please find quotation {{ object.number }} attached.
+
+Regards,
+{{ object.company.name }}</textarea>
+                {% endif %}
+                {% if action.acknowledgement_label %}
+                  <label class="workflow-dialog__acknowledgement">
+                    <input type="checkbox" name="acknowledge_incomplete" required>
+                    <span>{{ action.acknowledgement_label }}</span>
+                  </label>
+                {% endif %}
+                <div class="workflow-dialog__actions">
+                  <button class="btn btn-secondary" type="button" data-close-workflow-dialog>Back</button>
+                  <button class="btn btn-primary" type="submit">Confirm {{ action.label }}</button>
+                </div>
+              </form>
+            </dialog>
+          {% else %}
+            <form method="post" action="{% url 'document_action' entity object.pk action.key %}">
+              {% csrf_token %}
+              <button class="btn {% if action.primary %}btn-primary{% else %}btn-secondary{% endif %}" type="submit">{{ action.label }}</button>
+            </form>
+          {% endif %}
         {% endfor %}
       </div>
-      {% if status_choices %}
-        <div class="document-statusbar" aria-label="Document status">
-          {% for value, label in status_choices %}
-            <span class="{% if current_status == value %}current{% endif %}">{{ label }}</span>
-          {% endfor %}
-        </div>
-      {% endif %}
+      <div class="document-commandbar__right">
+        {% include "core/_record_navigator.html" %}
+        {% if status_choices %}
+          {% include "core/_document_statusbar.html" with status_aria_label="Document status" %}
+        {% endif %}
+      </div>
     </header>
 
     <form id="document-record-form" method="post" enctype="multipart/form-data" class="document-form" data-dev-object data-dev-entity="{{ developer_meta.entity }}" data-dev-model="{{ developer_meta.model }}" data-dev-table="{{ developer_meta.table }}" data-dev-object-id="{{ developer_meta.object_id }}" data-dev-object-name="{{ developer_meta.object_name }}">
@@ -37,8 +90,20 @@
             <p class="eyebrow">ERP GSSHOP document</p>
             <h2>{% if object %}{{ object }}{% else %}New {{ config.singular }}{% endif %}</h2>
           </div>
-          {% if current_status %}<span class="document-state status-{{ current_status }}">{{ object.get_status_display }}</span>{% endif %}
+          <div class="document-title-actions">
+            {% include "core/_smart_buttons.html" %}
+            {% if current_status %}<span class="document-state status-{{ current_status }}">{{ object.get_status_display }}</span>{% endif %}
+          </div>
         </div>
+
+        {% if object.cancel_reason or object.reject_reason or object.close_reason or object.previous_revision_id %}
+          <section class="document-workflow-audit" aria-label="Workflow audit">
+            {% if object.cancel_reason %}<p><strong>Cancellation reason:</strong> {{ object.cancel_reason }}</p>{% endif %}
+            {% if object.reject_reason %}<p><strong>Rejection reason:</strong> {{ object.reject_reason }}</p>{% endif %}
+            {% if object.close_reason %}<p><strong>Close reason:</strong> {{ object.get_close_reason_display }}{% if object.close_note %} — {{ object.close_note }}{% endif %}</p>{% endif %}
+            {% if object.previous_revision_id %}<p><strong>Previous revision:</strong> <a href="{% url 'entity_edit' entity object.previous_revision_id %}">{{ object.previous_revision.number }}</a></p>{% endif %}
+          </section>
+        {% endif %}
 
         <div class="document-header-grid">
           {% for field in form %}
@@ -89,6 +154,141 @@
           </div>
         {% endif %}
 
+        {% if entity == 'purchases' and object %}
+          <section class="sales-accounting-card" aria-labelledby="purchase-receiving-title">
+            <div>
+              <p class="eyebrow">Inventory receiving</p>
+              <h3 id="purchase-receiving-title">{{ object.received_percentage }}% received</h3>
+              {% if purchase_control %}<p>Receiving: <strong>{{ purchase_control.get_receiving_status_display }}</strong> · Billing: <strong>{{ purchase_control.get_accounting_status_display }}</strong>.</p>{% endif %}
+              {% for line in purchase_receiving_lines %}
+                <p>{{ line.product }} · ordered <strong>{{ line.quantity }}</strong> · received <strong>{{ line.received_quantity }}</strong> · billed <strong>{{ line.billed_quantity }}</strong> · receive remaining <strong>{{ line.remaining_to_receive }}</strong> · bill remaining <strong>{{ line.remaining_to_bill }}</strong>{% if line.warehouse %} · {{ line.warehouse }}{% elif object.warehouse %} · {{ object.warehouse }}{% endif %}</p>
+              {% empty %}
+                <p>No purchase order lines have been added.</p>
+              {% endfor %}
+            </div>
+          </section>
+        {% endif %}
+
+        {% if entity == 'purchase-requests' and object %}
+          <section class="sales-accounting-card" aria-labelledby="purchase-request-progress-title">
+            <div>
+              <p class="eyebrow">Sourcing progress</p>
+              <h3 id="purchase-request-progress-title">Purchase Request → RFQ → Purchase Order</h3>
+              {% for line in purchase_request_progress_lines %}
+                <p>
+                  {{ line.product|default:line.description }} · requested <strong>{{ line.quantity }}</strong>
+                  · approved <strong>{{ line.approved_quantity }}</strong>
+                  · RFQ <strong>{{ line.rfq_quantity }}</strong>
+                  · PO <strong>{{ line.ordered_quantity }}</strong>
+                  · remaining <strong>{{ line.remaining_to_source }}</strong>
+                  · <strong class="status-{{ line.line_status }}">{{ line.get_line_status_display }}</strong>
+                </p>
+              {% empty %}
+                <p>No Purchase Request lines have been added.</p>
+              {% endfor %}
+            </div>
+          </section>
+        {% endif %}
+
+        {% if entity == 'goods-receipts' and object %}
+          <section class="sales-accounting-card" aria-labelledby="goods-receipt-inventory-title">
+            <div>
+              <p class="eyebrow">Inventory trace</p>
+              <h3 id="goods-receipt-inventory-title">Goods Receipt → Stock Ledger</h3>
+              {% for line in goods_receipt_inventory_lines %}
+                <p>
+                  {{ line.order_line.product }} · accepted <strong>{{ line.accepted_quantity }}</strong>
+                  {% if line.stock_move_id %}· Stock move <strong>{{ line.stock_move.reference }}</strong>{% else %}· Not posted{% endif %}
+                  {% if line.return_stock_move_id %}· Returned <strong>{{ line.returned_quantity }}</strong>{% endif %}
+                </p>
+              {% empty %}
+                <p>No receipt lines have been added.</p>
+              {% endfor %}
+            </div>
+          </section>
+        {% endif %}
+
+        {% if entity == 'invoices' and object %}
+          <section class="sales-accounting-card invoice-payment-card" aria-labelledby="invoice-payment-title">
+            <div>
+              <p class="eyebrow">Payment reconciliation</p>
+              <h3 id="invoice-payment-title">{{ object.get_payment_state_display }}</h3>
+              <p>Paid <strong>{{ object.paid_amount }}</strong> of <strong>{{ object.total }}</strong>; remaining balance <strong>{{ object.balance }}</strong>.</p>
+            </div>
+            {% if invoice_payments %}
+              <div class="invoice-payment-card__allocations">
+                {% for allocation in invoice_payments %}
+                  <p>
+                    {% if can_open_payment %}<a href="{% url 'entity_edit' 'account-payments' allocation.payment_id %}">{{ allocation.payment.number }}</a>{% else %}<strong>{{ allocation.payment.number }}</strong>{% endif %}
+                    · {{ allocation.payment.payment_date|date:"Y-m-d" }}
+                    · Cash {{ allocation.amount }}
+                    {% if allocation.writeoff_amount %}· Write-off {{ allocation.writeoff_amount }}{% endif %}
+                    · <strong class="status-{{ allocation.payment.status }}">{{ allocation.payment.get_status_display }}</strong>
+                  </p>
+                {% endfor %}
+                {% if invoice_payments_has_more %}<small>Showing the latest 50 allocations.</small>{% endif %}
+              </div>
+            {% else %}
+              <p>No payment has been reconciled with this invoice.</p>
+            {% endif %}
+          </section>
+        {% endif %}
+
+        {% if sales_accounting %}
+          <section class="sales-accounting-card" aria-labelledby="sales-accounting-title">
+            <div>
+              <p class="eyebrow">Accounting trace</p>
+              <h3 id="sales-accounting-title">Sales Journal</h3>
+              {% if sales_accounting.invoice %}
+                <p>
+                  Invoice
+                  {% if sales_accounting.can_open_invoice %}
+                    <a href="{% url 'entity_edit' 'invoices' sales_accounting.invoice.pk %}">{{ sales_accounting.invoice.number }}</a>
+                  {% else %}
+                    <strong>{{ sales_accounting.invoice.number }}</strong>
+                  {% endif %}
+                  is <strong class="status-{{ sales_accounting.invoice.status }}">{{ sales_accounting.invoice.get_status_display }}</strong>.
+                </p>
+                {% if sales_accounting.invoice_accounting.error_message %}<p class="field-error">{{ sales_accounting.invoice_accounting.error_message }}</p>{% endif %}
+              {% elif sales_accounting.event %}
+                <p>
+                  Event {{ sales_accounting.event.reference }} is
+                  <strong class="status-{{ sales_accounting.event.status }}">{{ sales_accounting.event.get_status_display }}</strong>.
+                </p>
+                {% if sales_accounting.event.error_message %}<p class="field-error">{{ sales_accounting.event.error_message }}</p>{% endif %}
+              {% else %}
+                <p>The customer invoice and journal will be created together by <strong>Create Invoice &amp; Post Journal</strong>.</p>
+              {% endif %}
+            </div>
+            {% if sales_accounting.journal_entry %}
+              <div class="sales-accounting-card__journal">
+                <span>{{ sales_accounting.journal_entry.journal|default:"Journal" }}</span>
+                {% if sales_accounting.can_open_journal %}
+                  <a class="btn btn-secondary" href="{% url 'entity_edit' 'journal-entries' sales_accounting.journal_entry.pk %}">{{ sales_accounting.journal_entry.number }}</a>
+                {% else %}
+                  <strong>{{ sales_accounting.journal_entry.number }}</strong>
+                {% endif %}
+              </div>
+            {% endif %}
+          </section>
+        {% endif %}
+
+        {% if sales_email_attempts %}
+          <section class="sales-accounting-card" aria-labelledby="sales-email-title">
+            <div>
+              <p class="eyebrow">Communication trace</p>
+              <h3 id="sales-email-title">Quotation Email</h3>
+              {% for attempt in sales_email_attempts %}
+                <p>
+                  {{ attempt.created_at|date:"Y-m-d H:i" }} · {{ attempt.email_to }} ·
+                  <strong class="status-{{ attempt.status }}">{{ attempt.get_status_display }}</strong>
+                  {% if attempt.failure_reason %}<span class="field-error"> — {{ attempt.failure_reason }}</span>{% endif %}
+                </p>
+              {% endfor %}
+            </div>
+          </section>
+        {% endif %}
+
         <footer class="document-footer">
           <p>{% if editable %}Save the header and all detail lines together.{% else %}This document is locked. Use an available workflow action to continue.{% endif %}</p>
         </footer>
@@ -107,6 +307,37 @@
   {% endif %}
   <script>
     (() => {
+      document.querySelectorAll('[data-open-workflow-dialog]').forEach((button) => {
+        button.addEventListener('click', () => {
+          document.getElementById(button.dataset.openWorkflowDialog)?.showModal();
+        });
+      });
+      document.querySelectorAll('[data-close-workflow-dialog]').forEach((button) => {
+        button.addEventListener('click', () => button.closest('dialog')?.close());
+      });
+
+      const recalculateSalesRow = (row) => {
+        if (!row) return;
+        const value = (suffix) => Number(row.querySelector(`[name$="-${suffix}"]`)?.value || 0);
+        const setValue = (suffix, amount) => {
+          const input = row.querySelector(`[name$="-${suffix}"]`);
+          if (input) input.value = Number.isFinite(amount) ? amount.toFixed(2) : '0.00';
+        };
+        const quantity = value('quantity');
+        const unitPrice = value('unit_price');
+        const discountPercent = value('discount_percent');
+        const taxPercent = value('tax_percent');
+        const gross = quantity * unitPrice;
+        const discount = gross * discountPercent / 100;
+        const untaxed = gross - discount;
+        const tax = untaxed * taxPercent / 100;
+        setValue('gross_amount_display', gross);
+        setValue('line_discount_amount_display', discount);
+        setValue('untaxed_amount_display', untaxed);
+        setValue('tax_amount_display', tax);
+        setValue('total_amount_display', untaxed + tax);
+      };
+
       const enhanceMasterSearch = (container) => {
         container.querySelectorAll('input[data-master-search-url]').forEach((hiddenInput) => {
           if (hiddenInput.dataset.searchReady === 'true') return;
@@ -120,19 +351,26 @@
 
           searchInput.type = 'search';
           searchInput.className = 'form-control master-record-search';
+          searchInput.id = `${hiddenInput.id}-search`;
+          searchInput.name = `${hiddenInput.name}_display`;
           searchInput.placeholder = hiddenInput.dataset.masterSearchPlaceholder;
           searchInput.autocomplete = 'off';
           searchInput.setAttribute('list', listId);
           searchInput.value = hiddenInput.dataset.initialLabel || '';
           searchInput.readOnly = hiddenInput.disabled;
+          searchInput.required = hiddenInput.required;
+          searchInput.dataset.selectedLabel = hiddenInput.value ? searchInput.value : '';
           choices.id = listId;
 
           hiddenInput.insertAdjacentElement('afterend', searchInput);
           searchInput.insertAdjacentElement('afterend', choices);
 
-          const selectExactChoice = () => {
-            const match = Array.from(choices.options).find((option) => option.value === searchInput.value);
-            hiddenInput.value = match ? match.dataset.recordId : '';
+          const applyChoice = (match) => {
+            if (!match) return false;
+            searchInput.value = match.value;
+            searchInput.dataset.selectedLabel = match.value;
+            searchInput.setCustomValidity('');
+            hiddenInput.value = match.dataset.recordId;
             if (match && match.dataset.standardPrice) {
               const amountInput = hiddenInput.closest('tr')?.querySelector(
                 'input[name$="-request_amount"], input[name$="-unit_price"]'
@@ -141,13 +379,50 @@
                 amountInput.value = match.dataset.standardPrice;
               }
             }
+            if (match && match.dataset.salePrice) {
+              const row = hiddenInput.closest('tr');
+              const amountInput = row?.querySelector('input[name$="-unit_price"]');
+              const uomInput = row?.querySelector('input[name$="-uom"]');
+              if (amountInput && (!amountInput.value || Number(amountInput.value) === 0)) {
+                amountInput.value = match.dataset.salePrice;
+              }
+              if (uomInput && !uomInput.value) uomInput.value = match.dataset.unit || '';
+              recalculateSalesRow(row);
+            }
+            return true;
           };
 
-          const loadProducts = async (query = '', productId = '') => {
+          const selectExactChoice = ({allowSingle = false} = {}) => {
+            const normalizedValue = searchInput.value.trim().toLocaleLowerCase();
+            const options = Array.from(choices.options);
+            const match = options.find(
+              (option) => option.value.trim().toLocaleLowerCase() === normalizedValue
+            );
+            if (applyChoice(match)) return true;
+            if (allowSingle && normalizedValue && options.length === 1) {
+              return applyChoice(options[0]);
+            }
+            return false;
+          };
+
+          const validateSelection = () => {
+            if (searchInput.required && !hiddenInput.value) {
+              searchInput.setCustomValidity(
+                searchInput.value.trim()
+                  ? 'Pilih customer dari hasil pencarian.'
+                  : 'Bidang ini tidak boleh kosong.'
+              );
+              return false;
+            }
+            searchInput.setCustomValidity('');
+            return true;
+          };
+
+          const loadRecords = async (query = '', recordId = '') => {
             if (searchInput.readOnly) return;
             if (requestController) requestController.abort();
             requestController = new AbortController();
-            const params = new URLSearchParams(productId ? {id: productId} : {q: query});
+            const params = new URLSearchParams(recordId ? {id: recordId} : {q: query});
             try {
               const response = await fetch(`${hiddenInput.dataset.masterSearchUrl}?${params}`, {
                 headers: {'Accept': 'application/json'},
@@ -160,28 +435,48 @@
                 option.value = record.text;
                 option.dataset.recordId = record.id;
                 if (record.standard_price) option.dataset.standardPrice = record.standard_price;
+                if (record.sale_price) option.dataset.salePrice = record.sale_price;
+                if (record.unit) option.dataset.unit = record.unit;
                 return option;
               }));
-              if (productId && payload.results.length) {
-                searchInput.value = payload.results[0].text;
-                hiddenInput.value = payload.results[0].id;
+              if (recordId && payload.results.length) {
+                applyChoice(choices.options[0]);
               } else {
-                selectExactChoice();
+                selectExactChoice({allowSingle: true});
               }
             } catch (error) {
               if (error.name !== 'AbortError') console.error('Master search failed', error);
             }
           };
 
-          searchInput.addEventListener('focus', () => loadProducts(searchInput.value));
-          searchInput.addEventListener('input', () => {
-            selectExactChoice();
-            window.clearTimeout(timer);
-            timer = window.setTimeout(() => loadProducts(searchInput.value), 180);
+          searchInput.addEventListener('focus', () => {
+            const selectionIsUnchanged = hiddenInput.value
+              && searchInput.value === searchInput.dataset.selectedLabel;
+            loadRecords(selectionIsUnchanged ? '' : searchInput.value, selectionIsUnchanged ? hiddenInput.value : '');
           });
-          searchInput.addEventListener('change', selectExactChoice);
+          searchInput.addEventListener('input', () => {
+            searchInput.setCustomValidity('');
+            if (!selectExactChoice()
+                && searchInput.value !== searchInput.dataset.selectedLabel) {
+              hiddenInput.value = '';
+            }
+            window.clearTimeout(timer);
+            timer = window.setTimeout(() => loadRecords(searchInput.value), 180);
+          });
+          searchInput.addEventListener('change', () => {
+            selectExactChoice({allowSingle: true});
+            validateSelection();
+          });
+          searchInput.addEventListener('blur', validateSelection);
+          searchInput.form?.addEventListener('submit', (event) => {
+            selectExactChoice({allowSingle: true});
+            if (!validateSelection()) {
+              event.preventDefault();
+              searchInput.reportValidity();
+            }
+          });
 
-          if (hiddenInput.value && !searchInput.value) loadProducts('', hiddenInput.value);
+          if (hiddenInput.value && !searchInput.value) loadRecords('', hiddenInput.value);
         });
       };
 
@@ -205,6 +500,14 @@
         const totalForms = document.getElementById(`id_${section.dataset.linePrefix}-TOTAL_FORMS`);
         const template = document.querySelector(`[data-empty-document-line="${index}"]`);
         body.querySelectorAll('.line-remove').forEach(bindRemove);
+        body.querySelectorAll('.document-line-row').forEach((row) => {
+          row.addEventListener('input', (event) => {
+            if (event.target.matches('[name$="-quantity"], [name$="-unit_price"], [name$="-discount_percent"], [name$="-tax_percent"]')) {
+              recalculateSalesRow(row);
+            }
+          });
+          recalculateSalesRow(row);
+        });
         if (!addButton || !totalForms || !template) return;
         addButton.addEventListener('click', () => {
           const index = Number(totalForms.value);
@@ -214,6 +517,12 @@
           const row = body.lastElementChild;
           bindRemove(row.querySelector('.line-remove'));
           enhanceMasterSearch(row);
+          row.addEventListener('input', (event) => {
+            if (event.target.matches('[name$="-quantity"], [name$="-unit_price"], [name$="-discount_percent"], [name$="-tax_percent"]')) {
+              recalculateSalesRow(row);
+            }
+          });
+          recalculateSalesRow(row);
         });
       });
     })();

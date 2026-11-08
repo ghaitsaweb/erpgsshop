@@ -50,6 +50,7 @@ from .models import (
 
 ZERO = Decimal("0")
 HUNDRED = Decimal("100")
+ORM_CHUNK_SIZE = 500
 
 
 def _adjust(base, adjustment_type, value, *, add=True):
@@ -61,8 +62,15 @@ def _adjust(base, adjustment_type, value, *, add=True):
 @transaction.atomic
 def recalculate_boq(boq_id):
     boq = ConstructionBOQ.objects.select_for_update().get(pk=boq_id)
-    items = list(ConstructionBOQItem.objects.filter(boq_id=boq_id).order_by("sequence", "id"))
-    cost_lines = list(ConstructionBOQCostLine.objects.filter(boq_item__boq_id=boq_id))
+    items = list(
+        ConstructionBOQItem.objects.filter(boq_id=boq_id)
+        .order_by("sequence", "id")
+        .iterator(chunk_size=ORM_CHUNK_SIZE)
+    )
+    cost_lines = list(
+        ConstructionBOQCostLine.objects.filter(boq_item__boq_id=boq_id)
+        .iterator(chunk_size=ORM_CHUNK_SIZE)
+    )
 
     costs_by_item = defaultdict(Decimal)
     changed_cost_lines = []
@@ -77,7 +85,11 @@ def recalculate_boq(boq_id):
             line.revenue_including_tax = revenue_with_tax
             changed_cost_lines.append(line)
     if changed_cost_lines:
-        ConstructionBOQCostLine.objects.bulk_update(changed_cost_lines, ["amount", "revenue_including_tax", "updated_at"])
+        ConstructionBOQCostLine.objects.bulk_update(
+            changed_cost_lines,
+            ["amount", "revenue_including_tax", "updated_at"],
+            batch_size=ORM_CHUNK_SIZE,
+        )
 
     changed_items = []
     total_cost = total_revenue = ZERO
@@ -95,7 +107,11 @@ def recalculate_boq(boq_id):
         total_cost += item_cost
         total_revenue += revenue
     if changed_items:
-        ConstructionBOQItem.objects.bulk_update(changed_items, ["budget_cost", "commercial_revenue", "updated_at"])
+        ConstructionBOQItem.objects.bulk_update(
+            changed_items,
+            ["budget_cost", "commercial_revenue", "updated_at"],
+            batch_size=ORM_CHUNK_SIZE,
+        )
 
     total_revenue = _adjust(total_revenue, boq.global_markup_type, boq.global_markup_value, add=True)
     total_revenue = _adjust(total_revenue, boq.global_discount_type, boq.global_discount_value, add=False)
@@ -116,12 +132,20 @@ def recalculate_boq(boq_id):
 def apply_boq_template(boq_id, template_id, user=None):
     boq = ConstructionBOQ.objects.select_for_update().get(pk=boq_id)
     template = ConstructionBOQTemplate.objects.get(pk=template_id, company_id=boq.project.company_id)
-    template_items = list(template.items.select_related("product_group", "product").order_by("sequence", "id"))
+    template_items = list(
+        template.items.select_related("product_group", "product")
+        .order_by("sequence", "id")
+        .iterator(chunk_size=ORM_CHUNK_SIZE)
+    )
     template_costs = list(
         ConstructionBOQCostLine.objects.none()
     )
     from .models import ConstructionBOQTemplateCostLine
-    template_costs = list(ConstructionBOQTemplateCostLine.objects.filter(template_item__template=template).order_by("sequence", "id"))
+    template_costs = list(
+        ConstructionBOQTemplateCostLine.objects.filter(template_item__template=template)
+        .order_by("sequence", "id")
+        .iterator(chunk_size=ORM_CHUNK_SIZE)
+    )
 
     item_map = {}
     created_items = []
@@ -143,7 +167,7 @@ def apply_boq_template(boq_id, template_id, user=None):
             budget_cost=source.unit_cost,
         )
         created_items.append(item)
-    ConstructionBOQItem.objects.bulk_create(created_items)
+    ConstructionBOQItem.objects.bulk_create(created_items, batch_size=ORM_CHUNK_SIZE)
     for source, created in zip(template_items, created_items):
         item_map[source.pk] = created
     hierarchy_updates = []
@@ -153,7 +177,7 @@ def apply_boq_template(boq_id, template_id, user=None):
             created.parent_item = item_map[source.parent_item_id]
             hierarchy_updates.append(created)
     if hierarchy_updates:
-        ConstructionBOQItem.objects.bulk_update(hierarchy_updates, ["parent_item"])
+        ConstructionBOQItem.objects.bulk_update(hierarchy_updates, ["parent_item"], batch_size=ORM_CHUNK_SIZE)
 
     ConstructionBOQCostLine.objects.bulk_create([
         ConstructionBOQCostLine(
@@ -166,7 +190,7 @@ def apply_boq_template(boq_id, template_id, user=None):
             amount=source.amount, notes=source.notes,
         )
         for source in template_costs
-    ])
+    ], batch_size=ORM_CHUNK_SIZE)
     boq.template = template
     boq.template_loaded_at = timezone.now()
     boq.template_loaded_by = user
@@ -177,8 +201,14 @@ def apply_boq_template(boq_id, template_id, user=None):
 @transaction.atomic
 def recalculate_cost_sheet(cost_sheet_id):
     cost_sheet = ConstructionCostSheet.objects.select_for_update().get(pk=cost_sheet_id)
-    items = list(ConstructionCostSheetItem.objects.filter(cost_sheet_id=cost_sheet_id))
-    resources = list(ConstructionCostSheetResource.objects.filter(cost_sheet_item__cost_sheet_id=cost_sheet_id))
+    items = list(
+        ConstructionCostSheetItem.objects.filter(cost_sheet_id=cost_sheet_id)
+        .iterator(chunk_size=ORM_CHUNK_SIZE)
+    )
+    resources = list(
+        ConstructionCostSheetResource.objects.filter(cost_sheet_item__cost_sheet_id=cost_sheet_id)
+        .iterator(chunk_size=ORM_CHUNK_SIZE)
+    )
     resource_costs = defaultdict(Decimal)
     for resource in resources:
         resource_costs[resource.cost_sheet_item_id] += resource.revised_cost or resource.total_cost
@@ -196,7 +226,11 @@ def recalculate_cost_sheet(cost_sheet_id):
         cost += revised_cost
         utilised += item.utilised_budget
     if changed:
-        ConstructionCostSheetItem.objects.bulk_update(changed, ["revised_revenue", "revised_cost", "updated_at"])
+        ConstructionCostSheetItem.objects.bulk_update(
+            changed,
+            ["revised_revenue", "revised_cost", "updated_at"],
+            batch_size=ORM_CHUNK_SIZE,
+        )
     cost_sheet.revised_revenue = revenue
     cost_sheet.revised_cost = cost
     cost_sheet.utilised_amount = utilised
@@ -226,7 +260,11 @@ def recalculate_budget_change(request_id):
 @transaction.atomic
 def recalculate_claim(claim_id):
     claim = ConstructionProgressiveClaim.objects.select_for_update().get(pk=claim_id)
-    lines = list(ConstructionProgressiveClaimLine.objects.filter(claim_id=claim_id).select_related("boq_item"))
+    lines = list(
+        ConstructionProgressiveClaimLine.objects.filter(claim_id=claim_id)
+        .select_related("boq_item")
+        .iterator(chunk_size=ORM_CHUNK_SIZE)
+    )
     changed = []
     gross = ZERO
     cumulative_rows = []
@@ -247,11 +285,15 @@ def recalculate_claim(claim_id):
             display_status=claim.status, is_current_claim=True,
         ))
     if changed:
-        ConstructionProgressiveClaimLine.objects.bulk_update(changed, ["amount", "progress_percent", "updated_at"])
+        ConstructionProgressiveClaimLine.objects.bulk_update(
+            changed,
+            ["amount", "progress_percent", "updated_at"],
+            batch_size=ORM_CHUNK_SIZE,
+        )
     ConstructionProgressiveClaimCumulative.objects.filter(claim_id=claim_id, is_current_claim=True).update(
         is_current_claim=False, updated_at=timezone.now()
     )
-    ConstructionProgressiveClaimCumulative.objects.bulk_create(cumulative_rows)
+    ConstructionProgressiveClaimCumulative.objects.bulk_create(cumulative_rows, batch_size=ORM_CHUNK_SIZE)
     claim.gross_amount = gross
     claim.certified_amount = gross
     claim.save(update_fields=["gross_amount", "certified_amount", "updated_at"])
@@ -264,11 +306,15 @@ def refresh_quantity_survey(survey_id):
     sources = list(
         ConstructionQuantitySurveyJOSource.objects.filter(survey_line__survey_id=survey_id)
         .select_related("survey_line", "progress_log")
+        .iterator(chunk_size=ORM_CHUNK_SIZE)
     )
     totals = defaultdict(Decimal)
     for source in sources:
         totals[source.survey_line_id] += source.approved_quantity
-    lines = list(ConstructionQuantitySurveyLine.objects.filter(survey_id=survey_id))
+    lines = list(
+        ConstructionQuantitySurveyLine.objects.filter(survey_id=survey_id)
+        .iterator(chunk_size=ORM_CHUNK_SIZE)
+    )
     changed = []
     for line in lines:
         approved = totals[line.pk] if line.pk in totals else line.accepted_quantity
@@ -280,7 +326,11 @@ def refresh_quantity_survey(survey_id):
             line.progress_percent = progress
             changed.append(line)
     if changed:
-        ConstructionQuantitySurveyLine.objects.bulk_update(changed, ["accepted_quantity", "amount", "progress_percent", "updated_at"])
+        ConstructionQuantitySurveyLine.objects.bulk_update(
+            changed,
+            ["accepted_quantity", "amount", "progress_percent", "updated_at"],
+            batch_size=ORM_CHUNK_SIZE,
+        )
     return survey
 
 
@@ -298,7 +348,9 @@ def snapshot_project_accounts(project_id):
     category_accounts.update({line.resource_category: line.account for line in settings.cip_lines.select_related("account")})
     existing = {
         row.resource_category: row
-        for row in ConstructionProjectAccountSnapshotLine.objects.filter(project_id=project_id)
+        for row in ConstructionProjectAccountSnapshotLine.objects.filter(project_id=project_id).iterator(
+            chunk_size=ORM_CHUNK_SIZE
+        )
     }
     creates, updates = [], []
     for category, account in category_accounts.items():
@@ -317,10 +369,12 @@ def snapshot_project_accounts(project_id):
                 setattr(row, field, value)
             updates.append(row)
     if creates:
-        ConstructionProjectAccountSnapshotLine.objects.bulk_create(creates)
+        ConstructionProjectAccountSnapshotLine.objects.bulk_create(creates, batch_size=ORM_CHUNK_SIZE)
     if updates:
         ConstructionProjectAccountSnapshotLine.objects.bulk_update(
-            updates, ["account", "account_display", "account_type_label", "updated_at"]
+            updates,
+            ["account", "account_display", "account_type_label", "updated_at"],
+            batch_size=ORM_CHUNK_SIZE,
         )
     return creates + updates
 
@@ -428,11 +482,13 @@ def load_cost_sheet_from_boq(cost_sheet_id):
     existing_boq_item_ids = set(
         ConstructionCostSheetItem.objects.filter(cost_sheet_id=cost_sheet_id, boq_item_id__isnull=False)
         .values_list("boq_item_id", flat=True)
+        .iterator(chunk_size=ORM_CHUNK_SIZE)
     )
     boq_items = list(
         ConstructionBOQItem.objects.filter(boq_id=cost_sheet.boq_id)
         .exclude(pk__in=existing_boq_item_ids)
         .order_by("sequence", "id")
+        .iterator(chunk_size=ORM_CHUNK_SIZE)
     )
     created_items = ConstructionCostSheetItem.objects.bulk_create([
         ConstructionCostSheetItem(
@@ -442,11 +498,12 @@ def load_cost_sheet_from_boq(cost_sheet_id):
             unit_cost=item.unit_price, revised_revenue=item.sales_amount,
         )
         for item in boq_items
-    ])
+    ], batch_size=ORM_CHUNK_SIZE)
     created_by_boq = {item.boq_item_id: item for item in created_items}
     boq_resources = list(
         ConstructionBOQCostLine.objects.filter(boq_item_id__in=created_by_boq)
         .select_related("product", "vendor", "work_package")
+        .iterator(chunk_size=ORM_CHUNK_SIZE)
     )
     ConstructionCostSheetResource.objects.bulk_create([
         ConstructionCostSheetResource(
@@ -459,7 +516,7 @@ def load_cost_sheet_from_boq(cost_sheet_id):
             ownership=resource.ownership, inherited_from_boq=True,
         )
         for resource in boq_resources
-    ])
+    ], batch_size=ORM_CHUNK_SIZE)
     return recalculate_cost_sheet(cost_sheet.pk)
 
 
@@ -531,7 +588,12 @@ def _invoice_for_amount(*, company, partner, number, invoice_date, amount, descr
 @transaction.atomic
 def create_contract_down_payment_invoices(contract_id):
     contract = ConstructionContract.objects.select_for_update().select_related("project__company", "customer").get(pk=contract_id)
-    lines = list(ConstructionContractDPLine.objects.select_for_update().filter(contract=contract).order_by("sequence", "id"))
+    lines = list(
+        ConstructionContractDPLine.objects.select_for_update()
+        .filter(contract=contract)
+        .order_by("sequence", "id")
+        .iterator(chunk_size=ORM_CHUNK_SIZE)
+    )
     if not lines:
         raise ValidationError("Define at least one down-payment schedule line.")
     invoice_numbers = [f"CST-DP-{contract.pk}-{line.sequence}" for line in lines]
@@ -552,7 +614,7 @@ def create_contract_down_payment_invoices(contract_id):
                 notes=f"Down payment {contract.number}",
             ))
     if new_invoices:
-        Invoice.objects.bulk_create(new_invoices)
+        Invoice.objects.bulk_create(new_invoices, batch_size=ORM_CHUNK_SIZE)
         invoices_by_number.update({invoice.number: invoice for invoice in new_invoices})
         InvoiceLine.objects.bulk_create([
             InvoiceLine(
@@ -560,12 +622,16 @@ def create_contract_down_payment_invoices(contract_id):
                 unit_price=amount_by_number[invoice.number],
             )
             for invoice in new_invoices
-        ])
+        ], batch_size=ORM_CHUNK_SIZE)
     for line, number in zip(lines, invoice_numbers):
         line.invoice = invoices_by_number[number]
         line.invoice_amount = amount_by_number[number]
         line.payment_status = "invoiced"
-    ConstructionContractDPLine.objects.bulk_update(lines, ["invoice", "invoice_amount", "payment_status", "updated_at"])
+    ConstructionContractDPLine.objects.bulk_update(
+        lines,
+        ["invoice", "invoice_amount", "payment_status", "updated_at"],
+        batch_size=ORM_CHUNK_SIZE,
+    )
     contract.down_payment_status = "invoiced"
     contract.save(update_fields=["down_payment_status", "updated_at"])
     return contract

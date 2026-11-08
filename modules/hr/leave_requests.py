@@ -138,7 +138,7 @@ def _duration_by_year(request):
             company_id=request.employee.company_id,
             recurring=False,
             holiday_date__range=(request.start_date, request.end_date),
-        ).values_list("holiday_date", flat=True)
+        ).values_list("holiday_date", flat=True).iterator(chunk_size=366)
     )
     months = {(request.start_date + timedelta(days=offset)).month for offset in range(span)}
     recurring_holidays = {
@@ -260,7 +260,7 @@ def _release(request):
         LeaveMovement.objects.filter(
             leave_request=request,
             movement_type=LeaveMovement.MovementType.USAGE,
-        ).order_by("allocation_id")
+        ).order_by("allocation_id").iterator(chunk_size=500)
     )
     if not debits or sum((-movement.days for movement in debits), Decimal("0")) != request.days:
         raise ValidationError("The leave reservation is missing or incomplete; contact HR before changing this request.")
@@ -272,7 +272,7 @@ def _release(request):
     consumptions = list(
         LeaveBucketConsumption.objects.select_for_update().filter(
             leave_request=request,
-        ).order_by("bucket_id")
+        ).order_by("bucket_id").iterator(chunk_size=500)
     )
     if consumptions and (
         any(consumption.reversed_at for consumption in consumptions)

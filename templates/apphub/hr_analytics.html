@@ -20,6 +20,50 @@
     </div>
   </section>
 
+  {% if analytics.view_type == "profit_loss" %}
+    <section class="panel accounting-report-filters">
+      <form method="get" class="accounting-filter-grid">
+        <label>
+          <span>Period</span>
+          <select name="period">
+            {% for value, label in analytics.period_options %}
+              <option value="{{ value }}" {% if value == analytics.period.preset %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <span>From</span>
+          <input type="date" name="date_from" value="{{ analytics.period.start|date:'Y-m-d' }}">
+        </label>
+        <label>
+          <span>To</span>
+          <input type="date" name="date_to" value="{{ analytics.period.end|date:'Y-m-d' }}">
+        </label>
+        <label>
+          <span>Comparison</span>
+          <select name="comparison">
+            {% for value, label in analytics.comparison_options %}
+              <option value="{{ value }}" {% if value == analytics.comparison.mode %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>
+          <span>Comparison From</span>
+          <input type="date" name="comparison_from" value="{{ analytics.comparison.start|date:'Y-m-d' }}">
+        </label>
+        <label>
+          <span>Comparison To</span>
+          <input type="date" name="comparison_to" value="{{ analytics.comparison.end|date:'Y-m-d' }}">
+        </label>
+        <div class="accounting-filter-actions">
+          <button class="btn btn-primary" type="submit">Apply</button>
+          <a class="btn btn-secondary" href="{% url 'accounting_feature' 'profit-loss' %}">Reset</a>
+        </div>
+      </form>
+      {% if analytics.filter_error %}<p class="accounting-filter-error">{{ analytics.filter_error }}</p>{% endif %}
+    </section>
+  {% endif %}
+
   <section class="metric-grid">
     {% for metric in analytics.metrics %}
       <article class="metric-card {{ metric.tone }}">
@@ -31,6 +75,70 @@
     {% endfor %}
   </section>
 
+  {% if analytics.view_type == "profit_loss" %}
+    <div class="dashboard-grid accounting-statement-layout">
+      <section class="panel accounting-statement">
+        <div class="panel-head accounting-statement-head">
+          <div>
+            <p class="eyebrow">Financial Statements</p>
+            <h2>{{ analytics.breakdown_title }}</h2>
+          </div>
+          {% if analytics.has_comparison %}
+            <small>Compared with {{ analytics.comparison.start|date:"d M Y" }} – {{ analytics.comparison.end|date:"d M Y" }}</small>
+          {% endif %}
+        </div>
+        <div class="table-wrap">
+          <table class="accounting-statement-table">
+            <thead>
+              <tr>
+                <th>Description</th>
+                <th class="align-right">Current Period</th>
+                {% if analytics.has_comparison %}
+                  <th class="align-right">Comparison</th>
+                  <th class="align-right">Variance</th>
+                  <th class="align-right">Variance %</th>
+                {% endif %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in analytics.statement_rows %}
+                {% if row.kind == "section" %}
+                  <tr class="statement-section">
+                    <td colspan="{% if analytics.has_comparison %}5{% else %}2{% endif %}">{{ row.label }}</td>
+                  </tr>
+                {% else %}
+                  <tr class="statement-{{ row.kind }}">
+                    <td class="statement-indent-{{ row.indent }}">{{ row.label }}</td>
+                    <td class="align-right">{{ row.current|floatformat:2 }}</td>
+                    {% if analytics.has_comparison %}
+                      <td class="align-right">{{ row.comparison|floatformat:2 }}</td>
+                      <td class="align-right">{{ row.variance|floatformat:2 }}</td>
+                      <td class="align-right">{% if row.variance_percent != None %}{{ row.variance_percent|floatformat:2 }}%{% else %}—{% endif %}</td>
+                    {% endif %}
+                  </tr>
+                {% endif %}
+              {% empty %}
+                <tr><td colspan="5" class="empty">No posted profit-and-loss activity in this period.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <aside class="panel">
+        <div class="panel-head"><h2>{{ analytics.recent_title }}</h2></div>
+        <div class="attention-list">
+          {% for item in analytics.recent %}
+            <div class="attention-item">
+              <span><strong>{{ item }}</strong><small>{{ item.entry_date|date:"d M Y" }}</small></span>
+              <span class="status status-{{ item.status }}">{{ item.get_status_display }}</span>
+            </div>
+          {% empty %}
+            <p class="empty">No posted entries in this period.</p>
+          {% endfor %}
+        </div>
+      </aside>
+    </div>
+  {% else %}
   <div class="dashboard-grid">
     <section class="panel">
       <div class="panel-head"><h2>{{ analytics.breakdown_title }}</h2></div>
@@ -64,4 +172,5 @@
       </div>
     </aside>
   </div>
+  {% endif %}
 {% endblock %}

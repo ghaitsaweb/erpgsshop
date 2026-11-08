@@ -42,6 +42,7 @@ def navigation(request):
     try:
         installed_apps = [
             app
+            # scale-guard: allow SG002 — manifest-backed application catalogue is deployment-bounded
             for app in ERPApp.objects.filter(enabled=True).order_by("category", "sequence", "name")
             if can_access_app(request.user, app.slug)
         ]

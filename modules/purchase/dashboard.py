@@ -13,6 +13,7 @@ from .models import (
     PurchaseInsight,
     PurchaseRequest,
     VendorPerformanceEvaluation,
+    VendorPerformanceScoreHistory,
     VendorProfile,
 )
 
@@ -115,18 +116,20 @@ def build_purchase_analytics(feature_slug, user):
     if feature_slug == "supplier-performance":
         evaluations = _scoped(user, "vendor-performance-evaluations", VendorPerformanceEvaluation)
         vendors = _scoped(user, "vendor-profiles", VendorProfile)
-        summary = evaluations.aggregate(count=Count("id"), average=Avg("overall_score"))
+        score_history = _scoped(user, "vendor-performance-score-history", VendorPerformanceScoreHistory)
+        summary = evaluations.aggregate(count=Count("id"))
+        vendor_summary = vendors.aggregate(average=Avg("latest_performance_score"))
         return {
             "metrics": [
                 _metric("Vendors", vendors.count(), "Visible vendor profiles", "blue"),
                 _metric("Evaluations", summary["count"], "Recorded performance reviews", "violet"),
-                _metric("Average Score", summary["average"], "Across visible evaluations", "blue"),
-                _metric("Approved Reviews", evaluations.filter(status="approved").count(), "Finalized evaluations", "violet"),
+                _metric("Average Score", vendor_summary["average"], "Latest calculated vendor scores", "blue"),
+                _metric("Confirmed Reviews", evaluations.filter(status="confirmed").count(), "Finalized evaluations", "violet"),
             ],
-            "breakdown_title": "Vendor evaluations by rating",
-            "breakdown": _status_rows(evaluations, "rating"),
-            "recent_title": "Latest vendor evaluations",
-            "recent": list(evaluations.select_related("vendor__partner").order_by("-updated_at")[:8]),
+            "breakdown_title": "Vendor scoring history by status",
+            "breakdown": _status_rows(score_history, "status"),
+            "recent_title": "Latest vendor score calculations",
+            "recent": list(score_history.select_related("vendor__partner", "template").order_by("-calculated_at")[:8]),
         }
 
     if feature_slug == "contract-intelligence":

@@ -8,9 +8,11 @@
       {% csrf_token %}
       <header class="form-commandbar">
         <span>{{ mode }} {{ config.singular }}</span>
+        {% include "core/_smart_buttons.html" %}
         <div class="form-command-actions">
+          {% include "core/_record_navigator.html" %}
           <a class="btn btn-secondary" href="{% url 'entity_list' entity %}">Cancel</a>
-          {% if workflow_locked %}<span class="document-state status-{{ current_status }}">Locked · {{ current_status|title }}</span>{% else %}<button class="btn btn-primary" type="submit">Save {{ config.singular }}</button>{% endif %}
+          {% if workflow_locked %}<span class="document-state status-{{ current_status }}">{% if current_status %}Locked · {{ current_status|title }}{% else %}Read only{% endif %}</span>{% else %}<button class="btn btn-primary" type="submit">Save {{ config.singular }}</button>{% endif %}
         </div>
       </header>
       {% if form.non_field_errors %}<div class="message error">{{ form.non_field_errors }}</div>{% endif %}
@@ -36,9 +38,9 @@
           {% for action in workflow_actions %}
             <form method="post" action="{% url 'document_action' entity object.pk action.key %}">
               {% csrf_token %}
-              {% if action.key == 'approve' or action.key == 'reject' %}
-                <label for="workflow-reason-{{ action.key }}">{% if action.key == 'reject' %}Rejection{% else %}Approval{% endif %} reason{% if action.key == 'reject' %} *{% endif %}</label>
-                <textarea id="workflow-reason-{{ action.key }}" class="form-control" name="reason" rows="2" {% if action.key == 'reject' %}required{% endif %}></textarea>
+              {% if action.key == 'approve' or action.key == 'reject' or action.reason_label %}
+                <label for="workflow-reason-{{ action.key }}">{% if action.reason_label %}{{ action.reason_label }}{% elif action.key == 'reject' %}Rejection reason{% else %}Approval reason{% endif %}{% if action.key == 'reject' or action.reason_label %} *{% endif %}</label>
+                <textarea id="workflow-reason-{{ action.key }}" class="form-control" name="reason" rows="2" {% if action.key == 'reject' or action.reason_label %}required{% endif %}></textarea>
               {% endif %}
               {% if action.key == 'confirm-payment' %}
                 <label for="payment-reference">Bank payment reference *</label>

@@ -1,11 +1,14 @@
 from decimal import Decimal
+from datetime import timedelta
 import hashlib
 import hmac
 import json
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
+from django.db import connection
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from core.models import Company, Contact, Employee, Invoice, InvoiceLine, Product
@@ -141,6 +144,14 @@ class AccountingServiceTests(TestCase):
             default_debit_account=self.bank,
             default_credit_account=self.bank,
         )
+        self.sales_journal = AccountJournal.objects.create(
+            company=self.company,
+            code="SAL",
+            name="Sales Journal",
+            journal_type=AccountJournal.JournalType.SALES,
+            default_debit_account=self.receivable,
+            default_credit_account=self.revenue,
+        )
         AccountingSettings.objects.create(
             company=self.company,
             default_receivable_account=self.receivable,
@@ -233,6 +244,102 @@ class AccountingServiceTests(TestCase):
 
         self.assertEqual(result["metrics"][0]["value"], 1)
         self.assertEqual(len(result["breakdown"]), 2)
+
+    def test_profit_loss_period_comparison_uses_posted_company_scoped_journals(self):
+        expense = Account.objects.create(
+            company=self.company,
+            code="6101",
+            name="General Expense",
+            account_type=Account.AccountType.EXPENSE,
+        )
+        today = timezone.localdate()
+        comparison_day = today - timedelta(days=10)
+
+        def post_profit_loss_activity(number, entry_date, revenue, expense_amount):
+            revenue_entry = JournalEntry.objects.create(
+                company=self.company,
+                journal=self.general_journal,
+                number=f"{number}-REV",
+                entry_date=entry_date,
+            )
+            JournalLine.objects.bulk_create([
+                JournalLine(entry=revenue_entry, account=self.bank, debit=revenue),
+                JournalLine(entry=revenue_entry, account=self.revenue, credit=revenue),
+            ])
+            post_journal_entry(revenue_entry, self.user)
+            expense_entry = JournalEntry.objects.create(
+                company=self.company,
+                journal=self.general_journal,
+                number=f"{number}-EXP",
+                entry_date=entry_date,
+            )
+            JournalLine.objects.bulk_create([
+                JournalLine(entry=expense_entry, account=expense, debit=expense_amount),
+                JournalLine(entry=expense_entry, account=self.bank, credit=expense_amount),
+            ])
+            post_journal_entry(expense_entry, self.user)
+
+        post_profit_loss_activity("PL-CURRENT", today, Decimal("1000"), Decimal("250"))
+        post_profit_loss_activity("PL-COMPARE", comparison_day, Decimal("800"), Decimal("200"))
+        analytics = build_accounting_analytics("profit-loss", self.user, {
+            "period": "custom",
+            "date_from": today.isoformat(),
+            "date_to": today.isoformat(),
+            "comparison": "custom",
+            "comparison_from": comparison_day.isoformat(),
+            "comparison_to": comparison_day.isoformat(),
+        })
+
+        rows = {row["label"]: row for row in analytics["statement_rows"]}
+        self.assertEqual(rows["Revenue from Contracts with Customers"]["current"], Decimal("1000"))
+        self.assertEqual(rows["General and Administrative Expenses"]["current"], Decimal("250"))
+        self.assertEqual(rows["Profit / Loss for the Period"]["current"], Decimal("750"))
+        self.assertEqual(rows["Profit / Loss for the Period"]["comparison"], Decimal("600"))
+        self.assertEqual(rows["Profit / Loss for the Period"]["variance"], Decimal("150"))
+        self.assertTrue(analytics["has_comparison"])
+
+    def test_profit_loss_query_count_does_not_grow_with_accounts_or_journal_lines(self):
+        today = timezone.localdate()
+        params = {
+            "period": "custom",
+            "date_from": today.isoformat(),
+            "date_to": today.isoformat(),
+        }
+        with CaptureQueriesContext(connection) as small_context:
+            build_accounting_analytics("profit-loss", self.user, params)
+
+        income_accounts = Account.objects.bulk_create([
+            Account(
+                company=self.company,
+                code=f"42{index:02d}",
+                name=f"Revenue {index}",
+                account_type=Account.AccountType.INCOME,
+            )
+            for index in range(25)
+        ])
+        entry = JournalEntry.objects.create(
+            company=self.company,
+            journal=self.general_journal,
+            number="PL-QUERY-GROWTH",
+            entry_date=today,
+            status=JournalEntry.Status.POSTED,
+            total_debit=Decimal("250"),
+            total_credit=Decimal("250"),
+        )
+        JournalLine.objects.bulk_create([
+            JournalLine(entry=entry, account=self.bank, debit=Decimal("250")),
+            *[
+                JournalLine(entry=entry, account=account, credit=Decimal("10"))
+                for account in income_accounts
+            ],
+        ])
+
+        with CaptureQueriesContext(connection) as large_context:
+            analytics = build_accounting_analytics("profit-loss", self.user, params)
+
+        self.assertLessEqual(len(large_context), len(small_context) + 1)
+        rows = {row["label"]: row for row in analytics["statement_rows"]}
+        self.assertEqual(rows["Revenue from Contracts with Customers"]["current"], Decimal("250"))
 
     def test_invoice_bridge_posts_product_and_receivable_accounts(self):
         product = Product.objects.create(
@@ -703,6 +810,25 @@ class AccountingWorkspaceTests(TestCase):
         self.assertContains(workspace, "Cash &amp; Bank")
         self.assertEqual(report.status_code, 200)
         self.assertContains(report, "Trial Balance")
+
+    def test_profit_loss_filters_comparison_and_exports_are_available(self):
+        self.client.force_login(self.user)
+        today = timezone.localdate()
+        query = (
+            f"period=custom&date_from={today.isoformat()}&date_to={today.isoformat()}"
+            "&comparison=previous_period"
+        )
+
+        report = self.client.get(f"/apps/accounting/feature/profit-loss/?{query}")
+        exported = self.client.get(f"/apps/accounting/feature/profit-loss/export.csv?{query}")
+
+        self.assertEqual(report.status_code, 200)
+        self.assertContains(report, "Previous Period")
+        self.assertContains(report, "Profit / Loss for the Period")
+        self.assertContains(report, "Variance %")
+        self.assertIn(query, report.context["export_url"])
+        self.assertEqual(exported.status_code, 200)
+        self.assertContains(exported, "Profit / Loss for the Period")
 
     def test_hmx_catalog_menus_and_csv_export_are_available(self):
         self.client.force_login(self.user)

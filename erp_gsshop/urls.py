@@ -23,6 +23,7 @@ urlpatterns = [
     path("customer-portal/", include("modules.finance.portal_urls")),
     path("accounting/tax/", include("modules.finance.tax_urls")),
     path("", include("modules.apphub.urls")),
+    path("", include("modules.purchase.urls")),
     path("", include("core.urls")),
 ]
 

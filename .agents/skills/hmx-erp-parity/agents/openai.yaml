@@ -1,0 +1,4 @@
+interface:
+  display_name: "HMX ERP Parity"
+  short_description: "Port ERP GS Shop from an HMX reference worktree"
+  default_prompt: "Use $hmx-erp-parity to port this ERP GS Shop behavior from the designated HMX worktree."

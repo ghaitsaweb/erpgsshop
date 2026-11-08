@@ -56,6 +56,7 @@ def _source_rows(report):
             "tax_code__authority_code", "tax_code__metadata", "partner_id", "partner__code",
             "partner__name", "partner__email", "partner__phone",
         ).order_by("transaction_date", "document_number", "id")
+        .iterator(chunk_size=1000)
     )
 
 

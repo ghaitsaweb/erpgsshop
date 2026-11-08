@@ -201,13 +201,13 @@ class ERPIntegrityTests(TestCase):
         self.assertEqual(len(large_response.json()["results"]), 20)
         self.assertEqual(len(small_context), len(large_context))
 
-    def test_completed_sales_pdf_renders_paid_watermark(self):
+    def test_closed_sales_pdf_renders_and_paid_footer_remains_available(self):
         call_command("sync_apps", verbosity=0)
         order = SaleOrder.objects.create(
             company=self.company,
             number="SO-PDF-PAID",
             customer=self.customer,
-            status=SaleOrder.Status.COMPLETED,
+            status=SaleOrder.Status.CLOSED,
         )
         SaleOrderLine.objects.create(order=order, product=self.product, description="Paid rental", quantity=1, unit_price=10)
         self.client.force_login(self.user)
@@ -339,7 +339,7 @@ class ERPIntegrityTests(TestCase):
             if "entity" in item
         }
 
-        self.assertEqual(len(expected_entities), 62)
+        self.assertEqual(len(expected_entities), 81)
         self.assertTrue(expected_entities.issubset(ENTITY_CONFIG))
         self.assertTrue(expected_entities.issubset(navigation_entities))
         self.assertTrue(
@@ -410,6 +410,9 @@ class ERPIntegrityTests(TestCase):
                 "requestor": self.user.pk,
                 "request_date": today,
                 "required_date": today,
+                "expiry_date": "",
+                "destination_warehouse": self.warehouse.pk,
+                "currency": "IDR",
                 "justification": "Integration coverage",
                 "rejection_reason": "",
                 "notes": "",
@@ -495,13 +498,15 @@ class ERPIntegrityTests(TestCase):
         )
         self.client.force_login(self.user)
 
+        self.client.post(f"/app/purchase-tenders/{tender.pk}/action/submit/")
+        self.client.post(f"/app/purchase-tenders/{tender.pk}/action/approve/")
         response = self.client.post(f"/app/purchase-tenders/{tender.pk}/action/publish/")
 
         tender.refresh_from_db()
-        audit = TenderAuditLog.objects.get(tender=tender)
+        audit = TenderAuditLog.objects.get(tender=tender, action="publish")
         self.assertEqual(response.status_code, 302)
         self.assertEqual(tender.status, PurchaseTender.Status.PUBLISHED)
-        self.assertEqual(audit.previous_status, PurchaseTender.Status.DRAFT)
+        self.assertEqual(audit.previous_status, PurchaseTender.Status.CONFIRMED)
         self.assertEqual(audit.new_status, PurchaseTender.Status.PUBLISHED)
 
     def test_purchase_manager_permissions_do_not_include_sales_orders(self):
@@ -871,10 +876,15 @@ class ERPIntegrityTests(TestCase):
         self.assertEqual(order.total, Decimal("250"))
         self.assertContains(self.client.get(f"/app/sales/{order.pk}/edit/"), "Order Lines")
 
-        response = self.client.post(f"/app/sales/{order.pk}/action/confirm/")
+        response = self.client.post(f"/app/sales/{order.pk}/action/submit/")
         self.assertRedirects(response, f"/app/sales/{order.pk}/edit/")
         order.refresh_from_db()
-        self.assertEqual(order.status, SaleOrder.Status.CONFIRMED)
+        self.assertEqual(order.status, SaleOrder.Status.TO_APPROVE)
+
+        response = self.client.post(f"/app/sales/{order.pk}/action/approve/")
+        self.assertRedirects(response, f"/app/sales/{order.pk}/edit/")
+        order.refresh_from_db()
+        self.assertEqual(order.status, SaleOrder.Status.SALE)
 
     def test_payslip_net_salary_is_calculated(self):
         from .models import Employee
@@ -955,6 +965,12 @@ class ERPIntegrityTests(TestCase):
         conduct.refresh_from_db()
         self.assertEqual(str(conduct.date_start), "2026-11-02")
         self.assertEqual(conduct.participant_count, 1)
+        following_conduct = TrainingConduct.objects.create(
+            company=self.company,
+            name="Leadership Conduct Batch 2",
+            course=course,
+            pic=employee,
+        )
 
         list_response = self.client.get("/app/training-conducts/")
         self.assertContains(list_response, "Internal Training")
@@ -967,6 +983,14 @@ class ERPIntegrityTests(TestCase):
         self.assertContains(form_response, "Training Schedule")
         self.assertContains(form_response, "Training Participants")
         self.assertContains(form_response, "Open")
+        self.assertContains(form_response, 'class="document-statusbar"')
+        self.assertContains(form_response, 'class="document-statusbar__summary"')
+        self.assertContains(form_response, 'aria-current="step"', count=1)
+        self.assertContains(form_response, 'aria-label="Record navigation"')
+        self.assertContains(
+            form_response,
+            f'/app/training-conducts/{following_conduct.pk}/edit/',
+        )
         form_html = form_response.content.decode()
         self.assertRegex(form_html, r'<input type="date" name="schedule_lines-0-start_date"')
         self.assertNotIn('id="tc-plan-start-date"', form_html)
@@ -1099,7 +1123,7 @@ class ERPIntegrityTests(TestCase):
             company=self.company,
             number="SO-RENT-ACTION",
             customer=self.customer,
-            status=SaleOrder.Status.CONFIRMED,
+            status=SaleOrder.Status.SALE,
         )
         imported_line = SaleOrderLine.objects.create(
             order=order,

@@ -24,6 +24,7 @@ def _enqueue_external_invoice_syncs(*, invoice, entry, actor=None):
             invoice=invoice,
             requested_by=actor,
         )
+        # scale-guard: allow SG002 — company connector configuration catalogue is operationally bounded
         for connector in connectors
         if connector.pk not in existing_connector_ids
     ])

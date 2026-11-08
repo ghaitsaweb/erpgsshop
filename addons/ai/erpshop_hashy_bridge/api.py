@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import datetime
 import os
 import uuid
@@ -11,9 +12,10 @@ from django.core.exceptions import FieldDoesNotExist
 from django.db import connection, models, transaction
 from django.db.models import Count, Sum
 
-from core.views import ENTITY_CONFIG, _can, _scope_queryset
+from core.document_pdf import REPORT_CONFIG, render_document_pdf
+from core.views import DOCUMENT_CONFIG, ENTITY_CONFIG, _can, _scope_queryset
 
-from .errors import forbidden, invalid_request
+from .errors import BridgeError, forbidden, invalid_request
 
 
 MAX_PAGE_SIZE = 100
@@ -22,6 +24,7 @@ MAX_FIELDS = 20
 MAX_FILTERS = 20
 MAX_IN_VALUES = 100
 MAX_TEXT_VALUE = 2000
+MAX_REPORT_LINES = 1000
 FILTER_OPERATORS = {"eq": "", "in": "__in", "lt": "__lt", "lte": "__lte", "gt": "__gt", "gte": "__gte", "isnull": "__isnull"}
 SENSITIVE_NAMES = {"password", "secret", "token", "credential", "api_key", "private_key"}
 
@@ -267,6 +270,9 @@ def health(principal, payload):
             "read_group": True,
             "schema": True,
             "batch": True,
+            "report": True,
+            "form_create": False,
+            "form_write": False,
             "writes": False,
             "deletes": False,
         },
@@ -283,12 +289,65 @@ def instance_info(principal, payload):
     }
 
 
+def report(principal, payload):
+    """Render one access-scoped native document report as base64 PDF."""
+
+    report_ref = payload.get("report")
+    res_ids = payload.get("res_ids")
+    if not isinstance(report_ref, str) or not report_ref.strip():
+        raise invalid_request("report must be an ERP document entity name.")
+    if not isinstance(res_ids, list) or len(res_ids) != 1 or not isinstance(res_ids[0], int):
+        raise invalid_request("res_ids must contain exactly one integer id.")
+    entity = report_ref.strip()
+    config = _config_for(principal, entity)
+    document = DOCUMENT_CONFIG.get(entity)
+    report_config = REPORT_CONFIG.get(entity)
+    if document is None or report_config is None:
+        raise invalid_request("This ERP entity does not provide a PDF report.")
+
+    queryset = _base_queryset(principal, entity, config, []).select_related(*report_config["select_related"])
+    with transaction.atomic():
+        _apply_statement_timeout()
+        instance = queryset.filter(pk=res_ids[0]).first()
+        if instance is None:
+            raise BridgeError("not_found", "Report record not found.", 404)
+        line_queryset = getattr(instance, document["line_relation"]).all()
+        if report_config["line_select_related"]:
+            line_queryset = line_queryset.select_related(*report_config["line_select_related"])
+        lines = list(line_queryset[: MAX_REPORT_LINES + 1])
+    if len(lines) > MAX_REPORT_LINES:
+        raise BridgeError(
+            "report_too_large",
+            f"The report has more than {MAX_REPORT_LINES} lines and must be narrowed before rendering.",
+            422,
+        )
+    pdf = render_document_pdf(entity, instance, lines, document)
+    return {
+        "report": report_ref,
+        "entity": entity,
+        "res_id": instance.pk,
+        "mimetype": "application/pdf",
+        "base64": base64.b64encode(pdf).decode("ascii"),
+    }
+
+
+def writes_disabled(principal, payload):
+    """Expose the HMX write contract without weakening this read-only bridge."""
+
+    raise BridgeError(
+        "writes_disabled",
+        "Hashy Bridge writes are disabled on this ERP GS Shop instance.",
+        403,
+    )
+
+
 READ_METHODS = {
     "health": health,
     "instance_info": instance_info,
     "schema": schema,
     "search_read": search_read,
     "read_group": read_group,
+    "report": report,
 }
 
 

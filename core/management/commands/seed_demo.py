@@ -121,7 +121,7 @@ class Command(BaseCommand):
         sale, created = SaleOrder.objects.get_or_create(
             company=company,
             number="SO-2026-0001",
-            defaults={"customer": customer, "status": SaleOrder.Status.CONFIRMED},
+            defaults={"customer": customer, "status": SaleOrder.Status.SALE},
         )
         if created:
             SaleOrderLine.objects.create(order=sale, product=products[0], description=products[0].name, quantity=2, unit_price=products[0].sale_price)

@@ -17,7 +17,10 @@ VENDOR_MODELS = {
     "vendorprequalification",
     "vendordocumentreview",
     "vendorpricelist",
+    "vendorpricelistitem",
+    "vendorpricelisttier",
     "vendorpricelistamendment",
+    "vendorpricelistamendmentline",
     "vendorperformancetemplate",
     "vendorperformanceevaluation",
     "vendorcommunication",
@@ -43,6 +46,9 @@ PURCHASE_MODELS = VENDOR_MODELS | BUDGET_MODELS | {
     "awardstrategy",
     "purchasetender",
     "tenderbid",
+    "tenderbidline",
+    "tenderawardallocation",
+    "tenderawardresponse",
     "blanketorder",
     "purchaseteam",
     "purchaseteammember",
@@ -50,9 +56,11 @@ PURCHASE_MODELS = VENDOR_MODELS | BUDGET_MODELS | {
     "purchasekpitarget",
     "purchaseordertype",
     "purchaseordertemplate",
+    "purchaseremarktemplate",
     "purchasemilestonetemplate",
     "purchasesetting",
     "purchaseordercontrol",
+    "purchaseorderinvoiceaccounting",
     "purchaseordermilestone",
     "goodsreceipt",
     "goodsreceiptline",
@@ -114,6 +122,12 @@ def ensure_purchase_roles(**_kwargs):
         VENDOR_RELATIONS_OFFICER: _permissions(VENDOR_MODELS, {"view", "add", "change"}),
         PURCHASE_BUDGET_MANAGER: _permissions(BUDGET_MODELS, {"view", "add", "change", "delete"}),
     }
+    role_names = tuple(role_permissions)
+    Group.objects.bulk_create(
+        [Group(name=role_name) for role_name in role_names],
+        ignore_conflicts=True,
+        batch_size=100,
+    )
+    groups = Group.objects.in_bulk(role_names, field_name="name")
     for role_name, permissions in role_permissions.items():
-        group, _created = Group.objects.get_or_create(name=role_name)
-        group.permissions.add(*permissions)
+        groups[role_name].permissions.add(*permissions)

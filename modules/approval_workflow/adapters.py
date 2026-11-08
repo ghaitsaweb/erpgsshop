@@ -12,6 +12,7 @@ GENERIC_HR_TARGETS = {
 
 def uses_approval_engine(target):
     return target._meta.label_lower in {
+        "core.saleorder",
         "gsshop_hr.employeechangerequest",
         "gsshop_hr.attendancechangerequest",
         "gsshop_hr.careertransitionrequest",
@@ -47,6 +48,10 @@ def _generic_transition(target, action, actor):
 def apply_approval_submit(target, actor):
     """Move a target into Submitted only after an approval instance is created."""
     label = target._meta.label_lower
+    if label == "core.saleorder":
+        from core.sales import apply_sale_approval_submit
+
+        return apply_sale_approval_submit(target, actor)
     if label == "gsshop_hr.employeechangerequest":
         from modules.hr.change_requests import transition_employee_change_request
 
@@ -71,6 +76,10 @@ def apply_approval_submit(target, actor):
 def apply_approval_lifecycle(target, action, actor):
     """Apply a non-decision transition such as cancel or reset."""
     label = target._meta.label_lower
+    if label == "core.saleorder":
+        from core.sales import transition_sale_order
+
+        return transition_sale_order(target, action, actor)
     if label == "gsshop_hr.employeechangerequest":
         from modules.hr.change_requests import transition_employee_change_request
 
@@ -95,6 +104,10 @@ def apply_approval_lifecycle(target, action, actor):
 def apply_approval_result(target, action, actor):
     """Apply a completed approval through the registered domain adapter."""
     label = target._meta.label_lower
+    if label == "core.saleorder":
+        from core.sales import apply_sale_approval_result
+
+        return apply_sale_approval_result(target, action, actor)
     if label == "gsshop_hr.employeechangerequest":
         from modules.hr.change_requests import transition_employee_change_request
 

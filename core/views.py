@@ -1,3 +1,6 @@
+from datetime import timedelta
+from urllib.parse import urlencode
+
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
@@ -6,8 +9,9 @@ from django.db import IntegrityError, transaction
 from django.db.models import Count, F, Max, Prefetch, Q, Sum
 from django.db.models.deletion import ProtectedError, RestrictedError
 from django.forms import inlineformset_factory, modelform_factory
-from django.http import Http404, HttpResponse, JsonResponse
+from django.http import Http404, HttpResponse, JsonResponse, QueryDict
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.utils import timezone
 from django.utils.http import content_disposition_header, url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_GET, require_POST
@@ -23,14 +27,18 @@ from .forms import (
     SaleOrderDocumentForm,
     SaleOrderForm,
     SaleOrderLineForm,
+    SaleOrderTypeForm,
     StockMoveForm,
     WarehouseForm,
     StyledModelForm,
 )
 from .developer import developer_field_metadata, developer_metadata
+from .record_navigation import build_record_navigation
+from .smart_actions import get_smart_action, smart_actions_for_source
 from .models import (
     Attendance,
     Company,
+    CompanySaleSetting,
     Contact,
     Employee,
     Invoice,
@@ -40,6 +48,8 @@ from .models import (
     PurchaseOrderLine,
     SaleOrder,
     SaleOrderLine,
+    SaleOrderType,
+    SaleQuotationEmail,
     StockMove,
     Warehouse,
 )
@@ -74,7 +84,20 @@ from modules.finance.ecosystem_config import ECOSYSTEM_DOCUMENT_CONFIG, ECOSYSTE
 from modules.finance.core_parity_config import CORE_PARITY_DOCUMENT_CONFIG, CORE_PARITY_ENTITY_CONFIG
 from modules.finance.localization_config import LOCALIZATION_ENTITY_CONFIG
 from modules.finance.parity_config import PARITY_DOCUMENT_CONFIG, PARITY_ENTITY_CONFIG
-from modules.finance.models import Account, Budget, ExpenseClaim, ExpenseClaimLine, JournalEntry, JournalLine, Loan
+from modules.finance.models import (
+    Account,
+    AccountPayment,
+    AccountingIntegrationEvent,
+    Budget,
+    ExpenseClaim,
+    ExpenseClaimLine,
+    JournalEntry,
+    JournalLine,
+    Loan,
+    PaymentAllocation,
+    SaleOrderInvoiceAccounting,
+)
+from modules.finance.payment_forms import InvoicePaymentForm
 from modules.finance.expense_forms import ExpenseClaimForm, ExpenseClaimLineForm, ExpenseClaimLineFormSet
 from modules.finance.expense_lines import save_expense_claim_lines, validate_expense_claim_lines
 from modules.finance.services import (
@@ -83,6 +106,7 @@ from modules.finance.services import (
     handle_external_accounting_workflow,
     post_invoice,
     post_journal_entry,
+    register_invoice_payment,
     reverse_journal_entry,
 )
 from modules.hr.models import (
@@ -175,6 +199,14 @@ from modules.hr.models import (
     WorkSchedule,
 )
 from modules.hr.cash_advances import save_cash_advance_lines, validate_cash_advance_lines
+from .sales import (
+    MAX_SALES_ORDER_LINES,
+    can_sale_workflow_action,
+    merge_sale_quotations,
+    save_sale_order_lines,
+    send_sale_quotation_email,
+    transition_sale_order,
+)
 from modules.hr.forms import CashAdvanceForm, CashAdvanceLineForm, CashAdvanceLineFormSet
 from modules.hr.change_requests import (
     initialize_employee_relation_drafts,
@@ -226,6 +258,7 @@ from modules.operations.models import (
 from modules.pos.models import KitchenTicket, POSOrder, POSOrderLine, POSRegister, POSSession, RestaurantTable
 from modules.pos.entity_config import POS_DOCUMENT_CONFIG, POS_ENTITY_CONFIG
 from modules.pos.access import can_pos_entity_action, can_pos_workflow_action, scope_pos_form, scope_pos_queryset
+from modules.organization.context import get_current_context
 from modules.organization.context import scope_form as scope_organization_form
 from modules.organization.context import scope_queryset as scope_organization_queryset
 from modules.organization.forms import BranchForm
@@ -274,8 +307,12 @@ from modules.purchase.models import (
     GoodsReceiptLine,
     PurchaseAccountingDocument,
     PurchaseAccountingLine,
+    PurchaseBillLineProvenance,
     PurchaseInventoryTransfer,
     PurchaseInventoryTransferLine,
+    PurchaseInvoiceAccounting,
+    PurchaseOrderControl,
+    PurchaseOrderInvoiceAccounting,
     PurchaseOrderRevision,
     PurchasePeppolEvent,
     PurchaseQuotation,
@@ -288,7 +325,14 @@ from modules.purchase.models import (
     ServiceWorkOrderLine,
     TenderAuditLog,
 )
-from modules.purchase.services import approve_budget_movement
+from modules.purchase.services import (
+    MAX_PURCHASE_DOCUMENT_LINES,
+    apply_purchase_milestone_template,
+    apply_purchase_order_template,
+    approve_budget_movement,
+    handle_purchase_document_action,
+    save_purchase_order_lines,
+)
 from .rental_views import rental_detail_list
 from .document_pdf import REPORT_CONFIG, render_document_pdf
 
@@ -421,6 +465,7 @@ ENTITY_CONFIG = {
         "columns": [("movement_date", "Date"), ("product", "Product"), ("warehouse", "Warehouse"), ("direction", "Direction"), ("quantity", "Quantity"), ("reference", "Reference")],
         "search": ["product__sku", "product__name", "reference"],
         "editable": False,
+        "readonly_detail": True,
         "deletable": False,
     },
     "sales": {
@@ -431,6 +476,39 @@ ENTITY_CONFIG = {
         "columns": [("number", "Number"), ("order_date", "Date"), ("customer", "Customer"), ("status", "Status"), ("total", "Total")],
         "search": ["number", "customer__name"],
         "admin_detail": True,
+    },
+    "sales-settings": {
+        "model": CompanySaleSetting,
+        "title": "Sales Settings",
+        "singular": "Sales Settings",
+        "columns": [
+            ("company", "Company"),
+            ("quotation_expiry_days", "Quotation Expiry Days"),
+            ("default_delivery_date", "Default Delivery Days"),
+            ("allow_order_revision", "Allow Revision"),
+        ],
+        "search": ["company__code", "company__name"],
+        "form_fields": [
+            "company",
+            "quotation_expiry_days",
+            "default_delivery_date",
+            "allow_order_revision",
+        ],
+        "select_related": ["company"],
+        "deletable": False,
+    },
+    "sales-order-types": {
+        "model": SaleOrderType,
+        "form": SaleOrderTypeForm,
+        "title": "Sales Order Types",
+        "singular": "Sales Order Type",
+        "columns": [
+            ("name", "Order Type"),
+            ("prefix_sequence", "Prefix"),
+            ("origin", "Origin"),
+            ("description", "Description"),
+        ],
+        "search": ["name", "prefix_sequence", "description"],
     },
     "rental-details": {
         "model": SaleOrderLine,
@@ -470,6 +548,7 @@ ENTITY_CONFIG = {
         "kanban_variant": "employee",
         "kanban_group_by": False,
         "deletable": False,
+        "selectable": False,
     },
     "attendance": {
         "model": Attendance,
@@ -1733,22 +1812,106 @@ DOCUMENT_CONFIG = {
     "sales": {
         "line_model": SaleOrderLine,
         "line_relation": "lines",
-        "header_fields": ["company", "number", "customer", "validity_date", "order_date", "price_list", "payment_terms", "salesperson_name", "customer_reference", "notes"],
-        "line_fields": ["product", "description", "quantity", "unit_price", "discount_percent", "rental_start_date", "rental_return_date", "rental_status"],
-        "line_title": "Order Lines & Rental Period",
-        "total_fields": [("Total", "total")],
+        "header_fields": [
+            "company", "order_type", "number", "customer", "validity_date", "order_date", "currency",
+            "price_list", "payment_terms", "invoicing_policy", "salesperson_name",
+            "customer_reference", "delivery_address", "invoice_address", "delivery_date",
+            "global_discount_percent", "terms_conditions", "notes",
+        ],
+        "line_fields": [
+            "product", "description", "delivery_address", "delivery_date", "quantity", "uom",
+            "delivered_quantity_display", "invoiced_quantity_display", "unit_price", "discount_percent",
+            "gross_amount_display", "line_discount_amount_display", "untaxed_amount_display",
+            "tax_percent", "tax_amount_display", "total_amount_display", "rental_start_date",
+            "rental_return_date", "rental_status",
+        ],
+        "line_title": "Order Lines, Taxes & Fulfilment",
+        "total_fields": [
+            ("Subtotal", "subtotal_amount"),
+            ("Discount", "discount_amount"),
+            ("Untaxed", "untaxed_amount"),
+            ("Tax", "tax_amount"),
+            ("Total", "total"),
+        ],
         "editable_statuses": [SaleOrder.Status.DRAFT],
         "actions": {
-            "confirm": {"label": "Confirm", "from": [SaleOrder.Status.DRAFT], "to": SaleOrder.Status.CONFIRMED, "primary": True},
-            "complete": {"label": "Complete & Post Accounting", "from": [SaleOrder.Status.CONFIRMED], "to": SaleOrder.Status.COMPLETED, "primary": True, "service_controls_state": True},
-            "cancel": {"label": "Cancel", "from": [SaleOrder.Status.DRAFT, SaleOrder.Status.CONFIRMED], "to": SaleOrder.Status.CANCELLED},
+            "send-email": {
+                "label": "Send by Email",
+                "from": [SaleOrder.Status.DRAFT, SaleOrder.Status.SENT],
+                "to": SaleOrder.Status.SENT,
+                "email_dialog": True,
+                "service_controls_state": True,
+            },
+            "submit": {
+                "label": "Submit for Approval",
+                "from": [SaleOrder.Status.DRAFT, SaleOrder.Status.SENT],
+                "to": SaleOrder.Status.TO_APPROVE,
+                "primary": True,
+                "service_controls_state": True,
+            },
+            "approve": {
+                "label": "Approve",
+                "from": [SaleOrder.Status.TO_APPROVE],
+                "to": SaleOrder.Status.SALE,
+                "primary": True,
+                "service_controls_state": True,
+            },
+            "reject": {
+                "label": "Reject",
+                "from": [SaleOrder.Status.TO_APPROVE],
+                "to": SaleOrder.Status.REJECTED,
+                "reason_label": "Rejection reason",
+                "service_controls_state": True,
+            },
+            "invoice": {
+                "label": "Create Invoice",
+                "from": [SaleOrder.Status.SALE],
+                "to": SaleOrder.Status.SALE,
+                "primary": True,
+                "service_controls_state": True,
+            },
+            "close": {
+                "label": "Close",
+                "from": [SaleOrder.Status.SALE],
+                "to": SaleOrder.Status.CLOSED,
+                "close_reason_choices": SaleOrder.CloseReason.choices,
+                "acknowledgement_label": "I understand that closing is permanent and undelivered quantities will be released.",
+                "service_controls_state": True,
+            },
+            "cancel": {
+                "label": "Cancel",
+                "from": [SaleOrder.Status.DRAFT, SaleOrder.Status.SENT, SaleOrder.Status.SALE],
+                "to": SaleOrder.Status.CANCELLED,
+                "reason_label": "Cancellation reason",
+                "service_controls_state": True,
+            },
+            "revise": {
+                "label": "Revise",
+                "from": [SaleOrder.Status.CANCELLED, SaleOrder.Status.REJECTED],
+                "to": SaleOrder.Status.REVISED,
+                "service_controls_state": True,
+            },
+            "reset-draft": {
+                "label": "Reset to Draft",
+                "from": [SaleOrder.Status.EXPIRED],
+                "to": SaleOrder.Status.DRAFT,
+                "service_controls_state": True,
+            },
+            "duplicate": {
+                "label": "Duplicate",
+                "from": list(SaleOrder.Status.values),
+                "to": SaleOrder.Status.DRAFT,
+                "preserve_status": True,
+                "service_controls_state": True,
+            },
         },
     },
     "purchases": {
         "line_model": PurchaseOrderLine,
         "line_relation": "lines",
-        "header_fields": ["company", "number", "vendor", "order_date", "notes"],
-        "line_fields": ["product", "description", "quantity", "unit_price"],
+        "header_fields": ["company", "number", "vendor", "warehouse", "invoicing_policy", "order_date", "notes"],
+        "line_fields": ["product", "description", "warehouse", "quantity", "unit_price"],
+        "line_select_related": ["order", "product", "warehouse"],
         "line_title": "Order Lines",
         "total_fields": [("Total", "total")],
         "editable_statuses": [PurchaseOrder.Status.DRAFT, PurchaseOrder.Status.REVISED],
@@ -1770,6 +1933,7 @@ DOCUMENT_CONFIG = {
                 "from": [PurchaseOrder.Status.DRAFT, PurchaseOrder.Status.WAITING_APPROVAL],
                 "to": PurchaseOrder.Status.CONFIRMED,
                 "primary": True,
+                "service_controls_state": True,
             },
             "reject": {
                 "label": "Reject",
@@ -1781,12 +1945,60 @@ DOCUMENT_CONFIG = {
                 "from": [PurchaseOrder.Status.REJECTED, PurchaseOrder.Status.EXPIRED],
                 "to": PurchaseOrder.Status.REVISED,
             },
-            "complete": {"label": "Complete", "from": [PurchaseOrder.Status.CONFIRMED], "to": PurchaseOrder.Status.COMPLETED, "primary": True},
+            "create-receipt": {
+                "label": "Create Goods Receipt",
+                "from": [PurchaseOrder.Status.CONFIRMED],
+                "to": PurchaseOrder.Status.CONFIRMED,
+                "preserve_status": True,
+                "service_controls_state": True,
+                "primary": True,
+            },
+            "create-bill": {
+                "label": "Create Vendor Bill",
+                "from": [
+                    PurchaseOrder.Status.CONFIRMED,
+                    PurchaseOrder.Status.COMPLETED,
+                    PurchaseOrder.Status.CLOSED,
+                ],
+                "to": PurchaseOrder.Status.CONFIRMED,
+                "preserve_status": True,
+                "service_controls_state": True,
+            },
+            "create-downpayment": {
+                "label": "Create Down-Payment Bill",
+                "from": [
+                    PurchaseOrder.Status.CONFIRMED,
+                    PurchaseOrder.Status.COMPLETED,
+                    PurchaseOrder.Status.CLOSED,
+                ],
+                "to": PurchaseOrder.Status.CONFIRMED,
+                "preserve_status": True,
+                "service_controls_state": True,
+            },
+            "create-settlement": {
+                "label": "Create Settlement Bill",
+                "from": [
+                    PurchaseOrder.Status.CONFIRMED,
+                    PurchaseOrder.Status.COMPLETED,
+                    PurchaseOrder.Status.CLOSED,
+                ],
+                "to": PurchaseOrder.Status.CONFIRMED,
+                "preserve_status": True,
+                "service_controls_state": True,
+            },
+            "complete": {
+                "label": "Complete",
+                "from": [PurchaseOrder.Status.CONFIRMED],
+                "to": PurchaseOrder.Status.COMPLETED,
+                "primary": True,
+                "service_controls_state": True,
+            },
             "close": {
                 "label": "Close",
                 "from": [PurchaseOrder.Status.CONFIRMED, PurchaseOrder.Status.COMPLETED],
                 "to": PurchaseOrder.Status.CLOSED,
                 "primary": True,
+                "service_controls_state": True,
             },
             "expire": {
                 "label": "Mark Expired",
@@ -1800,9 +2012,12 @@ DOCUMENT_CONFIG = {
                     PurchaseOrder.Status.SENT,
                     PurchaseOrder.Status.WAITING_APPROVAL,
                     PurchaseOrder.Status.CONFIRMED,
+                    PurchaseOrder.Status.COMPLETED,
                     PurchaseOrder.Status.REVISED,
                 ],
                 "to": PurchaseOrder.Status.CANCELLED,
+                "service_controls_state": True,
+                "acknowledgement_label": "I understand that received goods will be returned to the vendor and inventory will be reversed.",
             },
         },
     },
@@ -1816,7 +2031,6 @@ DOCUMENT_CONFIG = {
         "editable_statuses": [Invoice.Status.DRAFT],
         "actions": {
             "post": {"label": "Post", "from": [Invoice.Status.DRAFT], "to": Invoice.Status.POSTED, "primary": True},
-            "mark_paid": {"label": "Mark Paid", "from": [Invoice.Status.POSTED], "to": Invoice.Status.PAID, "primary": True, "set_paid": True},
             "cancel": {"label": "Cancel", "from": [Invoice.Status.DRAFT, Invoice.Status.POSTED], "to": Invoice.Status.CANCELLED},
         },
     },
@@ -1924,10 +2138,14 @@ DOCUMENT_CONFIG.update(
             "line_relation": "lines",
             "header_fields": [
                 "company",
+                "order_type",
                 "number",
                 "requestor",
                 "request_date",
                 "required_date",
+                "expiry_date",
+                "destination_warehouse",
+                "currency",
                 "justification",
                 "rejection_reason",
                 "notes",
@@ -1940,6 +2158,8 @@ DOCUMENT_CONFIG.update(
                 "approved_quantity",
                 "ordered_quantity",
                 "estimated_unit_price",
+                "approval_justification",
+                "rejection_reason",
             ],
             "line_title": "Requested Products and Services",
             "total_fields": [],
@@ -1948,8 +2168,12 @@ DOCUMENT_CONFIG.update(
                 "submit": {"label": "Submit", "from": [PurchaseRequest.Status.DRAFT], "to": PurchaseRequest.Status.PENDING, "primary": True},
                 "approve": {"label": "Approve", "from": [PurchaseRequest.Status.PENDING, PurchaseRequest.Status.PARTIALLY_APPROVED], "to": PurchaseRequest.Status.APPROVED, "primary": True},
                 "reject": {"label": "Reject", "from": [PurchaseRequest.Status.PENDING, PurchaseRequest.Status.PARTIALLY_APPROVED], "to": PurchaseRequest.Status.REJECTED},
+                "re-request": {"label": "Re-Request", "from": [PurchaseRequest.Status.APPROVED, PurchaseRequest.Status.PARTIALLY_RFQ, PurchaseRequest.Status.RFQ, PurchaseRequest.Status.PARTIALLY_ORDERED, PurchaseRequest.Status.IN_PROGRESS], "to": PurchaseRequest.Status.APPROVED},
                 "reset": {"label": "Reset to Draft", "from": [PurchaseRequest.Status.REJECTED], "to": PurchaseRequest.Status.DRAFT},
-                "create-rfq": {"label": "Create RFQ", "from": [PurchaseRequest.Status.APPROVED, PurchaseRequest.Status.PARTIALLY_RFQ], "to": PurchaseRequest.Status.RFQ, "primary": True},
+                "create-rfq": {"label": "Create RFQ", "from": [PurchaseRequest.Status.APPROVED, PurchaseRequest.Status.PARTIALLY_RFQ, PurchaseRequest.Status.RFQ, PurchaseRequest.Status.IN_PROGRESS], "to": PurchaseRequest.Status.IN_PROGRESS, "primary": True},
+                "create-blanket": {"label": "Create Blanket Order", "from": [PurchaseRequest.Status.APPROVED, PurchaseRequest.Status.PARTIALLY_RFQ, PurchaseRequest.Status.RFQ, PurchaseRequest.Status.IN_PROGRESS], "to": PurchaseRequest.Status.IN_PROGRESS},
+                "create-tender": {"label": "Create Tender", "from": [PurchaseRequest.Status.APPROVED, PurchaseRequest.Status.PARTIALLY_RFQ, PurchaseRequest.Status.RFQ, PurchaseRequest.Status.IN_PROGRESS], "to": PurchaseRequest.Status.IN_PROGRESS},
+                "create-direct": {"label": "Create Direct Purchase", "from": [PurchaseRequest.Status.APPROVED, PurchaseRequest.Status.PARTIALLY_RFQ, PurchaseRequest.Status.RFQ, PurchaseRequest.Status.IN_PROGRESS], "to": PurchaseRequest.Status.IN_PROGRESS},
                 "mark-ordered": {"label": "Mark Fully Ordered", "from": [PurchaseRequest.Status.RFQ, PurchaseRequest.Status.PARTIALLY_ORDERED], "to": PurchaseRequest.Status.FULLY_ORDERED, "primary": True},
                 "start": {"label": "Start Fulfilment", "from": [PurchaseRequest.Status.FULLY_ORDERED], "to": PurchaseRequest.Status.IN_PROGRESS, "primary": True},
                 "close": {"label": "Close", "from": [PurchaseRequest.Status.IN_PROGRESS], "to": PurchaseRequest.Status.CLOSED, "primary": True},
@@ -1958,68 +2182,106 @@ DOCUMENT_CONFIG.update(
         "purchase-quotations": {
             "line_model": PurchaseQuotationLine,
             "line_relation": "lines",
-            "header_fields": ["company", "number", "request", "vendor", "issue_date", "response_deadline", "currency", "quoted_amount", "notes"],
+            "header_fields": ["company", "order_type", "order_template", "number", "request", "vendor", "warehouse", "issue_date", "response_deadline", "expected_date", "currency", "quoted_amount", "notes"],
             "line_fields": ["request_line", "product", "description", "specification", "quantity", "unit_price", "tax_percent", "discount_percent", "promised_date"],
             "line_title": "Quotation Lines",
             "total_fields": [("Quoted Amount", "quoted_amount")],
             "editable_statuses": [PurchaseQuotation.Status.DRAFT, PurchaseQuotation.Status.RECEIVED],
             "actions": {
-                "send": {"label": "Send to Vendor", "from": [PurchaseQuotation.Status.DRAFT], "to": PurchaseQuotation.Status.SENT, "primary": True},
-                "receive": {"label": "Record Response", "from": [PurchaseQuotation.Status.SENT], "to": PurchaseQuotation.Status.RECEIVED, "primary": True},
-                "select": {"label": "Select Quote", "from": [PurchaseQuotation.Status.RECEIVED], "to": PurchaseQuotation.Status.SELECTED, "primary": True},
-                "cancel": {"label": "Cancel", "from": [PurchaseQuotation.Status.DRAFT, PurchaseQuotation.Status.SENT, PurchaseQuotation.Status.RECEIVED], "to": PurchaseQuotation.Status.CANCELLED},
+                "send": {"label": "Send to Vendor", "from": [PurchaseQuotation.Status.DRAFT], "to": PurchaseQuotation.Status.SENT, "primary": True, "service_controls_state": True},
+                "receive": {"label": "Record Response", "from": [PurchaseQuotation.Status.SENT], "to": PurchaseQuotation.Status.RECEIVED, "primary": True, "service_controls_state": True},
+                "select": {"label": "Select Quote", "from": [PurchaseQuotation.Status.RECEIVED], "to": PurchaseQuotation.Status.SELECTED, "primary": True, "service_controls_state": True},
+                "cancel": {"label": "Cancel", "from": [PurchaseQuotation.Status.DRAFT, PurchaseQuotation.Status.SENT, PurchaseQuotation.Status.RECEIVED], "to": PurchaseQuotation.Status.CANCELLED, "service_controls_state": True},
             },
         },
         "direct-purchases": {
             "line_model": DirectPurchaseLine,
             "line_relation": "lines",
-            "header_fields": ["company", "number", "vendor", "purchase_date", "description", "amount", "justification"],
-            "line_fields": ["product", "description", "quantity", "unit_price", "tax_percent", "cost_center"],
+            "header_fields": ["company", "order_type", "order_template", "number", "request", "vendor", "warehouse", "purchase_date", "description", "amount", "justification"],
+            "line_fields": ["request_line", "product", "description", "quantity", "unit_price", "tax_percent", "cost_center"],
             "line_title": "Direct Purchase Lines",
             "total_fields": [("Total", "amount")],
             "editable_statuses": ["draft", "rejected"],
-            "actions": APPROVAL_WORKFLOW,
+            "actions": {
+                key: {**definition, "service_controls_state": True}
+                for key, definition in APPROVAL_WORKFLOW.items()
+            },
         },
         "service-work-orders": {
             "line_model": ServiceWorkOrderLine,
             "line_relation": "lines",
-            "header_fields": ["company", "number", "vendor", "service_description", "date_start", "date_end", "contract_amount", "notes"],
-            "line_fields": ["description", "unit", "quantity", "unit_rate", "tax_percent", "cost_center", "milestone_name"],
+            "header_fields": [
+                "company",
+                "source_order",
+                "vendor",
+                "milestone",
+                "milestone_name",
+                "contract_term_percentage",
+                "service_description",
+                "contract_amount",
+                "date_start",
+                "date_end",
+                "notes",
+            ],
+            "line_fields": ["purchase_order_line", "description", "unit", "quantity", "unit_rate", "status"],
             "line_title": "Service Scope Lines",
             "total_fields": [("Contract Value", "contract_amount")],
-            "editable_statuses": ["draft", "rejected"],
-            "actions": APPROVAL_WORKFLOW,
+            "editable_statuses": [],
+            "actions": {
+                "start": {"label": "Start", "from": ["draft"], "to": "in_progress", "primary": True, "service_controls_state": True},
+                "done": {"label": "Mark Done", "from": ["in_progress"], "to": "done", "primary": True, "service_controls_state": True},
+                "create-bill": {"label": "Create Vendor Bill", "from": ["in_progress", "done"], "to": "in_progress", "service_controls_state": True},
+            },
         },
         "purchase-tenders": {
             "line_model": PurchaseTenderLine,
             "line_relation": "lines",
-            "header_fields": ["company", "number", "title", "category", "tender_type", "award_strategy", "publish_date", "close_date", "budget_amount", "description"],
+            "header_fields": ["company", "order_type", "order_template", "number", "title", "category", "tender_type", "method", "award_strategy", "warehouse", "currency", "publish_date", "bid_start_date", "close_date", "validity_days", "budget_amount", "description"],
             "line_fields": ["request_line", "product", "description", "specification", "quantity", "target_unit_price", "delivery_date"],
             "line_title": "Tender Scope Lines",
             "total_fields": [("Budget", "budget_amount")],
             "editable_statuses": [PurchaseTender.Status.DRAFT],
             "actions": {
-                "publish": {"label": "Publish", "from": [PurchaseTender.Status.DRAFT], "to": PurchaseTender.Status.PUBLISHED, "primary": True},
-                "open-submission": {"label": "Open Submission", "from": [PurchaseTender.Status.PUBLISHED], "to": PurchaseTender.Status.SUBMISSION, "primary": True},
-                "evaluate": {"label": "Start Evaluation", "from": [PurchaseTender.Status.SUBMISSION], "to": PurchaseTender.Status.EVALUATION, "primary": True},
-                "award": {"label": "Award", "from": [PurchaseTender.Status.EVALUATION], "to": PurchaseTender.Status.AWARDED, "primary": True},
-                "close": {"label": "Close", "from": [PurchaseTender.Status.AWARDED], "to": PurchaseTender.Status.CLOSED, "primary": True},
-                "cancel": {"label": "Cancel", "from": [PurchaseTender.Status.DRAFT, PurchaseTender.Status.PUBLISHED, PurchaseTender.Status.SUBMISSION, PurchaseTender.Status.EVALUATION], "to": PurchaseTender.Status.CANCELLED},
+                "submit": {"label": "Submit for Approval", "from": [PurchaseTender.Status.DRAFT], "to": PurchaseTender.Status.WAITING_APPROVAL, "primary": True, "service_controls_state": True},
+                "approve": {"label": "Approve", "from": [PurchaseTender.Status.WAITING_APPROVAL], "to": PurchaseTender.Status.CONFIRMED, "primary": True, "service_controls_state": True},
+                "reject": {"label": "Reject", "from": [PurchaseTender.Status.WAITING_APPROVAL], "to": PurchaseTender.Status.REJECTED, "service_controls_state": True},
+                "publish": {"label": "Publish", "from": [PurchaseTender.Status.CONFIRMED], "to": PurchaseTender.Status.PUBLISHED, "primary": True, "service_controls_state": True},
+                "open-submission": {"label": "Open Submission", "from": [PurchaseTender.Status.PUBLISHED], "to": PurchaseTender.Status.BID_SUBMISSION, "primary": True, "service_controls_state": True},
+                "open-bids": {"label": "Open Bid Submission", "from": [PurchaseTender.Status.DOCUMENT_SUBMISSION], "to": PurchaseTender.Status.BID_SUBMISSION, "primary": True, "service_controls_state": True},
+                "evaluate": {"label": "Start Bid Selection", "from": [PurchaseTender.Status.BID_SUBMISSION, PurchaseTender.Status.SUBMISSION], "to": PurchaseTender.Status.BID_SELECTION, "primary": True, "service_controls_state": True},
+                "award": {"label": "Award", "from": [PurchaseTender.Status.BID_SELECTION], "to": PurchaseTender.Status.AWARDED, "primary": True, "service_controls_state": True},
+                "submit-decision": {"label": "Submit Decision", "from": [PurchaseTender.Status.AWARDED], "to": PurchaseTender.Status.AWARDED, "primary": True, "service_controls_state": True},
+                "approve-decision": {"label": "Approve Decision", "from": [PurchaseTender.Status.AWARDED], "to": PurchaseTender.Status.AWARDED, "primary": True, "service_controls_state": True},
+                "reject-decision": {
+                    "label": "Reject Decision",
+                    "from": [PurchaseTender.Status.AWARDED],
+                    "to": PurchaseTender.Status.AWARDED,
+                    "reason_label": "Tender decision rejection reason",
+                    "service_controls_state": True,
+                },
+                "reset-decision": {"label": "Reset Decision", "from": [PurchaseTender.Status.AWARDED], "to": PurchaseTender.Status.AWARDED, "service_controls_state": True},
+                "reopen-award": {"label": "Reopen Award", "from": [PurchaseTender.Status.AWARDED], "to": PurchaseTender.Status.BID_SELECTION, "service_controls_state": True},
+                "close": {"label": "Close", "from": [PurchaseTender.Status.AWARDED], "to": PurchaseTender.Status.CLOSED, "primary": True, "service_controls_state": True},
+                "cancel": {"label": "Cancel", "from": [PurchaseTender.Status.DRAFT, PurchaseTender.Status.WAITING_APPROVAL, PurchaseTender.Status.CONFIRMED, PurchaseTender.Status.PUBLISHED, PurchaseTender.Status.DOCUMENT_SUBMISSION, PurchaseTender.Status.BID_SUBMISSION, PurchaseTender.Status.BID_SELECTION], "to": PurchaseTender.Status.CANCELLED, "service_controls_state": True},
             },
         },
         "blanket-orders": {
             "line_model": BlanketOrderLine,
             "line_relation": "lines",
-            "header_fields": ["company", "number", "vendor", "date_start", "date_end", "agreement_value", "consumed_value", "terms"],
-            "line_fields": ["product", "description", "agreed_quantity", "released_quantity", "unit_price", "minimum_release_quantity"],
+            "header_fields": ["company", "order_type", "order_template", "number", "vendor", "warehouse", "currency", "date_start", "date_end", "agreement_value", "consumed_value", "terms"],
+            "line_fields": ["request_line", "product", "description", "agreed_quantity", "released_quantity", "unit_price", "minimum_release_quantity"],
             "line_title": "Agreement Lines",
             "total_fields": [("Agreement Value", "agreement_value"), ("Consumed", "consumed_value")],
             "editable_statuses": [BlanketOrder.Status.DRAFT],
             "actions": {
-                "activate": {"label": "Activate", "from": [BlanketOrder.Status.DRAFT], "to": BlanketOrder.Status.ACTIVE, "primary": True},
-                "exhaust": {"label": "Mark Exhausted", "from": [BlanketOrder.Status.ACTIVE], "to": BlanketOrder.Status.EXHAUSTED},
-                "expire": {"label": "Mark Expired", "from": [BlanketOrder.Status.ACTIVE], "to": BlanketOrder.Status.EXPIRED},
-                "cancel": {"label": "Cancel", "from": [BlanketOrder.Status.DRAFT, BlanketOrder.Status.ACTIVE], "to": BlanketOrder.Status.CANCELLED},
+                "submit": {"label": "Submit for Approval", "from": [BlanketOrder.Status.DRAFT], "to": BlanketOrder.Status.WAITING_APPROVAL, "primary": True, "service_controls_state": True},
+                "approve": {"label": "Approve", "from": [BlanketOrder.Status.WAITING_APPROVAL], "to": BlanketOrder.Status.CONFIRMED, "primary": True, "service_controls_state": True},
+                "reject": {"label": "Reject", "from": [BlanketOrder.Status.WAITING_APPROVAL], "to": BlanketOrder.Status.REJECTED, "service_controls_state": True},
+                "create-rfq": {"label": "Create RFQ", "from": [BlanketOrder.Status.CONFIRMED, BlanketOrder.Status.RUNNING], "to": BlanketOrder.Status.RUNNING, "primary": True, "service_controls_state": True},
+                "run": {"label": "Run", "from": [BlanketOrder.Status.CONFIRMED], "to": BlanketOrder.Status.RUNNING, "service_controls_state": True},
+                "close": {"label": "Close", "from": [BlanketOrder.Status.CONFIRMED, BlanketOrder.Status.RUNNING], "to": BlanketOrder.Status.CLOSED, "service_controls_state": True},
+                "reopen": {"label": "Reopen", "from": [BlanketOrder.Status.CLOSED], "to": BlanketOrder.Status.RUNNING, "service_controls_state": True},
+                "cancel": {"label": "Cancel", "from": [BlanketOrder.Status.DRAFT, BlanketOrder.Status.WAITING_APPROVAL, BlanketOrder.Status.CONFIRMED, BlanketOrder.Status.RUNNING], "to": BlanketOrder.Status.CANCELLED, "service_controls_state": True},
             },
         },
         "goods-receipts": {
@@ -2027,14 +2289,15 @@ DOCUMENT_CONFIG.update(
             "line_relation": "lines",
             "header_fields": ["company", "number", "order", "warehouse", "receipt_date", "receiving_mode", "delivery_status", "notes"],
             "line_fields": ["order_line", "received_quantity", "accepted_quantity", "rejected_quantity", "rejection_reason"],
+            "line_select_related": ["order_line", "order_line__product", "stock_move", "return_stock_move"],
             "line_title": "Received Lines and Inspection",
             "total_fields": [],
             "editable_statuses": [GoodsReceipt.Status.DRAFT, GoodsReceipt.Status.INSPECTING],
             "actions": {
-                "inspect": {"label": "Start Inspection", "from": [GoodsReceipt.Status.DRAFT], "to": GoodsReceipt.Status.INSPECTING, "primary": True},
-                "receive": {"label": "Accept Receipt", "from": [GoodsReceipt.Status.INSPECTING], "to": GoodsReceipt.Status.RECEIVED, "primary": True},
-                "reject": {"label": "Reject Receipt", "from": [GoodsReceipt.Status.INSPECTING], "to": GoodsReceipt.Status.REJECTED},
-                "cancel": {"label": "Cancel", "from": [GoodsReceipt.Status.DRAFT], "to": GoodsReceipt.Status.CANCELLED},
+                "inspect": {"label": "Start Inspection", "from": [GoodsReceipt.Status.DRAFT], "to": GoodsReceipt.Status.INSPECTING, "primary": True, "service_controls_state": True},
+                "receive": {"label": "Accept Receipt", "from": [GoodsReceipt.Status.INSPECTING], "to": GoodsReceipt.Status.RECEIVED, "primary": True, "service_controls_state": True},
+                "reject": {"label": "Reject Receipt", "from": [GoodsReceipt.Status.INSPECTING], "to": GoodsReceipt.Status.REJECTED, "service_controls_state": True},
+                "cancel": {"label": "Cancel", "from": [GoodsReceipt.Status.DRAFT], "to": GoodsReceipt.Status.CANCELLED, "service_controls_state": True},
             },
         },
         "purchase-accounting-documents": {
@@ -2055,14 +2318,15 @@ DOCUMENT_CONFIG.update(
             "line_relation": "lines",
             "header_fields": ["receipt", "reference", "source_warehouse", "destination_warehouse", "transfer_date", "notes"],
             "line_fields": ["receipt_line", "product", "quantity"],
+            "line_select_related": ["receipt_line", "receipt_line__order_line", "product", "source_stock_move", "destination_stock_move"],
             "line_title": "Transfer Lines",
             "total_fields": [],
             "editable_statuses": [PurchaseInventoryTransfer.Status.DRAFT, PurchaseInventoryTransfer.Status.READY],
             "actions": {
-                "ready": {"label": "Mark Ready", "from": [PurchaseInventoryTransfer.Status.DRAFT], "to": PurchaseInventoryTransfer.Status.READY, "primary": True},
-                "dispatch": {"label": "Dispatch", "from": [PurchaseInventoryTransfer.Status.READY], "to": PurchaseInventoryTransfer.Status.IN_TRANSIT, "primary": True},
-                "complete": {"label": "Complete", "from": [PurchaseInventoryTransfer.Status.IN_TRANSIT], "to": PurchaseInventoryTransfer.Status.DONE, "primary": True},
-                "cancel": {"label": "Cancel", "from": [PurchaseInventoryTransfer.Status.DRAFT, PurchaseInventoryTransfer.Status.READY], "to": PurchaseInventoryTransfer.Status.CANCELLED},
+                "ready": {"label": "Mark Ready", "from": [PurchaseInventoryTransfer.Status.DRAFT], "to": PurchaseInventoryTransfer.Status.READY, "primary": True, "service_controls_state": True},
+                "dispatch": {"label": "Dispatch", "from": [PurchaseInventoryTransfer.Status.READY], "to": PurchaseInventoryTransfer.Status.IN_TRANSIT, "primary": True, "service_controls_state": True},
+                "complete": {"label": "Complete", "from": [PurchaseInventoryTransfer.Status.IN_TRANSIT], "to": PurchaseInventoryTransfer.Status.DONE, "primary": True, "service_controls_state": True},
+                "cancel": {"label": "Cancel", "from": [PurchaseInventoryTransfer.Status.DRAFT, PurchaseInventoryTransfer.Status.READY], "to": PurchaseInventoryTransfer.Status.CANCELLED, "service_controls_state": True},
             },
         },
     }
@@ -2376,6 +2640,8 @@ def _delete_block_reason(entity, config, instance):
         return "Only draft cash advances can be deleted; use the workflow for later states."
     if entity == "expenses" and instance.status != ExpenseClaim.Status.DRAFT:
         return "Only draft expense claims can be deleted; use the workflow for later states."
+    if entity == "sales" and instance.status != SaleOrder.Status.DRAFT:
+        return "Only Draft Sales Orders can be deleted; use the workflow for later states."
     if entity == "leave-requests" and instance.status != LeaveRequest.Status.DRAFT:
         return "Only draft leave requests can be deleted; use the workflow for later states."
     if entity == "leave-opening-balances" and instance.status != LeaveOpeningBalance.Status.DRAFT:
@@ -2423,6 +2689,16 @@ def _scope_queryset(user, entity, queryset):
     queryset = scope_accounting_queryset(user, entity, queryset)
     if is_approval_entity(entity):
         return queryset
+    if entity == "sales-order-types":
+        organization_context = get_current_context()
+        if organization_context and organization_context.active_company_ids:
+            company_links = SaleOrderType.companies.through.objects.filter(
+                company_id__in=organization_context.active_company_ids
+            ).values("saleordertype_id")
+            all_links = SaleOrderType.companies.through.objects.values("saleordertype_id")
+            queryset = queryset.filter(
+                Q(pk__in=company_links) | ~Q(pk__in=all_links)
+            )
     return scope_organization_queryset(
         queryset,
         include_branch=entity != "branches",
@@ -2440,8 +2716,100 @@ def _scope_form(form, user, entity):
     return scope_organization_form(form, include_branch=entity != "branches")
 
 
+def _record_smart_actions(request, source_entity, source):
+    """Build fixed-query, permission-aware actions for one scoped record."""
+    actions = []
+    for definition in smart_actions_for_source(source_entity):
+        target_config = _config(definition.target_entity)
+        target_model = target_config["model"]
+        if not _can(request.user, "view", target_model, definition.target_entity):
+            continue
+        target_queryset = _scope_queryset(
+            request.user,
+            definition.target_entity,
+            target_model.objects.all(),
+        )
+        related_queryset = definition.filter_queryset(target_queryset, source)
+        if definition.show_count:
+            count = related_queryset.count()
+        elif definition.hide_when_empty:
+            count = 1 if related_queryset.exists() else 0
+        else:
+            count = 0
+        if definition.hide_when_empty and not count:
+            continue
+        query = urlencode({"smart_action": definition.key, "source_id": source.pk})
+        actions.append(
+            {
+                "key": definition.key,
+                "label": definition.label,
+                "icon": definition.icon,
+                "count": count,
+                "show_count": definition.show_count,
+                "href": f"{reverse('entity_list', kwargs={'entity': definition.target_entity})}?{query}",
+            }
+        )
+    return actions
+
+
+def _apply_smart_action_scope(request, target_entity, queryset, config):
+    """Apply only a registered cross-model filter; reject arbitrary relations."""
+    action_key = request.GET.get("smart_action", "").strip()
+    source_id = request.GET.get("source_id", "").strip()
+    if not action_key and not source_id:
+        return queryset, config, None, ""
+    if not action_key or not source_id.isdecimal() or int(source_id) <= 0:
+        raise Http404("Invalid smart action scope")
+    definition = get_smart_action(action_key)
+    if definition is None or definition.target_entity != target_entity:
+        raise Http404("Unknown smart action scope")
+    source_config = _config(definition.source_entity)
+    source_model = source_config["model"]
+    if not _can(request.user, "view", source_model, definition.source_entity):
+        raise Http404("Smart action source is unavailable")
+    source = get_object_or_404(
+        _scope_queryset(
+            request.user,
+            definition.source_entity,
+            source_model.objects.all(),
+        ),
+        pk=int(source_id),
+    )
+    scoped_queryset = definition.filter_queryset(queryset, source)
+    scoped_config = {
+        **config,
+        "title": f"{definition.label} · {source}",
+        "creatable": definition.allow_create,
+        "editable": definition.allow_edit,
+        "deletable": definition.allow_delete,
+        "selectable": definition.allow_select,
+    }
+    scope_query = urlencode({"smart_action": definition.key, "source_id": source.pk})
+    return scoped_queryset, scoped_config, {
+        "definition": definition,
+        "source": source,
+        "source_entity": definition.source_entity,
+        "source_singular": source_config["singular"],
+        "source_title": source_config["title"],
+        "can_open_source": (
+            source_config.get("editable", True)
+            and _can(request.user, "change", source_model, definition.source_entity)
+        ) or (
+            source_config.get("readonly_detail", False)
+            and _can(request.user, "view", source_model, definition.source_entity)
+        ),
+    }, scope_query
+
+
+def _record_edit_redirect(entity, pk, query_string=""):
+    url = reverse("entity_edit", kwargs={"entity": entity, "pk": pk})
+    return redirect(f"{url}?{query_string}" if query_string else url)
+
+
 def _can_workflow(user, entity, action, instance):
     return (
+        (entity != "sales" or can_sale_workflow_action(user, action, instance))
+        and
         can_hr_workflow_action(user, entity, action, instance)
         and can_purchase_workflow_action(user, entity, action)
         and can_construction_workflow_action(user, entity, action)
@@ -2527,11 +2895,27 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
             CashAdvanceLineForm if entity == "cash-advances" and index == 0 else
             ExpenseClaimLineForm if entity == "expenses" and index == 0 else StyledModelForm
         )
-        formset_options = (
-            {"formset": CashAdvanceLineFormSet if entity == "cash-advances" else ExpenseClaimLineFormSet,
-             "max_num": 100, "validate_max": True, "absolute_max": 120}
-            if is_derived_line_total else {}
-        )
+        if is_derived_line_total:
+            formset_options = {
+                "formset": CashAdvanceLineFormSet if entity == "cash-advances" else ExpenseClaimLineFormSet,
+                "max_num": 100,
+                "validate_max": True,
+                "absolute_max": 120,
+            }
+        elif entity == "sales":
+            formset_options = {
+                "max_num": MAX_SALES_ORDER_LINES,
+                "validate_max": True,
+                "absolute_max": MAX_SALES_ORDER_LINES + 20,
+            }
+        elif entity in {"purchases", "goods-receipts", "purchase-inventory-transfers"}:
+            formset_options = {
+                "max_num": MAX_PURCHASE_DOCUMENT_LINES,
+                "validate_max": True,
+                "absolute_max": MAX_PURCHASE_DOCUMENT_LINES + 20,
+            }
+        else:
+            formset_options = {}
         formset_class = inlineformset_factory(
             model,
             section["line_model"],
@@ -2569,6 +2953,19 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
         )
     formset = line_sections[0]["formset"]
     _scope_form(form, request.user, entity)
+    if entity == "sales" and instance is None and not form.is_bound:
+        company_id = form.initial.get("company")
+        if company_id:
+            from .sales import get_sale_default_delivery_days, get_sale_quotation_validity_days
+
+            form.fields["validity_date"].initial = timezone.localdate() + timedelta(
+                days=get_sale_quotation_validity_days(company_id)
+            )
+            delivery_days = get_sale_default_delivery_days(company_id)
+            if delivery_days:
+                form.fields["delivery_date"].initial = timezone.localdate() + timedelta(
+                    days=delivery_days
+                )
     for section in line_sections:
         for line_form in section["formset"].forms:
             _scope_form(line_form, request.user, entity)
@@ -2596,8 +2993,19 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
                     save_cash_advance_lines(saved, section["formset"])
                 elif entity == "expenses":
                     save_expense_claim_lines(saved, section["formset"])
+                elif entity == "sales":
+                    save_sale_order_lines(saved, section["formset"])
+                elif entity == "purchases":
+                    save_purchase_order_lines(saved, section["formset"])
                 else:
                     section["formset"].save()
+            if entity == "purchases":
+                order_template_id = getattr(saved, "_apply_purchase_order_template_id", None)
+                milestone_template_id = getattr(saved, "_apply_purchase_milestone_template_id", None)
+                if order_template_id:
+                    saved = apply_purchase_order_template(saved, order_template_id, request.user)
+                if milestone_template_id:
+                    saved = apply_purchase_milestone_template(saved, milestone_template_id, request.user)
             if model._meta.app_label == "gsshop_construction":
                 handle_construction_document_save(entity, saved, request.user)
         saved.refresh_from_db()
@@ -2620,6 +3028,24 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
         and current_status in definition["from"]
         and _can_workflow(request.user, entity, key, instance)
     ]
+    if entity == "purchase-tenders" and instance and current_status == PurchaseTender.Status.AWARDED:
+        decision_actions = {
+            PurchaseTender.DecisionStatus.DRAFT: {"submit-decision", "reopen-award"},
+            PurchaseTender.DecisionStatus.WAITING_APPROVAL: {
+                "approve-decision",
+                "reject-decision",
+            },
+            PurchaseTender.DecisionStatus.APPROVED: {
+                "close",
+                "reset-decision",
+            },
+            PurchaseTender.DecisionStatus.REJECTED: {
+                "submit-decision",
+                "reopen-award",
+            },
+        }
+        allowed_keys = decision_actions.get(instance.decision_approval_status, set())
+        available_actions = [item for item in available_actions if item["key"] in allowed_keys]
     totals = []
     if instance:
         totals = [{"label": label, "value": getattr(instance, field)} for label, field in document.get("total_fields", [])]
@@ -2639,7 +3065,242 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
         "totals": totals,
         "developer_meta": developer_metadata(model, entity=entity, instance=instance),
     }
+    if entity == "invoices" and instance:
+        context["invoice_payment_state"] = instance.payment_state
+        context["invoice_payment_state_choices"] = list(Invoice.PaymentState.choices)
+        can_add_payment = (
+            current_status == Invoice.Status.POSTED
+            and instance.balance > 0
+            and _can(request.user, "change", Invoice, "invoices")
+            and _can(request.user, "add", AccountPayment, "account-payments")
+            and _can(request.user, "add", PaymentAllocation, "payment-allocations")
+        )
+        if can_add_payment:
+            context["available_actions"].insert(0, {
+                "key": "add_payment",
+                "label": "Add Payment",
+                "primary": True,
+                "href": reverse("invoice_add_payment", kwargs={"pk": instance.pk}),
+            })
+        if instance.paid_amount > 0:
+            context["available_actions"] = [
+                action for action in context["available_actions"] if action["key"] != "cancel"
+            ]
+        payment_rows = list(
+            PaymentAllocation.objects.filter(invoice_id=instance.pk)
+            .select_related(
+                "payment",
+                "payment__journal",
+                "payment__journal_entry",
+                "writeoff_account",
+            )
+            .order_by("-payment__payment_date", "-pk")[:51]
+        )
+        context["invoice_payments"] = payment_rows[:50]
+        context["invoice_payments_has_more"] = len(payment_rows) > 50
+        context["can_open_payment"] = _can(request.user, "view", AccountPayment, "account-payments")
+        context["can_open_payment_journal"] = _can(request.user, "view", JournalEntry, "journal-entries")
+    if entity == "sales" and instance:
+        invoice_accounting = (
+            SaleOrderInvoiceAccounting.objects.filter(order_id=instance.pk)
+            .select_related("downpayment_invoice", "settlement_invoice")
+            .first()
+        )
+        accounting_event = (
+            AccountingIntegrationEvent.objects.filter(
+                company_id=instance.company_id,
+                source_model=instance._meta.label_lower,
+                source_id=instance.pk,
+                event_type="sale_order_complete",
+            )
+            .select_related("journal_entry", "journal_entry__journal")
+            .first()
+        )
+        sales_invoice = invoice_accounting.settlement_invoice if invoice_accounting else None
+        if sales_invoice:
+            context["available_actions"] = [
+                item for item in context["available_actions"] if item["key"] != "invoice"
+            ]
+        invoice_journal = None
+        if sales_invoice:
+            invoice_journal = (
+                JournalEntry.objects.filter(
+                    company_id=instance.company_id,
+                    source_type="account_invoice",
+                    source_reference=sales_invoice.number,
+                )
+                .select_related("journal")
+                .order_by("pk")
+                .first()
+            )
+        context["sales_accounting"] = {
+            "event": accounting_event,
+            "invoice_accounting": invoice_accounting,
+            "invoice": sales_invoice,
+            "journal_entry": invoice_journal or (accounting_event.journal_entry if accounting_event else None),
+            "can_open_journal": _can(request.user, "change", JournalEntry, "journal-entries"),
+            "can_open_invoice": _can(request.user, "change", Invoice, "invoices"),
+        }
+        context["sales_email_attempts"] = list(
+            instance.email_attempts.select_related("sent_by").order_by("-created_at", "-pk")[:5]
+        )
+    if entity == "purchases" and instance:
+        purchase_lines = [
+            line_form.instance
+            for line_form in formset.forms
+            if line_form.instance.pk
+        ]
+        context["purchase_receiving_lines"] = purchase_lines
+        context["purchase_control"] = (
+            PurchaseOrderControl.objects.filter(order_id=instance.pk).first()
+        )
+        pending_receipt = (
+            GoodsReceiptLine.objects.filter(
+                receipt__order_id=instance.pk,
+                receipt__status__in=[GoodsReceipt.Status.DRAFT, GoodsReceipt.Status.INSPECTING],
+            ).aggregate(value=Sum("received_quantity"))["value"]
+            or 0
+        )
+        receipt_remaining = sum(
+            (
+                line.quantity - line.received_quantity
+                for line in purchase_lines
+                if line.product.product_type == Product.ProductType.STOCKABLE
+            ),
+            0,
+        ) - pending_receipt
+        pending_bill = (
+            PurchaseBillLineProvenance.objects.filter(
+                order_line__order_id=instance.pk,
+                invoice_line__invoice__status=Invoice.Status.DRAFT,
+            ).aggregate(value=Sum("quantity"))["value"]
+            or 0
+        )
+        bill_remaining = sum((line.remaining_to_bill for line in purchase_lines), 0) - pending_bill
+        billing_plan = (
+            PurchaseOrderInvoiceAccounting.objects.filter(order_id=instance.pk)
+            .select_related("downpayment_invoice", "settlement_invoice")
+            .first()
+        )
+        context["purchase_billing_plan"] = billing_plan
+        active_purchase_bills = []
+        if billing_plan:
+            active_purchase_bills = list(
+                PurchaseInvoiceAccounting.objects.filter(order_accounting=billing_plan)
+                .exclude(invoice__status=Invoice.Status.CANCELLED)
+                .select_related("invoice")
+                .order_by("pk")[:101]
+            )
+        active_downpayments = [
+            row
+            for row in active_purchase_bills
+            if row.invoice_kind == PurchaseInvoiceAccounting.InvoiceKind.DOWNPAYMENT
+        ]
+        active_settlements = [
+            row
+            for row in active_purchase_bills
+            if row.invoice_kind == PurchaseInvoiceAccounting.InvoiceKind.SETTLEMENT
+        ]
+        filtered_actions = []
+        for item in context["available_actions"]:
+            if item["key"] == "create-receipt" and receipt_remaining <= 0:
+                continue
+            if item["key"] == "create-bill":
+                if bill_remaining <= 0 or (billing_plan and billing_plan.downpayment_amount > 0):
+                    continue
+            if item["key"] == "create-downpayment":
+                if not billing_plan or (
+                    billing_plan.downpayment_type
+                    == PurchaseOrderInvoiceAccounting.DownpaymentType.FIXED_AMOUNT
+                    and billing_plan.downpayment_amount <= 0
+                ) or (
+                    billing_plan.downpayment_type
+                    == PurchaseOrderInvoiceAccounting.DownpaymentType.PERCENTAGE
+                    and billing_plan.downpayment_percentage <= 0
+                ):
+                    continue
+            if item["key"] == "create-settlement":
+                if (
+                    not billing_plan
+                    or billing_plan.status == PurchaseOrderInvoiceAccounting.Status.COMPLETED
+                    or not active_downpayments
+                    or any(
+                        row.invoice.status not in {Invoice.Status.POSTED, Invoice.Status.PAID}
+                        for row in active_downpayments
+                    )
+                    or any(row.invoice.status == Invoice.Status.DRAFT for row in active_settlements)
+                ):
+                    continue
+            if item["key"] == "cancel" and not any(line.received_quantity > 0 for line in purchase_lines):
+                item = {key: value for key, value in item.items() if key != "acknowledgement_label"}
+            filtered_actions.append(item)
+        context["available_actions"] = filtered_actions
+    if entity == "purchase-requests" and instance:
+        context["purchase_request_progress_lines"] = [
+            line_form.instance
+            for line_form in formset.forms
+            if line_form.instance.pk
+        ]
+    if entity == "goods-receipts" and instance:
+        context["goods_receipt_inventory_lines"] = [
+            line_form.instance
+            for line_form in formset.forms
+            if line_form.instance.pk
+        ]
+    if instance:
+        context["smart_actions"] = _record_smart_actions(request, entity, instance)
     return context, None
+
+
+@login_required
+def invoice_add_payment(request, pk):
+    if not (
+        _can(request.user, "change", Invoice, "invoices")
+        and _can(request.user, "add", AccountPayment, "account-payments")
+        and _can(request.user, "add", PaymentAllocation, "payment-allocations")
+    ):
+        messages.error(request, "You do not have permission to register invoice payments.")
+        return redirect("entity_edit", entity="invoices", pk=pk)
+    invoice = get_object_or_404(
+        _scope_queryset(
+            request.user,
+            "invoices",
+            Invoice.objects.select_related("company", "partner"),
+        ),
+        pk=pk,
+    )
+    if invoice.status != Invoice.Status.POSTED or invoice.balance <= 0:
+        messages.error(request, "Add Payment is only available for a posted invoice with an amount due.")
+        return redirect("entity_edit", entity="invoices", pk=invoice.pk)
+
+    form = InvoicePaymentForm(request.POST or None, invoice=invoice)
+    if request.method == "POST" and form.is_valid():
+        try:
+            payment = register_invoice_payment(
+                invoice,
+                payment_amount=form.cleaned_data["payment_amount"],
+                payment_date=form.cleaned_data["payment_date"],
+                payment_method=form.cleaned_data["payment_method"],
+                reference=form.cleaned_data["reference"],
+                payment_difference_handling=form.cleaned_data["payment_difference_handling"],
+                writeoff_account=form.cleaned_data["writeoff_account"],
+                actor=request.user,
+            )
+        except ValidationError as exc:
+            form.add_error(None, "; ".join(exc.messages))
+        else:
+            messages.success(request, f"Payment {payment.number} posted and matched to {invoice.number}.")
+            return redirect("entity_edit", entity="invoices", pk=invoice.pk)
+
+    method_journals = {
+        str(method.pk): str(method.journal)
+        for method in form.fields["payment_method"].queryset
+    }
+    return render(request, "finance/invoice_payment_form.html", {
+        "form": form,
+        "invoice": invoice,
+        "method_journals": method_journals,
+    })
 
 
 @require_GET
@@ -2687,7 +3348,10 @@ def expense_product_search(request):
 @require_GET
 @login_required
 def product_search(request):
-    if not _can(request.user, "view", Product, "products"):
+    can_use_sales_master = any(
+        _can(request.user, action, SaleOrder, "sales") for action in ("add", "change")
+    )
+    if not (_can(request.user, "view", Product, "products") or can_use_sales_master):
         return JsonResponse({"detail": "Anda tidak memiliki akses ke master produk."}, status=403)
 
     products = _scope_queryset(request.user, "products", Product.objects.filter(active=True))
@@ -2699,8 +3363,15 @@ def product_search(request):
         products = products.filter(Q(sku__icontains=query) | Q(name__icontains=query))
 
     results = [
-        {"id": product["id"], "text": f"{product['sku']} — {product['name']}"}
-        for product in products.order_by("name", "sku").values("id", "sku", "name")[:20]
+        {
+            "id": product["id"],
+            "text": f"{product['sku']} — {product['name']}",
+            "sale_price": str(product["sale_price"]),
+            "unit": product["unit"],
+        }
+        for product in products.order_by("name", "sku").values(
+            "id", "sku", "name", "sale_price", "unit"
+        )[:20]
     ]
     return JsonResponse({"results": results})
 
@@ -2708,7 +3379,10 @@ def product_search(request):
 @require_GET
 @login_required
 def customer_search(request):
-    if not _can(request.user, "view", Contact, "contacts"):
+    can_use_sales_master = any(
+        _can(request.user, action, SaleOrder, "sales") for action in ("add", "change")
+    )
+    if not (_can(request.user, "view", Contact, "contacts") or can_use_sales_master):
         return JsonResponse({"detail": "Anda tidak memiliki akses ke master customer."}, status=403)
 
     customers = _scope_queryset(request.user, "contacts", Contact.objects.filter(
@@ -2790,6 +3464,9 @@ def entity_list(request, entity):
             can_delete=_can(request.user, "delete", model, entity),
         )
     queryset = _scope_queryset(request.user, entity, model.objects.all())
+    queryset, config, smart_action_scope, scope_query = _apply_smart_action_scope(
+        request, entity, queryset, config
+    )
     parent_request_id = request.GET.get("request", "").strip()
     if config.get("parent_request_filter") and parent_request_id.isdecimal():
         queryset = queryset.filter(request_id=int(parent_request_id))
@@ -2863,11 +3540,81 @@ def entity_list(request, entity):
         "employee_kanban_cards": _employee_kanban_cards(rows) if config.get("kanban_variant") == "employee" else [],
         "developer_meta": developer_metadata(model, entity=entity),
         "can_add": config.get("creatable", True) and _can(request.user, "add", model, entity),
-        "can_change": config.get("editable", True) and _can(request.user, "change", model, entity),
+        "can_change": (
+            config.get("editable", True) and _can(request.user, "change", model, entity)
+        ) or (
+            config.get("readonly_detail", False) and _can(request.user, "view", model, entity)
+        ),
         "can_select": config.get("selectable", True),
         "can_delete": config.get("deletable", True) and _can(request.user, "delete", model, entity),
+        "can_merge_sales": entity == "sales"
+        and _can(request.user, "add", model, entity)
+        and _can(request.user, "change", model, entity),
+        "smart_action_scope": smart_action_scope,
+        "scope_query": scope_query,
     }
+    if smart_action_scope:
+        source = smart_action_scope["source"]
+        source_entity = smart_action_scope["source_entity"]
+        source_url = (
+            reverse("entity_edit", kwargs={"entity": source_entity, "pk": source.pk})
+            if smart_action_scope["can_open_source"]
+            else ""
+        )
+        context["breadcrumbs"] = [
+            {"label": "Home", "url": reverse("dashboard")},
+            {
+                "label": smart_action_scope["source_title"],
+                "url": reverse("entity_list", kwargs={"entity": source_entity}),
+            },
+            {"label": str(source), "url": source_url},
+            {"label": smart_action_scope["definition"].label},
+        ]
     return render(request, "core/entity_list.html", context)
+
+
+@login_required
+@require_GET
+def entity_jump(request, entity):
+    """Resolve one typed record number inside the same scoped edit boundary."""
+    config = _config(entity)
+    unavailable = _unavailable_application(request, entity)
+    if unavailable:
+        return unavailable
+    model = config["model"]
+    can_open = (
+        _can(request.user, "view", model, entity)
+        if entity == "training-conducts"
+        else config.get("editable", True) and _can(request.user, "change", model, entity)
+    )
+    if not can_open:
+        messages.error(request, "You do not have permission to open this record.")
+        return redirect("entity_list", entity=entity)
+
+    current = request.GET.get("current", "").strip()
+    target = request.GET.get("record", "").strip()
+    return_query = QueryDict(request.GET.get("return_query", "")[:2000]).urlencode()
+
+    def return_to_current():
+        if current.isdecimal() and int(current) > 0:
+            return _record_edit_redirect(entity, int(current), return_query)
+        return redirect("entity_list", entity=entity)
+
+    if not target.isdecimal() or int(target) < 1:
+        messages.error(request, "Enter a valid record number.")
+        return return_to_current()
+
+    scoped_queryset = _scope_queryset(request.user, entity, model.objects.all())
+    target_pk = (
+        scoped_queryset.filter(pk=int(target))
+        .order_by()
+        .values_list("pk", flat=True)
+        .first()
+    )
+    if target_pk is None:
+        messages.error(request, "That record does not exist or is outside your access scope.")
+        return return_to_current()
+    return _record_edit_redirect(entity, target_pk, return_query)
 
 
 @login_required
@@ -2982,6 +3729,37 @@ def entity_edit(request, entity, pk):
             config,
             instance=instance,
             can_change=_can(request.user, "change", model, entity),
+            navigation_queryset=scoped_queryset,
+        )
+    if config.get("readonly_detail", False) and not config.get("editable", True):
+        if not _can(request.user, "view", model, entity):
+            messages.error(request, "You do not have permission to view this record.")
+            return redirect("entity_list", entity=entity)
+        if request.method == "POST":
+            messages.error(request, "This record is immutable.")
+            return redirect("entity_edit", entity=entity, pk=pk)
+        scoped_queryset = _scope_queryset(request.user, entity, model.objects.all())
+        instance = get_object_or_404(scoped_queryset, pk=pk)
+        form = _form_class(config)(instance=instance)
+        _scope_form(form, request.user, entity)
+        for field in form.fields.values():
+            field.disabled = True
+        return render(
+            request,
+            "core/entity_form.html",
+            {
+                "form": form,
+                "config": config,
+                "entity": entity,
+                "mode": "View",
+                "object": instance,
+                "workflow_locked": True,
+                "smart_actions": _record_smart_actions(request, entity, instance),
+                "record_navigation": build_record_navigation(
+                    scoped_queryset, instance, entity, request.GET.urlencode()
+                ),
+                "developer_meta": developer_metadata(model, entity=entity, instance=instance),
+            },
         )
     if not config.get("editable", True) or not _can(request.user, "change", model, entity):
         messages.error(request, "This record is immutable or you do not have permission to edit it.")
@@ -3020,11 +3798,21 @@ def entity_edit(request, entity, pk):
         with transaction.atomic():
             instance = get_object_or_404(scoped_queryset.select_for_update(), pk=pk)
             context, response = _document_context(request, entity, config, instance=instance, mode="Edit")
-            return response or render(request, "core/document_form.html", context)
+            if response:
+                return response
+            context["record_navigation"] = build_record_navigation(
+                scoped_queryset, instance, entity, request.GET.urlencode()
+            )
+            return render(request, "core/document_form.html", context)
     instance = get_object_or_404(scoped_queryset, pk=pk)
     if entity in DOCUMENT_CONFIG:
         context, response = _document_context(request, entity, config, instance=instance, mode="Edit")
-        return response or render(request, "core/document_form.html", context)
+        if response:
+            return response
+        context["record_navigation"] = build_record_navigation(
+            scoped_queryset, instance, entity, request.GET.urlencode()
+        )
+        return render(request, "core/document_form.html", context)
     current_status = getattr(instance, config.get("workflow_field", "status"), None)
     locked_statuses = set(config.get("workflow_locked_statuses", {"approved", "cancelled"}))
     workflow_locked = (entity == "attendance" and instance.from_raw_attendance) or (
@@ -3075,8 +3863,12 @@ def entity_edit(request, entity, pk):
             "current_status": current_status,
             "workflow_actions": workflow_actions,
             "workflow_locked": workflow_locked,
+            "smart_actions": _record_smart_actions(request, entity, instance),
             "lifecycle_tasks_preview": lifecycle_tasks_preview,
             "lifecycle_tasks_has_more": lifecycle_tasks_has_more,
+            "record_navigation": build_record_navigation(
+                scoped_queryset, instance, entity, request.GET.urlencode()
+            ),
             "developer_meta": developer_metadata(model, entity=entity, instance=instance),
         },
     )
@@ -3326,6 +4118,38 @@ def entity_bulk_delete(request, entity):
     return redirect(return_to)
 
 
+@require_POST
+@login_required
+def sales_merge(request):
+    return_to = _delete_return_to(request, "sales")
+    if not (
+        _can(request.user, "add", SaleOrder, "sales")
+        and _can(request.user, "change", SaleOrder, "sales")
+    ):
+        messages.error(request, "You do not have permission to merge Sales quotations.")
+        return redirect(return_to)
+    try:
+        selected_ids = _parse_bulk_delete_ids(request.POST.getlist("selected_ids"))
+        scoped_ids = set(
+            _scope_queryset(request.user, "sales", SaleOrder.objects.all())
+            .filter(pk__in=selected_ids)
+            .values_list("pk", flat=True)
+        )
+        if scoped_ids != set(selected_ids):
+            raise ValidationError(
+                "The selection changed or contains quotations outside your access scope."
+            )
+        merged = merge_sale_quotations(selected_ids, request.user)
+    except ValidationError as error:
+        messages.error(request, " ".join(error.messages))
+        return redirect(return_to)
+    messages.success(
+        request,
+        f"Merged {len(selected_ids)} quotations into {merged.number}.",
+    )
+    return redirect("entity_edit", entity="sales", pk=merged.pk)
+
+
 @require_GET
 @login_required
 def employee_change_request_attachment(request, pk):
@@ -3424,11 +4248,19 @@ def document_pdf(request, entity, pk):
         messages.error(request, "You do not have permission to print this document.")
         return redirect("entity_list", entity=entity)
     queryset = _scope_queryset(request.user, entity, model.objects.all()).select_related(*report["select_related"])
+    if entity == "sales":
+        queryset = queryset.select_related("invoice_accounting__settlement_invoice")
     line_queryset = document["line_model"].objects.all()
     if report["line_select_related"]:
         line_queryset = line_queryset.select_related(*report["line_select_related"])
     queryset = queryset.prefetch_related(Prefetch(document["line_relation"], queryset=line_queryset))
     instance = get_object_or_404(queryset, pk=pk)
+    if entity == "sales":
+        invoice_accounting = getattr(instance, "invoice_accounting", None)
+        settlement_invoice = invoice_accounting.settlement_invoice if invoice_accounting else None
+        instance._show_paid_watermark = bool(
+            settlement_invoice and settlement_invoice.status == Invoice.Status.PAID
+        )
     lines = list(getattr(instance, document["line_relation"]).all())
     pdf = render_document_pdf(entity, instance, lines, document)
     reference = str(getattr(instance, report["reference"], pk)).replace("/", "-").replace("\\", "-")
@@ -3799,6 +4631,25 @@ def document_action(request, entity, pk, action):
                             handled = handle_accounting_workflow(entity, locked, action, request.user)
                         elif model._meta.app_label == "gsshop_construction":
                             handled = handle_construction_document_action(entity, locked, action, request.user)
+                        elif model._meta.app_label == "gsshop_purchase" and entity in {
+                            "vendor-pricelists",
+                            "vendor-pricelist-amendments",
+                            "vendor-pricelist-imports",
+                            "vendor-performance-evaluations",
+                            "vendor-profiles",
+                            "vendor-legal-documents",
+                            "vendor-prequalifications",
+                            "vendor-document-reviews",
+                            "service-work-orders",
+                            "service-work-order-lines",
+                        }:
+                            handled = handle_purchase_document_action(
+                                entity,
+                                locked,
+                                action,
+                                request.user,
+                                reason=request.POST.get("reason", ""),
+                            )
                         else:
                             handled = handle_external_accounting_workflow(entity, locked, action, request.user)
                     except ValidationError as exc:
@@ -3854,12 +4705,53 @@ def document_action(request, entity, pk, action):
     if not _can_workflow(request.user, entity, action, instance):
         messages.error(request, "Your role cannot perform that workflow approval action.")
         return redirect("entity_edit", entity=entity, pk=pk)
+    if entity == "purchase-requests" and action in {
+        "create-rfq",
+        "create-blanket",
+        "create-tender",
+        "create-direct",
+    }:
+        route = {
+            "create-rfq": "purchase_request_convert_to_rfq",
+            "create-blanket": "purchase_request_convert_to_blanket",
+            "create-tender": "purchase_request_convert_to_tender",
+            "create-direct": "purchase_request_convert_to_direct",
+        }[action]
+        return redirect(route, pk=pk)
+    if entity == "purchase-requests" and action == "approve":
+        return redirect("purchase_request_approve", pk=pk)
+    if entity == "purchase-requests" and action == "re-request":
+        return redirect("purchase_request_re_request", pk=pk)
+    if entity == "blanket-orders" and action == "create-rfq":
+        return redirect("blanket_order_convert_to_rfq", pk=pk)
+    if entity == "sales" and action == "send-email":
+        try:
+            attempt = send_sale_quotation_email(
+                instance,
+                request.user,
+                email_to=request.POST.get("email_to", ""),
+                email_cc=request.POST.get("email_cc", ""),
+                subject=request.POST.get("subject", ""),
+                body_html=request.POST.get("body_html", ""),
+            )
+        except ValidationError as exc:
+            messages.error(request, "; ".join(exc.messages))
+        else:
+            if attempt.status == SaleQuotationEmail.Status.SENT:
+                messages.success(request, "Quotation email sent and the quotation moved to Sent.")
+            else:
+                messages.error(request, f"Quotation email failed: {attempt.failure_reason}")
+        return redirect("entity_edit", entity=entity, pk=pk)
     if definition.get("requires_balance") and not instance.balanced:
         messages.error(request, "Accounting lines must have equal non-zero debit and credit totals before approval.")
         return redirect("entity_edit", entity=entity, pk=pk)
     with transaction.atomic():
         instance = get_object_or_404(
-            _scope_queryset(request.user, entity, model.objects.select_for_update()),
+            _scope_queryset(
+                request.user,
+                entity,
+                model.objects.select_for_update(of=("self",)),
+            ),
             pk=pk,
         )
         current_status = getattr(instance, workflow_field, None)
@@ -3891,13 +4783,36 @@ def document_action(request, entity, pk, action):
         if action in {"approve", "reject"} and hasattr(instance, "approver_id"):
             instance.approver_id = request.user.pk
             update_fields.append("approver")
-        try:
-            run_before_workflow_hooks(instance, action, request.user)
-        except ValidationError as exc:
-            messages.error(request, "; ".join(exc.messages))
-            transaction.set_rollback(True)
-            return redirect("entity_edit", entity=entity, pk=pk)
-        if entity == "invoices" and action in {"post", "cancel"}:
+        if entity != "sales":
+            try:
+                run_before_workflow_hooks(instance, action, request.user)
+            except ValidationError as exc:
+                messages.error(request, "; ".join(exc.messages))
+                transaction.set_rollback(True)
+                return redirect("entity_edit", entity=entity, pk=pk)
+        if entity == "sales" and action != "invoice":
+            try:
+                instance = transition_sale_order(
+                    instance,
+                    action,
+                    request.user,
+                    reason=request.POST.get("reason", ""),
+                    note=request.POST.get("note", ""),
+                    acknowledge_incomplete=request.POST.get("acknowledge_incomplete") == "on",
+                    validity_date=request.POST.get("validity_date"),
+                )
+            except ValidationError as exc:
+                messages.error(request, "; ".join(exc.messages))
+                return redirect("entity_edit", entity=entity, pk=pk)
+            target_status = instance.status
+            if action in {"revise", "duplicate"} and instance.pk != pk:
+                label = "Revision" if action == "revise" else "Duplicate"
+                messages.success(request, f"{label} {instance.number} created as Draft.")
+                return redirect("entity_edit", entity=entity, pk=instance.pk)
+            if getattr(instance, "_approval_advanced", False):
+                messages.success(request, "Approval recorded and advanced to the next level.")
+                return redirect("entity_edit", entity=entity, pk=pk)
+        elif entity == "invoices" and action in {"post", "cancel"}:
             try:
                 instance = post_invoice(instance, request.user) if action == "post" else cancel_invoice(instance, request.user)
             except ValidationError as exc:
@@ -3924,11 +4839,81 @@ def document_action(request, entity, pk, action):
             target_status = getattr(instance, workflow_field)
         elif definition.get("service_controls_state"):
             try:
-                instance = handle_external_accounting_workflow(entity, instance, action, request.user)
+                if entity in {
+                    "purchases",
+                    "purchase-quotations",
+                    "purchase-tenders",
+                    "tender-award-responses",
+                    "blanket-orders",
+                    "direct-purchases",
+                    "goods-receipts",
+                    "purchase-inventory-transfers",
+                    "vendor-pricelists",
+                    "vendor-pricelist-amendments",
+                    "vendor-pricelist-imports",
+                    "vendor-performance-evaluations",
+                    "purchase-kpi-targets",
+                    "vendor-profiles",
+                    "vendor-legal-documents",
+                    "vendor-prequalifications",
+                    "vendor-document-reviews",
+                    "service-work-orders",
+                    "service-work-order-lines",
+                }:
+                    instance = handle_purchase_document_action(
+                        entity,
+                        instance,
+                        action,
+                        request.user,
+                        acknowledge_received_return=request.POST.get("acknowledge_incomplete") == "on",
+                        reason=request.POST.get("reason", ""),
+                    )
+                else:
+                    instance = handle_external_accounting_workflow(entity, instance, action, request.user)
             except ValidationError as exc:
                 messages.error(request, "; ".join(exc.messages))
                 return redirect("entity_edit", entity=entity, pk=pk)
             target_status = getattr(instance, workflow_field)
+            if entity == "purchases" and action == "create-receipt":
+                receipt_id = getattr(instance, "_created_goods_receipt_id", None)
+                if receipt_id:
+                    count = getattr(instance, "_created_goods_receipt_count", 1)
+                    messages.success(request, f"{count} draft goods receipt(s) prepared from {instance.number}.")
+                    return redirect("entity_edit", entity="goods-receipts", pk=receipt_id)
+            if entity == "purchases" and action in {
+                "create-bill",
+                "create-downpayment",
+                "create-settlement",
+            }:
+                invoice_id = getattr(instance, "_created_vendor_bill_id", None)
+                if invoice_id:
+                    messages.success(request, f"Draft vendor bill created from {instance.number}.")
+                    return redirect("entity_edit", entity="invoices", pk=invoice_id)
+            if entity == "service-work-orders" and action == "create-bill":
+                invoice_id = getattr(instance, "_created_vendor_bill_id", None)
+                if invoice_id:
+                    messages.success(request, f"Draft vendor bill created from {instance.number}.")
+                    return redirect("entity_edit", entity="invoices", pk=invoice_id)
+            if entity == "purchase-quotations" and action == "select":
+                order_id = getattr(instance, "_created_purchase_order_id", None)
+                if order_id:
+                    messages.success(request, f"Draft purchase order created from {instance.number}.")
+                    return redirect("entity_edit", entity="purchases", pk=order_id)
+            if entity == "blanket-orders" and action == "create-rfq":
+                quotation_id = getattr(instance, "_created_rfq_id", None)
+                if quotation_id:
+                    messages.success(request, f"Draft RFQ created from {instance.number}.")
+                    return redirect("entity_edit", entity="purchase-quotations", pk=quotation_id)
+            if entity == "direct-purchases" and action == "approve" and instance.purchase_order_id:
+                messages.success(request, f"Purchase Order created from {instance.number}.")
+                return redirect("entity_edit", entity="purchases", pk=instance.purchase_order_id)
+            if entity == "sales" and action == "invoice":
+                invoice_id = SaleOrderInvoiceAccounting.objects.filter(
+                    order_id=instance.pk
+                ).values_list("settlement_invoice_id", flat=True).first()
+                if invoice_id:
+                    messages.success(request, "Draft Sales invoice created. Review and Post it to create the journal.")
+                    return redirect("entity_edit", entity="invoices", pk=invoice_id)
         elif model._meta.app_label == "gsshop_construction":
             handled = handle_construction_document_action(entity, instance, action, request.user)
             instance = handled

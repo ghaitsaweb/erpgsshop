@@ -6,6 +6,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from io import StringIO
 import re
+import uuid
 
 from django.apps import apps
 from django.core.exceptions import ValidationError
@@ -115,6 +116,11 @@ from .models import (
     WithholdingTaxTransaction,
 )
 
+MAX_POS_ACCOUNTING_LINES = 1000
+MAX_POS_ACCOUNTING_PAYMENTS = 100
+MAX_SALES_ORDER_ACCOUNTING_LINES = 500
+RECURRING_JOURNAL_BATCH_SIZE = 100
+
 
 def _assert_posting_date_is_open(company_id, posting_date):
     settings = AccountingSettings.objects.filter(company_id=company_id).only(
@@ -216,6 +222,7 @@ def post_journal_entry(entry, actor=None):
         JournalLineCostCenterAllocation.objects.filter(journal_line__entry=locked)
         .values("journal_line_id")
         .annotate(total=Sum("percentage"))
+        .iterator(chunk_size=500)
     )
     invalid_allocations = [row["journal_line_id"] for row in allocation_totals if row["total"] != Decimal("100")]
     if invalid_allocations:
@@ -245,7 +252,7 @@ def reverse_journal_entry(entry, actor=None, reversal_date=None):
     source_allocations = list(
         JournalLineCostCenterAllocation.objects.filter(journal_line__entry=locked).values(
             "journal_line_id", "cost_center_id", "percentage"
-        )
+        ).iterator(chunk_size=500)
     )
     reversal = JournalEntry.objects.create(
         company_id=locked.company_id,
@@ -292,21 +299,51 @@ def reverse_journal_entry(entry, actor=None, reversal_date=None):
     return reversal
 
 
+def _payment_partner_account(payment):
+    settings = AccountingSettings.objects.select_related(
+        "default_receivable_account", "default_payable_account"
+    ).filter(company_id=payment.company_id).first()
+    if settings is None:
+        raise ValidationError("Configure Accounting Settings before posting payments.")
+    partner_default = PartnerAccountingDefault.objects.select_related(
+        "receivable_account", "payable_account"
+    ).filter(
+        company_id=payment.company_id,
+        partner_id=payment.partner_id,
+        active=True,
+    ).first()
+    if payment.direction == AccountPayment.Direction.RECEIVE:
+        return (
+            partner_default.receivable_account
+            if partner_default and partner_default.receivable_account_id
+            else settings.default_receivable_account
+        )
+    return (
+        partner_default.payable_account
+        if partner_default and partner_default.payable_account_id
+        else settings.default_payable_account
+    )
+
+
 @transaction.atomic
-def post_payment(payment, actor=None):
+def post_payment(payment, actor=None, *, writeoff_amount=Decimal("0"), writeoff_account=None):
     locked = AccountPayment.objects.select_for_update().select_related("journal").get(pk=payment.pk)
     if locked.status != AccountPayment.Status.DRAFT:
         raise ValidationError("Only draft payments can be posted.")
     _assert_posting_date_is_open(locked.company_id, locked.payment_date)
-    try:
-        settings = AccountingSettings.objects.get(company_id=locked.company_id)
-    except AccountingSettings.DoesNotExist as exc:
-        raise ValidationError("Configure Accounting Settings before posting payments.") from exc
-    partner_account = (
-        settings.default_receivable_account
-        if locked.direction == AccountPayment.Direction.RECEIVE
-        else settings.default_payable_account
-    )
+    partner_account = _payment_partner_account(locked)
+    writeoff_amount = Decimal(str(writeoff_amount or 0))
+    if writeoff_amount < 0:
+        raise ValidationError("Payment write-off amount cannot be negative.")
+    if writeoff_amount and writeoff_account is None:
+        raise ValidationError("Select a write-off account for the payment difference.")
+    if writeoff_account and (
+        writeoff_account.company_id != locked.company_id
+        or not writeoff_account.active
+        or writeoff_account.deprecated
+        or writeoff_account.pk == getattr(partner_account, "pk", None)
+    ):
+        raise ValidationError("Select an active write-off account from the payment company.")
     bank_account = (
         locked.journal.default_debit_account
         if locked.direction == AccountPayment.Direction.RECEIVE
@@ -325,23 +362,199 @@ def post_payment(payment, actor=None):
         source_type="account_payment",
         source_reference=locked.number,
     )
-    debit_account, credit_account = (
-        (bank_account, partner_account)
-        if locked.direction == AccountPayment.Direction.RECEIVE
-        else (partner_account, bank_account)
-    )
-    JournalLine.objects.bulk_create(
-        [
-            JournalLine(entry=entry, account=debit_account, partner=locked.partner, debit=locked.amount),
-            JournalLine(entry=entry, account=credit_account, partner=locked.partner, credit=locked.amount),
+    settlement_amount = locked.amount + writeoff_amount
+    if locked.direction == AccountPayment.Direction.RECEIVE:
+        journal_lines = [
+            JournalLine(entry=entry, account=bank_account, partner=locked.partner, debit=locked.amount),
+            JournalLine(entry=entry, account=partner_account, partner=locked.partner, credit=settlement_amount),
         ]
-    )
+        if writeoff_amount:
+            journal_lines.insert(1, JournalLine(
+                entry=entry,
+                account=writeoff_account,
+                partner=locked.partner,
+                description="Payment difference write-off",
+                debit=writeoff_amount,
+            ))
+    else:
+        journal_lines = [
+            JournalLine(entry=entry, account=partner_account, partner=locked.partner, debit=settlement_amount),
+            JournalLine(entry=entry, account=bank_account, partner=locked.partner, credit=locked.amount),
+        ]
+        if writeoff_amount:
+            journal_lines.append(JournalLine(
+                entry=entry,
+                account=writeoff_account,
+                partner=locked.partner,
+                description="Payment difference write-off",
+                credit=writeoff_amount,
+            ))
+    JournalLine.objects.bulk_create(journal_lines)
     entry = post_journal_entry(entry, actor)
     locked.status = AccountPayment.Status.POSTED
     locked.journal_entry = entry
     locked.save(update_fields=["status", "journal_entry", "updated_at"])
-    _audit(locked, "payment_posted", actor, {"journal_entry_id": entry.pk})
+    _audit(locked, "payment_posted", actor, {
+        "journal_entry_id": entry.pk,
+        "writeoff_amount": str(writeoff_amount),
+        "writeoff_account_id": writeoff_account.pk if writeoff_account else None,
+    })
     return locked
+
+
+@transaction.atomic
+def register_invoice_payment(
+    invoice,
+    *,
+    payment_amount,
+    payment_date,
+    payment_method,
+    reference="",
+    payment_difference_handling="keep_open",
+    writeoff_account=None,
+    actor=None,
+):
+    """Create, post, allocate, and reconcile one HMX-style invoice payment."""
+    if actor is None:
+        raise ValidationError("An authenticated actor is required to register an invoice payment.")
+    locked = (
+        type(invoice).objects.select_for_update()
+        .select_related("company", "partner")
+        .get(pk=invoice.pk)
+    )
+    if locked.status != locked.Status.POSTED:
+        raise ValidationError("Payments can only be added to a posted invoice or bill.")
+    amount_due = max(locked.total - locked.paid_amount, Decimal("0"))
+    payment_amount = Decimal(str(payment_amount or 0))
+    if amount_due <= 0:
+        raise ValidationError("Amount Due is 0.")
+    if payment_amount <= 0:
+        raise ValidationError("Payment amount must be greater than zero.")
+    if payment_difference_handling not in {"keep_open", "mark_as_fully_paid"}:
+        raise ValidationError("Select a valid payment difference handling option.")
+
+    is_customer = locked.invoice_type == locked.InvoiceType.CUSTOMER
+    allowed_method_directions = {"incoming", "both"} if is_customer else {"outgoing", "both"}
+    if (
+        payment_method.company_id != locked.company_id
+        or not payment_method.active
+        or payment_method.direction not in allowed_method_directions
+        or not payment_method.journal_id
+        or not payment_method.journal.active
+        or payment_method.journal.company_id != locked.company_id
+        or payment_method.journal.journal_type not in {
+            AccountJournal.JournalType.BANK,
+            AccountJournal.JournalType.CASH,
+        }
+    ):
+        raise ValidationError("Select an active bank or cash payment method for this company and direction.")
+
+    writeoff_amount = Decimal("0")
+    if payment_amount < amount_due and payment_difference_handling == "mark_as_fully_paid":
+        writeoff_amount = amount_due - payment_amount
+        if writeoff_account is None:
+            raise ValidationError("Select a write-off account to mark the invoice as fully paid.")
+
+    direction = AccountPayment.Direction.RECEIVE if is_customer else AccountPayment.Direction.SEND
+    payment = AccountPayment.objects.create(
+        company_id=locked.company_id,
+        number=f"TMP-{uuid.uuid4().hex[:12].upper()}",
+        payment_date=payment_date,
+        direction=direction,
+        partner_id=locked.partner_id,
+        journal=payment_method.journal,
+        payment_method=payment_method.name,
+        currency=locked.company.currency,
+        amount=payment_amount,
+        reference=reference or locked.number,
+    )
+    prefix = "RCPT" if is_customer else "PAY"
+    payment.number = f"{prefix}-{payment_date:%Y%m%d}-{payment.pk:06d}"
+    payment.save(update_fields=["number", "updated_at"])
+    payment = post_payment(
+        payment,
+        actor,
+        writeoff_amount=writeoff_amount,
+        writeoff_account=writeoff_account,
+    )
+
+    cash_allocation = min(payment_amount, amount_due)
+    settlement_amount = min(cash_allocation + writeoff_amount, amount_due)
+    allocation = PaymentAllocation.objects.create(
+        payment=payment,
+        invoice=locked,
+        amount=cash_allocation,
+        writeoff_amount=writeoff_amount,
+        writeoff_account=writeoff_account,
+    )
+
+    partner_account = _payment_partner_account(payment)
+    invoice_entry = JournalEntry.objects.filter(
+        company_id=locked.company_id,
+        source_type="account_invoice",
+        source_reference=locked.number,
+        status=JournalEntry.Status.POSTED,
+    ).order_by("pk").first()
+    if invoice_entry is None:
+        raise ValidationError("The posted invoice journal could not be found for payment matching.")
+    invoice_line_filters = {
+        "entry_id": invoice_entry.pk,
+        "account_id": partner_account.pk,
+        "partner_id": locked.partner_id,
+    }
+    payment_line_filters = {
+        "entry_id": payment.journal_entry_id,
+        "account_id": partner_account.pk,
+        "partner_id": locked.partner_id,
+    }
+    if is_customer:
+        invoice_line_filters["debit__gt"] = 0
+        payment_line_filters["credit__gt"] = 0
+    else:
+        invoice_line_filters["credit__gt"] = 0
+        payment_line_filters["debit__gt"] = 0
+    invoice_partner_line = JournalLine.objects.filter(**invoice_line_filters).order_by("pk").first()
+    payment_partner_line = JournalLine.objects.filter(**payment_line_filters).order_by("pk").first()
+    if invoice_partner_line is None or payment_partner_line is None:
+        raise ValidationError("The invoice and payment use different receivable/payable accounts and cannot be matched.")
+
+    reconciliation = ARReconciliationSession.objects.create(
+        company_id=locked.company_id,
+        reference=f"REC-{payment.number}",
+        partner_id=locked.partner_id,
+        reconciliation_date=payment_date,
+        actor=actor,
+    )
+    ARReconciliationLine.objects.bulk_create([
+        ARReconciliationLine(
+            session=reconciliation,
+            journal_line=invoice_partner_line,
+            amount=settlement_amount,
+        ),
+        ARReconciliationLine(
+            session=reconciliation,
+            journal_line=payment_partner_line,
+            amount=settlement_amount,
+        ),
+    ])
+    reconcile_ar_session(reconciliation, actor)
+
+    locked.paid_amount = min(locked.total, locked.paid_amount + settlement_amount)
+    locked.save(update_fields=["paid_amount", "updated_at"])
+    if cash_allocation >= payment_amount:
+        AccountPayment.objects.filter(pk=payment.pk).update(
+            status=AccountPayment.Status.RECONCILED,
+            updated_at=timezone.now(),
+        )
+        payment.status = AccountPayment.Status.RECONCILED
+    _audit(locked, "invoice_payment_reconciled", actor, {
+        "payment_id": payment.pk,
+        "payment_allocation_id": allocation.pk,
+        "reconciliation_session_id": reconciliation.pk,
+        "cash_amount": str(cash_allocation),
+        "writeoff_amount": str(writeoff_amount),
+    })
+    return payment
 
 
 @transaction.atomic
@@ -498,19 +711,36 @@ def _post_invoice_atomic(invoice, actor=None):
     commercial = CommercialAccountingSettings.objects.select_related("sales_journal", "purchase_journal").filter(
         company_id=locked.company_id
     ).first()
-    journal = (
+    configured_journal = (
         commercial.sales_journal
         if commercial and locked.invoice_type == Invoice.InvoiceType.CUSTOMER
         else commercial.purchase_journal
         if commercial
         else None
     )
-    journal = journal or AccountJournal.objects.filter(
-        company_id=locked.company_id, journal_type=journal_type, active=True
-    ).order_by("id").first() or _general_journal(locked.company_id)
+    journal = (
+        configured_journal
+        if configured_journal
+        and configured_journal.active
+        and configured_journal.journal_type == journal_type
+        else None
+    )
+    if journal is None:
+        journal = AccountJournal.objects.filter(
+            company_id=locked.company_id,
+            journal_type=journal_type,
+            active=True,
+        ).order_by("id").first()
+    if journal is None:
+        journal_label = "Sales" if journal_type == AccountJournal.JournalType.SALES else "Purchase"
+        raise ValidationError(
+            f"Configure an active {journal_label} journal before posting this invoice."
+        )
     settings = AccountingSettings.objects.select_related(
         "default_receivable_account", "default_payable_account"
-    ).get(company_id=locked.company_id)
+    ).filter(company_id=locked.company_id).first()
+    if settings is None:
+        raise ValidationError("Configure Accounting Settings before posting invoices.")
     partner_default = PartnerAccountingDefault.objects.select_related("receivable_account", "payable_account").filter(
         company_id=locked.company_id,
         partner_id=locked.partner_id,
@@ -531,8 +761,8 @@ def _post_invoice_atomic(invoice, actor=None):
     if partner_account is None:
         raise ValidationError("Configure the default receivable/payable account before posting invoices.")
     total = sum((row.quantity * row.unit_price for row in rows), Decimal("0"))
-    if total <= 0:
-        raise ValidationError("The invoice total must be greater than zero.")
+    if total < 0:
+        raise ValidationError("The invoice total cannot be negative.")
     override = resolve_invoice_posting_override(
         invoice=locked,
         rows=rows,
@@ -541,6 +771,12 @@ def _post_invoice_atomic(invoice, actor=None):
         journal=journal,
         actor=actor,
     )
+    if total == 0 and override is None:
+        raise ValidationError("The invoice total must be greater than zero.")
+    if override and override.total is not None:
+        total = Decimal(str(override.total))
+        if total < 0:
+            raise ValidationError("The invoice total cannot be negative.")
     if override and override.journal is not None:
         journal = override.journal
     entry = JournalEntry.objects.create(
@@ -620,6 +856,8 @@ def cancel_invoice(invoice, actor=None):
     locked = Invoice.objects.select_for_update().get(pk=invoice.pk)
     if locked.status not in {Invoice.Status.DRAFT, Invoice.Status.POSTED}:
         raise ValidationError("Only draft or posted invoices can be cancelled.")
+    if locked.paid_amount > 0:
+        raise ValidationError("Unreconcile or reverse registered payments before cancelling this invoice.")
     entry = JournalEntry.objects.filter(
         company_id=locked.company_id, source_type="account_invoice", source_reference=locked.number
     ).order_by("id").first()
@@ -1043,6 +1281,7 @@ def run_reconciliation_rule_test(test_run, actor=None):
         "amount": locked.amount,
     }
     rules = list(
+        # scale-guard: allow SG002 — ordered finance rule catalogue is configuration, not transaction history
         ReconciliationRule.objects.filter(company_id=locked.company_id, active=True)
         .prefetch_related("conditions", "counterpart_lines__account")
         .order_by("sequence", "id")
@@ -1241,13 +1480,15 @@ def run_recurring_journal(schedule, actor=None):
 
 
 @transaction.atomic
-def run_due_recurring_journals(run_date=None, actor=None):
+def run_due_recurring_journals(run_date=None, actor=None, batch_size=RECURRING_JOURNAL_BATCH_SIZE):
     run_date = run_date or timezone.localdate()
+    batch_size = max(1, min(int(batch_size), 500))
     schedules = list(
         RecurringJournal.objects.select_for_update()
         .prefetch_related("template_entry__lines")
         .filter(active=True, next_run_date__lte=run_date)
         .filter(Q(end_date__isnull=True) | Q(end_date__gte=run_date))
+        .order_by("next_run_date", "pk")[:batch_size]
     )
     entries = []
     # scale-guard: allow SG001 — each due schedule creates and optionally posts a distinct audited journal lifecycle
@@ -1778,29 +2019,29 @@ def run_due_asset_disposals(run_date=None, actor=None, batch_size=100):
         AssetDisposal.objects.filter(
             status=AssetDisposal.Status.APPROVED,
             disposal_date__lte=run_date,
-        ).order_by("disposal_date", "id").values("id", "disposal_type", "customer_invoice_id")[:batch_size]
+        )
+        .select_related("customer_invoice")
+        .order_by("disposal_date", "id")[:batch_size]
     )
     result = {"selected": len(due), "posted": 0, "failed": 0, "errors": []}
-    # scale-guard: allow SG001 — at most 500 candidates are reread for isolated posting transactions.
-    # scale-guard: allow SG003 — at most 500 isolated postings need independent failure records.
-    for candidate in due:
+    for disposal in due:
         try:
-            disposal = AssetDisposal.objects.get(pk=candidate["id"])
-            if candidate["disposal_type"] == AssetDisposal.DisposalType.SOLD:
-                if not candidate["customer_invoice_id"]:
+            if disposal.disposal_type == AssetDisposal.DisposalType.SOLD:
+                if not disposal.customer_invoice_id:
                     disposal = create_asset_disposal_invoice(disposal, actor)
                 post_invoice(disposal.customer_invoice, actor)
             else:
                 post_asset_disposal(disposal, actor)
             result["posted"] += 1
         except Exception as exc:
-            AssetDisposal.objects.filter(pk=candidate["id"]).update(
+            # scale-guard: allow SG003 — bounded batch failures require independent durable error state
+            AssetDisposal.objects.filter(pk=disposal.pk).update(
                 accounting_status=AssetDisposal.AccountingStatus.ACCOUNTING_ERROR,
                 accounting_error_message=str(exc)[:2000],
                 updated_at=timezone.now(),
             )
             result["failed"] += 1
-            result["errors"].append({"id": candidate["id"], "error": str(exc)[:500]})
+            result["errors"].append({"id": disposal.pk, "error": str(exc)[:500]})
     return result
 
 
@@ -2706,6 +2947,7 @@ def post_pos_session_accounting(session, actor=None):
         .exclude(order__order_accounting__status=POSOrderAccounting.Status.POSTED)
         .values("payment_method_id", "payment_method__method_type")
         .annotate(amount=Sum("amount"), fee=Sum("mdr_charge_amount"))
+        .iterator(chunk_size=128)
     )
     mapping_ids = {row["payment_method_id"] for row in payment_rows}
     payment_mappings = {
@@ -2828,8 +3070,24 @@ def process_pos_order_accounting(order_accounting, actor=None):
         raise ValidationError("Configure POS Accounting Settings before processing an order.") from exc
     order_line_model = apps.get_model("gsshop_pos", "POSOrderLine")
     payment_model = apps.get_model("gsshop_pos", "POSPayment")
-    order_lines = list(order_line_model.objects.filter(order_id=order.pk).select_related("product"))
-    payments = list(payment_model.objects.filter(order_id=order.pk).select_related("payment_method"))
+    order_lines = list(
+        order_line_model.objects.filter(order_id=order.pk)
+        .select_related("product")
+        .order_by("pk")[: MAX_POS_ACCOUNTING_LINES + 1]
+    )
+    payments = list(
+        payment_model.objects.filter(order_id=order.pk)
+        .select_related("payment_method")
+        .order_by("pk")[: MAX_POS_ACCOUNTING_PAYMENTS + 1]
+    )
+    if len(order_lines) > MAX_POS_ACCOUNTING_LINES:
+        raise ValidationError(
+            f"POS order accounting supports at most {MAX_POS_ACCOUNTING_LINES} lines per order."
+        )
+    if len(payments) > MAX_POS_ACCOUNTING_PAYMENTS:
+        raise ValidationError(
+            f"POS order accounting supports at most {MAX_POS_ACCOUNTING_PAYMENTS} payments per order."
+        )
     if not order_lines:
         raise ValidationError("The POS order has no lines.")
     if not payments:
@@ -3161,8 +3419,9 @@ def confirm_sale_order_localization(localization, actor=None):
     now = timezone.now()
     total_tax = Decimal("0")
     base_by_order_line = {}
+    global_factor = Decimal("1") - locked.order.global_discount_percent / Decimal("100")
     for selection in selections:
-        base = selection.order_line.subtotal
+        base = (selection.order_line.subtotal * global_factor).quantize(Decimal("0.01"))
         tax_amount = (base * selection.tax_code.rate / Decimal("100")).quantize(Decimal("0.01"))
         if tax_amount and selection.tax_code.posting_account_id is None:
             raise ValidationError(f"Configure a posting account for tax code {selection.tax_code.code}.")
@@ -3225,11 +3484,19 @@ def confirm_sale_order_localization(localization, actor=None):
 @transaction.atomic
 def post_sale_order_accounting(order, actor=None):
     locked = order.__class__.objects.select_for_update().select_related("company", "customer").get(pk=order.pk)
-    if locked.status != locked.Status.CONFIRMED:
-        raise ValidationError("Only a confirmed sales order can be completed and posted.")
-    rows = list(locked.lines.select_related("product").filter(display_type=""))
+    if locked.status != locked.Status.SALE:
+        raise ValidationError("Only a document at Sale Order status can be posted to accounting.")
+    rows = list(
+        locked.lines.select_related("product")
+        .filter(display_type="")
+        .order_by("pk")[: MAX_SALES_ORDER_ACCOUNTING_LINES + 1]
+    )
     if not rows:
         raise ValidationError("Add at least one product line before completing the sales order.")
+    if len(rows) > MAX_SALES_ORDER_ACCOUNTING_LINES:
+        raise ValidationError(
+            f"Sales accounting supports at most {MAX_SALES_ORDER_ACCOUNTING_LINES} lines per order."
+        )
     commercial = CommercialAccountingSettings.objects.select_related("sales_journal").get(company_id=locked.company_id)
     accounting = AccountingSettings.objects.select_related("default_receivable_account").get(company_id=locked.company_id)
     partner_default = PartnerAccountingDefault.objects.select_related("receivable_account").filter(
@@ -3257,29 +3524,76 @@ def post_sale_order_accounting(order, actor=None):
     missing = [row.product.sku for row in rows if row.product_id not in revenue_accounts]
     if missing:
         raise ValidationError(f"Configure revenue accounts for products: {', '.join(sorted(set(missing)))}")
-    sales_subtotal = sum((row.subtotal for row in rows), Decimal("0"))
+
+    global_factor = Decimal("1") - locked.global_discount_percent / Decimal("100")
+    raw_revenues = [row.subtotal * global_factor for row in rows]
+    sales_subtotal = sum(raw_revenues, Decimal("0")).quantize(Decimal("0.01"))
+    revenue_amounts = [amount.quantize(Decimal("0.01")) for amount in raw_revenues]
+    revenue_rounding_delta = sales_subtotal - sum(revenue_amounts, Decimal("0"))
+    if revenue_rounding_delta:
+        revenue_amounts[-1] += revenue_rounding_delta
+
     from .models import SaleOrderLocalization
 
     localization = SaleOrderLocalization.objects.filter(order_id=locked.pk).first()
+    standard_tax_rates = {row.tax_percent for row in rows if row.tax_percent > 0}
+    if localization is not None and standard_tax_rates:
+        raise ValidationError(
+            "Use either Sales line tax percentages or Localized Sales Tax selections, not both."
+        )
     if localization is not None:
         localization = confirm_sale_order_localization(localization, actor)
-    sales_total = sales_subtotal + (localization.total_tax if localization else Decimal("0"))
+        tax_total = localization.total_tax
+        standard_tax_accounts = {}
+    else:
+        standard_tax_accounts = {}
+        if standard_tax_rates:
+            candidates_by_rate = {}
+            for tax in AccountTax.objects.filter(
+                company_id=locked.company_id,
+                active=True,
+                method=AccountTax.TaxMethod.PERCENT,
+                price_included=False,
+                tax_scope__in=[AccountTax.TaxScope.SALES, AccountTax.TaxScope.BOTH],
+                rate__in=standard_tax_rates,
+            ).select_related("account"):
+                candidates_by_rate.setdefault(tax.rate, []).append(tax)
+            for rate in standard_tax_rates:
+                candidates = candidates_by_rate.get(rate, ())
+                if len(candidates) != 1:
+                    raise ValidationError(
+                        f"Configure exactly one active, price-excluded Sales tax at {rate}% for this company."
+                    )
+                standard_tax_accounts[rate] = candidates[0]
+        tax_total = sum(
+            (
+                revenue * row.tax_percent / Decimal("100")
+            ).quantize(Decimal("0.01"))
+            for row, revenue in zip(rows, revenue_amounts)
+        )
+    sales_total = sales_subtotal + tax_total
     payload_lines = [{
         "account_id": receivable_account.pk,
         "debit": str(sales_total),
         "credit": "0",
         "description": locked.number,
+        "partner_id": locked.customer_id,
     }]
-    for row in rows:
+    standard_tax_totals = {}
+    for row, revenue in zip(rows, revenue_amounts):
         mapping = mappings.get(row.product_id)
-        revenue = row.subtotal
         payload_lines.append({
             "account_id": revenue_accounts[row.product_id],
             "debit": "0",
             "credit": str(revenue),
             "description": row.description or str(row.product),
+            "partner_id": locked.customer_id,
         })
-        cogs = row.quantity * row.product.purchase_price
+        if row.tax_percent > 0:
+            tax = standard_tax_accounts[row.tax_percent]
+            tax_amount = (revenue * row.tax_percent / Decimal("100")).quantize(Decimal("0.01"))
+            standard_tax_totals[tax.pk] = standard_tax_totals.get(tax.pk, Decimal("0")) + tax_amount
+        cogs = (row.quantity * row.product.purchase_price).quantize(Decimal("0.01"))
         if cogs > 0:
             if mapping is None or not mapping.inventory_account_id or not mapping.expense_account_id:
                 raise ValidationError(f"Configure inventory and expense accounts for stock product {row.product.sku}.")
@@ -3297,16 +3611,27 @@ def post_sale_order_accounting(order, actor=None):
                     "description": f"Inventory {row.product.sku}",
                 },
             ])
+    standard_tax_by_id = {item.pk: item for item in standard_tax_accounts.values()}
+    for tax_id, amount in standard_tax_totals.items():
+        tax = standard_tax_by_id[tax_id]
+        payload_lines.append({
+            "account_id": tax.account_id,
+            "debit": "0",
+            "credit": str(amount),
+            "description": f"Tax {tax.code} · {locked.number}",
+            "partner_id": locked.customer_id,
+        })
     if localization:
         tax_totals = list(localization.tax_lines.values("tax_code__posting_account_id", "tax_code__code").annotate(
             amount=Sum("tax_amount")
         ))
-        for tax_total in tax_totals:
-            if tax_total["amount"]:
+        for localized_tax_group in tax_totals:
+            if localized_tax_group["amount"]:
                 payload_lines.append({
-                    "account_id": tax_total["tax_code__posting_account_id"], "debit": "0",
-                    "credit": str(tax_total["amount"]),
-                    "description": f"Tax {tax_total['tax_code__code']} · {locked.number}",
+                    "account_id": localized_tax_group["tax_code__posting_account_id"], "debit": "0",
+                    "credit": str(localized_tax_group["amount"]),
+                    "description": f"Tax {localized_tax_group['tax_code__code']} · {locked.number}",
+                    "partner_id": locked.customer_id,
                 })
     bridge, _created = AccountingIntegrationEvent.objects.get_or_create(
         company_id=locked.company_id,
@@ -3321,11 +3646,20 @@ def post_sale_order_accounting(order, actor=None):
             "payload": {"journal_id": commercial.sales_journal_id, "lines": payload_lines},
         },
     )
-    if bridge.status != AccountingIntegrationEvent.Status.POSTED and commercial.auto_post_sales:
-        post_integration_event(bridge, actor)
+    if bridge.status != AccountingIntegrationEvent.Status.POSTED:
+        bridge = post_integration_event(bridge, actor)
+    if bridge.status != AccountingIntegrationEvent.Status.POSTED or not bridge.journal_entry_id:
+        raise ValidationError("Sales accounting did not produce a posted journal entry.")
+    gross_total = sum((row.gross_amount for row in rows), Decimal("0")).quantize(Decimal("0.01"))
+    locked.subtotal_amount = gross_total
+    locked.discount_amount = gross_total - sales_subtotal
+    locked.untaxed_amount = sales_subtotal
+    locked.tax_amount = tax_total
     locked.total = sales_total
-    locked.status = locked.Status.COMPLETED
-    locked.save(update_fields=["total", "status", "updated_at"])
+    locked.save(update_fields=[
+        "subtotal_amount", "discount_amount", "untaxed_amount", "tax_amount",
+        "total", "updated_at",
+    ])
     return locked
 
 
@@ -3681,6 +4015,10 @@ def post_expense_claim_accounting(expense, action, actor=None):
 
 
 def handle_external_accounting_workflow(entity, instance, action, actor=None):
+    if entity == "sales" and action == "invoice":
+        from .sale_invoice_extension import create_sales_order_invoice
+
+        return create_sales_order_invoice(instance, actor)
     if entity == "sales" and action == "complete":
         return post_sale_order_accounting(instance, actor)
     if entity == "pos-sessions" and action == "close":
@@ -4625,7 +4963,7 @@ def _active_ar_allocated_by_line(line_ids):
     rows = ARReconciliationAllocation.objects.filter(
         Q(debit_line_id__in=line_ids) | Q(credit_line_id__in=line_ids),
         status=ARReconciliationAllocation.Status.ACTIVE,
-    ).values("debit_line_id", "credit_line_id", "amount")
+    ).values("debit_line_id", "credit_line_id", "amount").iterator(chunk_size=500)
     for row in rows:
         if row["debit_line_id"] in allocated:
             allocated[row["debit_line_id"]] += row["amount"]

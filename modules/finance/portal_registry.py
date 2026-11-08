@@ -204,7 +204,7 @@ def register_builtin_portal_documents():
         date_field="order_date",
         amount_field="total",
         status_field="status",
-        allowed_statuses=(SaleOrder.Status.CONFIRMED, SaleOrder.Status.COMPLETED),
+        allowed_statuses=(SaleOrder.Status.SALE, SaleOrder.Status.CLOSED),
         line_relation="lines",
         line_description_field="description",
         line_quantity_field="quantity",

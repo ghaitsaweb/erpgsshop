@@ -329,9 +329,15 @@ def initialize_employee_relation_drafts(change_request):
     if change_request.status != "draft":
         raise ValidationError("Employee relationship details can only be initialized on a draft request.")
     for spec in RELATION_SPECS:
+        # scale-guard: allow SG001 — RELATION_SPECS contains exactly five fixed relation models.
         if spec["draft"].objects.filter(request=change_request).exists():
             continue
-        current = list(spec["master"].objects.filter(employee_id=change_request.employee_id).order_by("pk"))
+        current = [
+            row
+            for row in spec["master"].objects.filter(employee_id=change_request.employee_id)
+            .order_by("pk")
+            .iterator(chunk_size=500)
+        ]
         spec["draft"].objects.bulk_create(
             [spec["draft"](request=change_request, **spec["draft_values"](row)) for row in current]
         )
@@ -340,8 +346,19 @@ def initialize_employee_relation_drafts(change_request):
 def _capture_relation_changes(change_request, actor):
     histories = []
     for spec in RELATION_SPECS:
-        current = list(spec["master"].objects.filter(employee_id=change_request.employee_id).order_by("pk"))
-        draft = list(spec["draft"].objects.select_for_update().filter(request=change_request).order_by("pk"))
+        current = [
+            row
+            for row in spec["master"].objects.filter(employee_id=change_request.employee_id)
+            .order_by("pk")
+            .iterator(chunk_size=500)
+        ]
+        draft = [
+            row
+            for row in spec["draft"].objects.select_for_update()
+            .filter(request=change_request)
+            .order_by("pk")
+            .iterator(chunk_size=500)
+        ]
         before = _sorted_payload(current, spec["serialize_master"])
         after = _sorted_payload(draft, spec["serialize_draft"])
         if before != after:
@@ -365,9 +382,13 @@ def _apply_relation_history(change_request, histories):
         history = history_by_type.get(spec["type"])
         if history is None:
             continue
-        current_rows = list(
-            spec["master"].objects.select_for_update().filter(employee_id=change_request.employee_id).order_by("pk")
-        )
+        current_rows = [
+            row
+            for row in spec["master"].objects.select_for_update()
+            .filter(employee_id=change_request.employee_id)
+            .order_by("pk")
+            .iterator(chunk_size=500)
+        ]
         current_payload = _sorted_payload(current_rows, spec["serialize_master"])
         if current_payload != history.value_before:
             raise ValidationError(
@@ -396,6 +417,7 @@ def _apply_relation_history(change_request, histories):
             spec["master"].objects.bulk_create(additions)
         removed_ids = set(current_by_id) - retained_ids
         if removed_ids:
+            # scale-guard: allow SG003 — RELATION_SPECS contains exactly five fixed relation models.
             spec["master"].objects.filter(employee_id=change_request.employee_id, pk__in=removed_ids).delete()
 
 
@@ -456,11 +478,13 @@ def transition_employee_change_request(change_request, action, actor):
             EmployeeChangeRequestHistory.objects.select_for_update()
             .filter(request=change_request)
             .order_by("pk")
+            .iterator(chunk_size=500)
         )
         relation_histories = list(
             EmployeeChangeRelationHistory.objects.select_for_update()
             .filter(request=change_request)
             .order_by("pk")
+            .iterator(chunk_size=500)
         )
         legacy_snapshot_created = not histories and not relation_histories
         if legacy_snapshot_created:

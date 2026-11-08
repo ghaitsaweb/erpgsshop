@@ -65,13 +65,18 @@ FIELD_LABELS = {
     "contract_value": "Nilai Kontrak",
     "credit": "Kredit",
     "customer_reference": "Referensi Pelanggan",
+    "currency": "Mata Uang",
     "debit": "Debit",
     "description": "Keterangan",
     "discount_percent": "Diskon (%)",
+    "global_discount_percent": "Diskon Global (%)",
+    "delivery_address": "Alamat Pengiriman",
+    "delivery_date": "Tanggal Pengiriman",
     "due_date": "Tanggal Jatuh Tempo",
     "entry_date": "Tanggal Jurnal",
     "end_date": "Tanggal Selesai",
     "invoice_date": "Tanggal Faktur",
+    "invoice_address": "Alamat Faktur",
     "invoice_type": "Jenis Faktur",
     "instructor": "Pengajar",
     "last_activity_at": "Aktivitas Terakhir",
@@ -82,6 +87,7 @@ FIELD_LABELS = {
     "paid_amount": "Jumlah Dibayar",
     "payment_method": "Metode Pembayaran",
     "payment_terms": "Syarat Pembayaran",
+    "invoicing_policy": "Kebijakan Faktur",
     "price_list": "Daftar Harga",
     "product": "Produk",
     "progress": "Kemajuan",
@@ -153,13 +159,16 @@ REPORT_CONFIG = {
         "select_related": ("company", "customer"),
         "line_select_related": ("product",),
         "columns": (
-            ("rental_start_date", "Tgl Sewa", 1.15),
-            ("rental_return_date", "Tgl Kembali", 1.15),
-            ("description", "Keterangan", 2.35),
-            ("quantity", "Jumlah", 0.9),
-            ("unit_price", "Harga Satuan", 1.0),
-            ("discount_percent", "Diskon", 0.7),
-            ("subtotal", "Nilai", 1.1),
+            ("product", "Produk", 1.35),
+            ("description", "Keterangan", 1.8),
+            ("delivery_date", "Pengiriman", 0.9),
+            ("quantity", "Qty", 0.55),
+            ("uom", "UoM", 0.5),
+            ("unit_price", "Harga", 0.85),
+            ("discount_percent", "Disc", 0.55),
+            ("untaxed_amount", "DPP", 0.85),
+            ("tax_amount", "Pajak", 0.75),
+            ("total_amount", "Total", 0.9),
         ),
     },
     "purchases": {
@@ -670,7 +679,10 @@ def _contact_paragraph(lines, styles):
 def _header_pairs(entity, obj, header_fields):
     excluded = {"company", "customer", "vendor", "partner", "notes", "description"}
     if entity == "sales":
-        fields = ["customer_reference", "order_date", "validity_date", "salesperson_name", "payment_terms", "price_list"]
+        fields = [
+            "customer_reference", "order_date", "validity_date", "delivery_date",
+            "salesperson_name", "payment_terms", "invoicing_policy", "currency", "price_list",
+        ]
     else:
         fields = [field for field in header_fields if field not in excluded and field not in {"number", "code", "title", "name"}]
     pairs = []
@@ -926,7 +938,9 @@ def render_document_pdf(entity, obj, lines, document_config):
         author="ERP GSSHOP",
         subject=config["title"],
     )
-    document.show_paid_watermark = entity == "sales" and getattr(obj, "status", "") == "completed"
+    document.show_paid_watermark = entity == "sales" and bool(
+        getattr(obj, "_show_paid_watermark", False)
+    )
     story = _header_story(entity, obj, config, styles)
     info = _info_table(entity, obj, document_config["header_fields"], styles)
     if info:
@@ -942,6 +956,12 @@ def render_document_pdf(entity, obj, lines, document_config):
         story.append(KeepTogether([
             Paragraph("SYARAT PEMBAYARAN", styles["label"]),
             Paragraph(_safe(obj.payment_terms), styles["terms"]),
+            Spacer(1, 3 * mm),
+        ]))
+    if entity == "sales" and getattr(obj, "terms_conditions", ""):
+        story.append(KeepTogether([
+            Paragraph("SYARAT &amp; KETENTUAN", styles["label"]),
+            Paragraph(_safe(obj.terms_conditions), styles["terms"]),
             Spacer(1, 3 * mm),
         ]))
     if notes:

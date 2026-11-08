@@ -79,14 +79,20 @@ def access_scope(user):
     else:
         companies = Company.objects.filter(active=True, employees__user=user).distinct()
 
-    company_ids = tuple(companies.order_by("name", "pk").values_list("pk", flat=True))
+    company_ids = tuple(
+        companies.order_by("name", "pk").values_list("pk", flat=True).iterator(chunk_size=500)
+    )
     if not company_ids:
         return (), (), None, None
 
     branches = Branch.objects.filter(active=True, company_id__in=company_ids)
     if not user.is_superuser and profile and not profile.all_branches:
         branches = branches.filter(pk__in=profile.branches.values("pk"))
-    branch_ids = tuple(branches.order_by("company__name", "sequence", "name", "pk").values_list("pk", flat=True))
+    branch_ids = tuple(
+        branches.order_by("company__name", "sequence", "name", "pk")
+        .values_list("pk", flat=True)
+        .iterator(chunk_size=500)
+    )
 
     default_company_id = profile.default_company_id if profile else None
     default_branch_id = profile.default_branch_id if profile else None

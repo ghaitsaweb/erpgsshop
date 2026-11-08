@@ -3,6 +3,7 @@ from django.contrib import admin
 from .models import (
     Attendance,
     Company,
+    CompanySaleSetting,
     Contact,
     Employee,
     Invoice,
@@ -12,9 +13,38 @@ from .models import (
     PurchaseOrderLine,
     SaleOrder,
     SaleOrderLine,
+    SaleOrderType,
+    SaleOrderTypeSequence,
+    SaleQuotationEmail,
     StockMove,
     Warehouse,
 )
+
+
+@admin.register(CompanySaleSetting)
+class CompanySaleSettingAdmin(admin.ModelAdmin):
+    list_display = (
+        "company",
+        "quotation_expiry_days",
+        "default_delivery_date",
+        "allow_order_revision",
+        "revised_sequence_rule",
+    )
+    list_select_related = ("company",)
+
+
+class SaleOrderTypeSequenceInline(admin.TabularInline):
+    model = SaleOrderTypeSequence
+    extra = 0
+    readonly_fields = ("quotation_period", "quotation_next", "order_period", "order_next")
+
+
+@admin.register(SaleOrderType)
+class SaleOrderTypeAdmin(admin.ModelAdmin):
+    list_display = ("name", "prefix_sequence", "origin", "description")
+    search_fields = ("name", "prefix_sequence", "description")
+    filter_horizontal = ("companies",)
+    inlines = (SaleOrderTypeSequenceInline,)
 
 
 class SaleOrderLineInline(admin.TabularInline):
@@ -39,6 +69,35 @@ class SaleOrderAdmin(admin.ModelAdmin):
     search_fields = ("number", "customer__name")
     readonly_fields = ("total",)
     inlines = [SaleOrderLineInline]
+
+
+@admin.register(SaleQuotationEmail)
+class SaleQuotationEmailAdmin(admin.ModelAdmin):
+    list_display = ("created_at", "order", "email_to", "subject", "status", "sent_by")
+    list_filter = ("status", "created_at")
+    search_fields = ("order__number", "email_to", "subject")
+    readonly_fields = (
+        "order",
+        "sent_by",
+        "email_to",
+        "email_cc",
+        "subject",
+        "body_html",
+        "status",
+        "failure_reason",
+        "sent_at",
+        "created_at",
+        "updated_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(PurchaseOrder)

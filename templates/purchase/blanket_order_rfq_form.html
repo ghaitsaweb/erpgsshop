@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }} · ERP GSSHOP{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <p class="eyebrow">Blanket Order · {{ blanket_order.number }}</p>
+    <h1>{{ title }}</h1>
+    <p>Select the exact quantities to release. One draft RFQ is created for {{ blanket_order.vendor }}.</p>
+  </div>
+  <a class="btn btn-secondary" href="{{ cancel_url }}">Back to Blanket Order</a>
+</div>
+
+<form method="post" class="panel form-panel">
+  {% csrf_token %}
+  {{ line_formset.management_form }}
+  {% if line_formset.non_form_errors %}<div class="alert alert-error">{{ line_formset.non_form_errors }}</div>{% endif %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Include</th><th>Product</th><th>Description</th><th>Agreed</th><th>Released</th><th>Remaining</th><th>Release Qty</th></tr></thead>
+      <tbody>
+        {% for line_form in line_formset %}
+          <tr>
+            <td>{{ line_form.include }}{{ line_form.line_id }}</td>
+            <td>{{ line_form.product }}</td>
+            <td>{{ line_form.description }}</td>
+            <td>{{ line_form.agreed_quantity }}</td>
+            <td>{{ line_form.released_quantity }}</td>
+            <td>{{ line_form.remaining_quantity }}</td>
+            <td>{{ line_form.quantity }}{{ line_form.quantity.errors }}</td>
+          </tr>
+          {% if line_form.non_field_errors %}<tr><td colspan="7">{{ line_form.non_field_errors }}</td></tr>{% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="form-actions">
+    <a class="btn btn-secondary" href="{{ cancel_url }}">Cancel</a>
+    <button class="btn btn-primary" type="submit">Create RFQ</button>
+  </div>
+</form>
+{% endblock %}

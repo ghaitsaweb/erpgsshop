@@ -9,7 +9,7 @@ from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
-from core.models import Company, Product
+from core.models import Company, Contact, Product, SaleOrder, SaleOrderLine
 from modules.organization.models import UserOrganizationAccess
 
 from .auth import ISSUER, encode_token
@@ -78,6 +78,9 @@ class HashyBridgeTests(TestCase):
             info = self._post("instance_info", {})
         self.assertEqual(health.status_code, 200)
         self.assertFalse(health.json()["data"]["features"]["writes"])
+        self.assertTrue(health.json()["data"]["features"]["report"])
+        self.assertFalse(health.json()["data"]["features"]["form_create"])
+        self.assertFalse(health.json()["data"]["features"]["form_write"])
         self.assertEqual(info.json()["data"]["public_base_url"], "https://erp.example.test")
         self.assertEqual(BridgeAuditLog.objects.filter(ok=True).count(), 2)
 
@@ -177,3 +180,54 @@ class HashyBridgeTests(TestCase):
         self.assertEqual(schema.json()["data"]["entities"][0]["entity"], "products")
         self.assertEqual(len(batch.json()["data"]["results"]), 2)
         self.assertEqual(oversized.status_code, 400)
+
+    def test_report_is_single_record_company_scoped_and_write_routes_fail_closed(self):
+        customer = Contact.objects.create(
+            company=self.company,
+            code="BR-CUSTOMER",
+            name="Bridge Customer",
+            contact_type=Contact.ContactType.CUSTOMER,
+        )
+        order = SaleOrder.objects.create(company=self.company, number="BR-SO-1", customer=customer)
+        SaleOrderLine.objects.create(order=order, description="Bridge report line", quantity=1, unit_price=125000)
+        other_company = Company.objects.create(code="BR-REPORT-OTHER", name="Bridge Report Other")
+        other_customer = Contact.objects.create(
+            company=other_company,
+            code="OTHER-CUSTOMER",
+            name="Other Customer",
+            contact_type=Contact.ContactType.CUSTOMER,
+        )
+        foreign_order = SaleOrder.objects.create(company=other_company, number="OTHER-SO-1", customer=other_customer)
+
+        with patch.dict(os.environ, BRIDGE_ENV):
+            rendered = self._post("report", {"report": "sales", "res_ids": [order.pk]})
+            with CaptureQueriesContext(connection) as small_report:
+                self._post("report", {"report": "sales", "res_ids": [order.pk]})
+            SaleOrderLine.objects.bulk_create(
+                [
+                    SaleOrderLine(
+                        order=order,
+                        description=f"Bridge report line {index}",
+                        quantity=1,
+                        unit_price=1000,
+                    )
+                    for index in range(2, 27)
+                ]
+            )
+            with CaptureQueriesContext(connection) as larger_report:
+                grown = self._post("report", {"report": "sales", "res_ids": [order.pk]})
+            hidden = self._post("report", {"report": "sales", "res_ids": [foreign_order.pk]})
+            create = self._post("form_create", {"entity": "products", "values": {"name": "Blocked"}})
+            write = self._post("form_write", {"entity": "products", "id": 1, "values": {"name": "Blocked"}})
+
+        self.assertEqual(rendered.status_code, 200)
+        self.assertEqual(grown.status_code, 200)
+        self.assertEqual(len(larger_report), len(small_report))
+        self.assertEqual(rendered.json()["data"]["mimetype"], "application/pdf")
+        self.assertTrue(rendered.json()["data"]["base64"].startswith("JVBER"))
+        self.assertEqual(hidden.status_code, 404)
+        self.assertEqual(create.status_code, 403)
+        self.assertEqual(write.status_code, 403)
+        self.assertEqual(create.json()["error"]["code"], "writes_disabled")
+        self.assertEqual(write.json()["error"]["code"], "writes_disabled")
+        self.assertFalse(Product.objects.filter(name="Blocked").exists())

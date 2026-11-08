@@ -130,6 +130,7 @@ def _locked_details(request, required_status):
         LeaveEncashmentBucket.objects.select_for_update()
         .filter(encashment=request, status=required_status)
         .order_by("bucket_id")
+        .iterator(chunk_size=500)
     )
     if not details or sum((detail.days for detail in details), Decimal("0")) != request.days:
         raise ValidationError("The original encashment bucket reservation is incomplete.")
@@ -204,10 +205,12 @@ def _reverse(request, now):
             status=LeaveEncashmentBucket.Status.RESERVED,
         ).values("bucket_id").annotate(total=Sum("days"))
     }
-    debits = list(LeaveMovement.objects.filter(
-        leave_encashment=request,
-        movement_type=LeaveMovement.MovementType.ENCASHMENT,
-    ))
+    debits = list(
+        LeaveMovement.objects.filter(
+            leave_encashment=request,
+            movement_type=LeaveMovement.MovementType.ENCASHMENT,
+        ).iterator(chunk_size=500)
+    )
     if sum((-movement.days for movement in debits), Decimal("0")) != request.days:
         raise ValidationError("The encashment debit movement is incomplete.")
     if LeaveMovement.objects.filter(

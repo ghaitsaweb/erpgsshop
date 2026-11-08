@@ -30,10 +30,10 @@ The runner:
 
 - runs repository-configured pre-commit on the selected files when both config
   and executable exist;
-- runs `tools/scale_guard.py` with its baseline when available and a verified
-  merge base was supplied;
-- always scans applicable changed Python files with the bundled SG001-SG004
-  checker, including untracked files that native `git diff` checks may miss;
+- runs `tools/scale_guard.py` with its baseline on selected working/staged files
+  when available, or against a verified merge base for push/MR review;
+- uses the bundled SG001-SG004 scanner only when native tooling is unavailable;
+  the repository-native checker already includes untracked working files;
 - prints separate statuses so the fallback is never presented as the native
   repository gate.
 
@@ -43,9 +43,9 @@ changes, and rerun against the final content. Do not use `--no-verify`, `SKIP`,
 
 ## Review and tests
 
-Inspect every bundled finding. Fix new high findings. Review medium findings
-and helpers for hidden queries. Suppress only a genuine false positive with a
-specific comment immediately above it:
+Inspect every bundled finding. Fix new high findings. Fix medium findings or,
+when review proves a genuine false positive, suppress them with a specific
+comment immediately above the finding:
 
 ```python
 # scale-guard: allow SG001 — bounded by the 25-row validated request limit

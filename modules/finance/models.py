@@ -521,6 +521,14 @@ class PaymentAllocation(TimeStampedModel):
     payment = models.ForeignKey(AccountPayment, on_delete=models.CASCADE, related_name="allocations")
     invoice = models.ForeignKey(Invoice, on_delete=models.PROTECT, related_name="payment_allocations")
     amount = models.DecimalField(max_digits=18, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
+    writeoff_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    writeoff_account = models.ForeignKey(
+        Account,
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="payment_allocation_writeoffs",
+    )
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["payment", "invoice"], name="unique_invoice_payment_allocation")]
@@ -528,6 +536,16 @@ class PaymentAllocation(TimeStampedModel):
     def clean(self):
         if self.payment_id and self.invoice_id and self.payment.company_id != self.invoice.company_id:
             raise ValidationError("Payment and invoice must belong to the same company.")
+        if self.writeoff_amount < 0:
+            raise ValidationError({"writeoff_amount": "Write-off amount cannot be negative."})
+        if self.writeoff_amount and not self.writeoff_account_id:
+            raise ValidationError({"writeoff_account": "A write-off account is required for a payment difference."})
+        if self.writeoff_account_id and self.payment_id and self.writeoff_account.company_id != self.payment.company_id:
+            raise ValidationError({"writeoff_account": "Write-off account must belong to the payment company."})
+
+    @property
+    def settled_amount(self):
+        return self.amount + self.writeoff_amount
 
     def __str__(self):
         return f"{self.payment.number} · {self.invoice.number}"
@@ -1040,10 +1058,24 @@ class SalesInvoiceLineProvenance(TimeStampedModel):
     source_downpayment_line = models.ForeignKey(
         "self", on_delete=models.PROTECT, blank=True, null=True, related_name="settlement_applications"
     )
+    sale_order_line = models.ForeignKey(
+        "core.SaleOrderLine",
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="invoice_line_provenance",
+    )
 
     def clean(self):
         if self.invoice_line.invoice_id != self.sales_invoice.invoice_id:
             raise ValidationError("Sales invoice line provenance must belong to its invoice.")
+        if self.source_downpayment_line_id and self.sale_order_line_id:
+            raise ValidationError("A sales invoice line cannot be both an order line and a down-payment application.")
+        if (
+            self.sale_order_line_id
+            and self.sale_order_line.order_id != self.sales_invoice.order_accounting.order_id
+        ):
+            raise ValidationError("Sales invoice line and provenance must belong to the same Sales Order.")
 
     def __str__(self):
         return f"{self.sales_invoice} · {self.invoice_line.description}"

@@ -551,3 +551,4 @@ CONSTRUCTION_ENTITY_CONFIG["construction-claim-lines"]["form_fields"] = ["claim"
 
 
 ENTITY_MODELS = {slug: config["model"] for slug, config in CONSTRUCTION_ENTITY_CONFIG.items()}
+ENTITY_CONFIG = CONSTRUCTION_ENTITY_CONFIG

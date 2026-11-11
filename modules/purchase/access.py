@@ -2,6 +2,9 @@
 
 from functools import lru_cache
 
+from django.utils import timezone
+from django.utils.dateparse import parse_date
+
 from core.models import Company, Contact, Product, PurchaseOrder, PurchaseOrderLine, Warehouse
 
 
@@ -26,6 +29,8 @@ PURCHASE_ENTITIES = {
     "tender-award-responses",
     "blanket-orders",
     "vendor-categories",
+    "purchase-legal-documents",
+    "purchase-legal-document-attachments",
     "vendor-profiles",
     "vendor-legal-documents",
     "vendor-prequalifications",
@@ -57,6 +62,7 @@ PURCHASE_ENTITIES = {
     "purchase-milestone-template-lines",
     "purchase-settings",
     "purchase-order-controls",
+    "purchase-three-way-matches",
     "purchase-order-billing-plans",
     "purchase-order-milestones",
     "product-budget-groups",
@@ -77,6 +83,8 @@ PURCHASE_ENTITIES = {
     "purchase-tender-lines",
     "tender-invitations",
     "tender-documents",
+    "tender-document-completion-matrices",
+    "tender-document-completion-lines",
     "tender-audit-logs",
     "blanket-order-lines",
     "purchase-product-categories",
@@ -97,6 +105,8 @@ PURCHASE_ENTITIES = {
 
 VENDOR_ENTITIES = {
     "vendor-categories",
+    "purchase-legal-documents",
+    "purchase-legal-document-attachments",
     "vendor-profiles",
     "vendor-legal-documents",
     "vendor-prequalifications",
@@ -115,6 +125,16 @@ VENDOR_ENTITIES = {
     "vendor-performance-score-history",
     "vendor-communications",
     "vendor-transaction-history",
+}
+
+READ_ONLY_PURCHASE_CONFIGURATION_ENTITIES = {
+    "purchase-legal-documents",
+    "purchase-legal-document-attachments",
+}
+
+SYSTEM_GENERATED_PURCHASE_ENTITIES = {
+    "tender-document-completion-matrices",
+    "tender-document-completion-lines",
 }
 
 BUDGET_ENTITIES = {
@@ -146,8 +166,16 @@ def can_purchase_entity_action(user, entity, action):
     if entity not in PURCHASE_ENTITIES or user.is_superuser:
         return True
     groups = _group_names(user)
+    if entity in SYSTEM_GENERATED_PURCHASE_ENTITIES:
+        return action == "view" and bool(
+            groups & {PURCHASE_MANAGER, PURCHASE_USER, VENDOR_RELATIONS_OFFICER}
+        )
     if PURCHASE_MANAGER in groups:
         return True
+    if entity in READ_ONLY_PURCHASE_CONFIGURATION_ENTITIES:
+        return action == "view" and bool(
+            groups & {PURCHASE_USER, VENDOR_RELATIONS_OFFICER}
+        )
     if entity in VENDOR_ENTITIES and VENDOR_RELATIONS_OFFICER in groups:
         return action in {"view", "add", "change"}
     if entity in BUDGET_ENTITIES and PURCHASE_BUDGET_MANAGER in groups:
@@ -182,6 +210,8 @@ def can_purchase_workflow_action(user, entity, action):
     if entity not in PURCHASE_ENTITIES or action not in PRIVILEGED_WORKFLOW_ACTIONS or user.is_superuser:
         return True
     groups = _group_names(user)
+    if entity == "vendor-document-reviews" and action in {"approve", "reject", "revision"}:
+        return PURCHASE_MANAGER in groups
     if PURCHASE_MANAGER in groups:
         return True
     if entity in VENDOR_ENTITIES and VENDOR_RELATIONS_OFFICER in groups:
@@ -204,6 +234,7 @@ MODEL_COMPANY_LOOKUPS = {
     "tenderawardallocation": "tender__company_id",
     "tenderawardresponse": "tender__company_id",
     "vendorlegaldocument": "vendor__company_id",
+    "purchaselegaldocumentattachment": "legal_document__company_id",
     "vendorprequalification": "vendor__company_id",
     "vendordocumentreview": "prequalification__vendor__company_id",
     "vendorpricelistamendment": "pricelist__company_id",
@@ -237,6 +268,8 @@ MODEL_COMPANY_LOOKUPS = {
     "purchasetenderline": "tender__company_id",
     "tenderinvitation": "tender__company_id",
     "tenderdocument": "tender__company_id",
+    "tenderdocumentcompletionmatrix": "tender__company_id",
+    "tenderdocumentcompletionline": "tender__company_id",
     "tenderauditlog": "tender__company_id",
     "blanketorderline": "blanket_order__company_id",
     "purchaseproductvariant": "product__company_id",
@@ -270,6 +303,47 @@ def scope_purchase_queryset(user, entity, queryset):
 
 
 def scope_purchase_form(form, user, entity):
+    if entity == "purchases" and "product" in form.fields:
+        order = getattr(form.instance, "_state", None)
+        order = order.fields_cache.get("order") if order is not None else None
+        data = getattr(form, "data", None)
+        company_value = data.get("company") if data else None
+        vendor_value = data.get("vendor") if data else None
+        date_value = data.get("order_date") if data else None
+        company_id = int(company_value) if str(company_value or "").isdigit() else getattr(order, "company_id", None)
+        vendor_id = int(vendor_value) if str(vendor_value or "").isdigit() else getattr(order, "vendor_id", None)
+        transaction_date = parse_date(str(date_value)) if date_value else getattr(order, "order_date", None)
+        transaction_date = transaction_date or timezone.localdate()
+        if company_id and vendor_id:
+            cache = getattr(user, "_purchase_product_eligibility_cache", None)
+            if cache is None:
+                cache = {}
+                user._purchase_product_eligibility_cache = cache
+            cache_key = (company_id, vendor_id, transaction_date)
+            if cache_key not in cache:
+                from .models import PurchaseSetting
+                from .vendor_pricelist_eligibility import eligible_vendor_pricelist_product_ids
+
+                restricted = (
+                    PurchaseSetting.objects.filter(company_id=company_id)
+                    .values_list("restrict_product_by_vendor_pricelist", flat=True)
+                    .first()
+                )
+                cache[cache_key] = (
+                    eligible_vendor_pricelist_product_ids(
+                        company_id=company_id,
+                        vendor_id=vendor_id,
+                        transaction_date=transaction_date,
+                    )
+                    if restricted
+                    else None
+                )
+            eligible_ids = cache[cache_key]
+            if eligible_ids is not None:
+                current_product_id = getattr(form.instance, "product_id", None)
+                if current_product_id:
+                    eligible_ids = set(eligible_ids) | {current_product_id}
+                form.fields["product"].queryset = form.fields["product"].queryset.filter(pk__in=eligible_ids)
     if entity not in PURCHASE_ENTITIES or user.is_superuser:
         return form
 

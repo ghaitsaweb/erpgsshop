@@ -17,6 +17,7 @@ from django.utils import timezone
 
 from core.models import Contact, Invoice, InvoiceLine, Product, PurchaseOrder, PurchaseOrderLine, StockMove
 
+from .access import PURCHASE_MANAGER
 from .models import (
     ApprovalStatus,
     AwardStrategy,
@@ -36,6 +37,7 @@ from .models import (
     PurchaseInvoiceLineProvenance,
     PurchaseKPITarget,
     PurchaseKPITargetLine,
+    PurchaseLegalDocument,
     PurchaseMilestoneTemplate,
     PurchaseOrderControl,
     PurchaseOrderInvoiceAccounting,
@@ -58,6 +60,8 @@ from .models import (
     TenderAwardResponse,
     TenderBid,
     TenderDocument,
+    TenderDocumentCompletionLine,
+    TenderDocumentCompletionMatrix,
     VendorDocumentReview,
     VendorLegalDocument,
     VendorPricelist,
@@ -75,6 +79,10 @@ from .models import (
     VendorPrequalification,
     VendorProfile,
 )
+from .three_way_match import sync_purchase_three_way_match
+from .vendor_credit import enforce_vendor_purchase_limit
+from .vendor_pricelist_eligibility import validate_vendor_pricelist_product_eligibility
+from .purchase_revision import revise_purchase_order
 
 
 ZERO = Decimal("0")
@@ -91,8 +99,12 @@ MAX_VENDOR_PRICELIST_EXPIRY_BATCH = 500
 MAX_VENDOR_PERFORMANCE_LINES = 500
 MAX_VENDOR_PERFORMANCE_EVIDENCE_LINES = 5000
 MAX_VENDOR_LEGAL_DOCUMENTS = 500
+MAX_VENDOR_LEGAL_DOCUMENT_REQUIREMENTS = 500
 MAX_VENDOR_LEGAL_DOCUMENT_EXPIRY_BATCH = 500
 MAX_PREQUALIFICATION_DOCUMENT_LINES = 500
+MAX_TENDER_COMPLETION_VENDORS = 500
+MAX_TENDER_COMPLETION_DOCUMENTS = 100
+MAX_TENDER_COMPLETION_CELLS = 10000
 MAX_VENDOR_PRICELIST_IMPORT_ROWS = 5000
 MAX_VENDOR_PRICELIST_PREVIEW_ROWS = 500
 MAX_PURCHASE_KPI_LINES = 100
@@ -525,6 +537,35 @@ def register_purchase_workflow_hooks():
             action,
             purchase_request_before_workflow,
         )
+    register_before_workflow_hook(
+        "core.purchaseorder",
+        "request-approval",
+        purchase_order_before_workflow,
+    )
+
+
+def purchase_order_before_workflow(*, instance, action, actor=None):
+    del actor
+    if action != "request-approval":
+        return
+    lines = _require_bounded(
+        list(
+            PurchaseOrderLine.objects.filter(order_id=instance.pk)
+            .select_related("product")
+            .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="Purchase order",
+    )
+    validate_vendor_pricelist_product_eligibility(
+        document=instance,
+        lines=lines,
+        transaction_date=instance.order_date,
+    )
+    order_total = sum((line.subtotal for line in lines), ZERO)
+    enforce_vendor_purchase_limit(order=instance, order_total=order_total)
+    instance.total = order_total
+    instance.save(update_fields=["total", "updated_at"])
 
 
 @transaction.atomic
@@ -653,6 +694,7 @@ def create_purchase_request_re_request(purchase_request, *, allocations, actor=N
                 specification=line.specification,
                 quantity=allocation_map[line.pk],
                 estimated_unit_price=line.estimated_unit_price,
+                expiry_date=new_request.expiry_date,
                 line_status=PurchaseRequestLine.Status.DRAFT,
             )
             for line in lines
@@ -773,6 +815,134 @@ def vendor_legal_document_expiry_status(document, *, today=None):
     return VendorLegalDocument.Status.VALID
 
 
+def applicable_purchase_legal_documents(profile):
+    """Return the active HMX legal-document contract for one exact vendor."""
+    additional_match = Q(
+        apply_to__in=[PurchaseLegalDocument.ApplyTo.VENDOR, PurchaseLegalDocument.ApplyTo.BOTH],
+        applicable_vendors=profile,
+    )
+    if profile.category_id:
+        additional_match |= Q(
+            apply_to__in=[PurchaseLegalDocument.ApplyTo.CATEGORY, PurchaseLegalDocument.ApplyTo.BOTH],
+            applicable_categories=profile.category_id,
+        )
+    additional_scope = Q(
+        requirement_type=PurchaseLegalDocument.RequirementType.ADDITIONAL
+    ) & additional_match
+    return (
+        PurchaseLegalDocument.objects.filter(
+            company_id=profile.company_id,
+            active=True,
+            document_usage=PurchaseLegalDocument.DocumentUsage.STANDARD_VENDOR,
+        )
+        .filter(
+            Q(
+                requirement_type__in=[
+                    PurchaseLegalDocument.RequirementType.REQUIRED,
+                    PurchaseLegalDocument.RequirementType.OPTIONAL,
+                ]
+            )
+            | additional_scope
+        )
+        .distinct()
+        .order_by("name", "pk")
+    )
+
+
+def _bounded_vendor_legal_document_requirements(profile):
+    return _require_bounded(
+        list(
+            applicable_purchase_legal_documents(profile).select_related("company")[
+                : MAX_VENDOR_LEGAL_DOCUMENT_REQUIREMENTS + 1
+            ]
+        ),
+        limit=MAX_VENDOR_LEGAL_DOCUMENT_REQUIREMENTS,
+        label="Applicable Vendor legal-document requirements",
+    )
+
+
+def _vendor_legal_document_defaults(profile, requirement):
+    return {
+        "vendor": profile,
+        "legal_document": requirement,
+        "document_type": requirement.name,
+        "mandatory": requirement.requirement_type == PurchaseLegalDocument.RequirementType.REQUIRED,
+        "requirement_type": requirement.requirement_type,
+        "is_blocking": requirement.is_blocking,
+        "expiry_required": requirement.expiry_date_required,
+        "reminder_before_expiry_days": requirement.reminder_before_expiry_days or 0,
+    }
+
+
+@transaction.atomic
+def sync_vendor_legal_document_requirements(profile):
+    """Materialize one vendor's applicable master requirements without global fan-out."""
+    requirements = _bounded_vendor_legal_document_requirements(profile)
+    existing = _require_bounded(
+        list(
+            VendorLegalDocument.objects.filter(vendor_id=profile.pk)
+            .exclude(review_status=VendorLegalDocument.ReviewStatus.SUPERSEDED)
+            .select_for_update(of=("self",))
+            .select_related("legal_document")
+            .order_by("-pk")[: MAX_VENDOR_LEGAL_DOCUMENTS + 1]
+        ),
+        limit=MAX_VENDOR_LEGAL_DOCUMENTS,
+        label="Vendor legal documents",
+    )
+    existing_requirement_ids = {
+        document.legal_document_id for document in existing if document.legal_document_id
+    }
+    legacy_by_name = {}
+    for document in existing:
+        if document.legal_document_id or not document.document_type:
+            continue
+        legacy_by_name.setdefault(document.document_type.casefold(), document)
+
+    linked = []
+    created = []
+    now = timezone.now()
+    for requirement in requirements:
+        if requirement.pk in existing_requirement_ids:
+            continue
+        legacy = legacy_by_name.get(requirement.name.casefold())
+        defaults = _vendor_legal_document_defaults(profile, requirement)
+        if legacy:
+            legacy.legal_document = requirement
+            legacy.document_type = defaults["document_type"]
+            legacy.mandatory = defaults["mandatory"]
+            legacy.requirement_type = defaults["requirement_type"]
+            legacy.is_blocking = defaults["is_blocking"]
+            legacy.expiry_required = defaults["expiry_required"]
+            legacy.reminder_before_expiry_days = defaults["reminder_before_expiry_days"]
+            legacy.updated_at = now
+            linked.append(legacy)
+            continue
+        created.append(VendorLegalDocument(**defaults))
+
+    if linked:
+        VendorLegalDocument.objects.bulk_update(
+            linked,
+            [
+                "legal_document",
+                "document_type",
+                "mandatory",
+                "requirement_type",
+                "is_blocking",
+                "expiry_required",
+                "reminder_before_expiry_days",
+                "updated_at",
+            ],
+            batch_size=500,
+        )
+    if created:
+        VendorLegalDocument.objects.bulk_create(created, batch_size=500, ignore_conflicts=True)
+    return {
+        "requirements": len(requirements),
+        "linked": len(linked),
+        "created": len(created),
+    }
+
+
 def _vendor_blocking_legal_documents(profile_id, *, lock=False):
     queryset = VendorLegalDocument.objects.filter(vendor_id=profile_id).filter(
         Q(is_blocking=True) | Q(mandatory=True)
@@ -787,6 +957,8 @@ def _vendor_blocking_legal_documents(profile_id, *, lock=False):
 
 
 def _validate_vendor_blocking_legal_documents(profile_id, *, lock=False):
+    profile = VendorProfile.objects.select_related("category").get(pk=profile_id)
+    sync_vendor_legal_document_requirements(profile)
     invalid = []
     today = timezone.localdate()
     for document in _vendor_blocking_legal_documents(profile_id, lock=lock):
@@ -1102,6 +1274,232 @@ def _sync_prequalification_requirements_locked(prequalification):
     return created
 
 
+def _tender_completion_line_is_qualified(line):
+    document_cells = [cell for cell in (line.document_cells or []) if not cell.get("is_action")]
+    return bool(document_cells) and all(
+        str(cell.get("line_status") or cell.get("status") or "").lower()
+        in {"approved", "accepted", "valid"}
+        for cell in document_cells
+    )
+
+
+@transaction.atomic
+def sync_tender_document_completion(tender):
+    locked = PurchaseTender.objects.select_for_update(of=("self",)).get(pk=_pk(tender))
+    if locked.method != PurchaseTender.Method.PQTE:
+        TenderDocumentCompletionMatrix.objects.filter(tender_id=locked.pk).delete()
+        return None
+
+    requirements = _require_bounded(
+        list(
+            TenderDocument.objects.filter(
+                tender_id=locked.pk,
+                vendor__isnull=True,
+                bid__isnull=True,
+            )
+            .select_related("legal_document")
+            .order_by("pk")[: MAX_TENDER_COMPLETION_DOCUMENTS + 1]
+        ),
+        limit=MAX_TENDER_COMPLETION_DOCUMENTS,
+        label="Tender Document Completion requirements",
+    )
+    prequalifications = _require_bounded(
+        list(
+            VendorPrequalification.objects.filter(tender_id=locked.pk)
+            .select_related("vendor__partner")
+            .order_by("pk")[: MAX_TENDER_COMPLETION_VENDORS + 1]
+        ),
+        limit=MAX_TENDER_COMPLETION_VENDORS,
+        label="Tender Document Completion vendors",
+    )
+    if len(requirements) * len(prequalifications) > MAX_TENDER_COMPLETION_CELLS:
+        raise ValidationError(
+            f"Tender Document Completion exceeds the interactive limit of {MAX_TENDER_COMPLETION_CELLS} cells."
+        )
+
+    prequalification_ids = [row.pk for row in prequalifications]
+    reviews = _require_bounded(
+        list(
+            VendorDocumentReview.objects.filter(prequalification_id__in=prequalification_ids)
+            .select_related("document")
+            .order_by("prequalification_id", "sequence", "pk")[: MAX_TENDER_COMPLETION_CELLS + 1]
+        ),
+        limit=MAX_TENDER_COMPLETION_CELLS,
+        label="Tender Document Completion review lines",
+    )
+    review_by_key = {}
+    for review in reviews:
+        review_by_key.setdefault(
+            (review.prequalification_id, review.document_type.casefold()),
+            review,
+        )
+
+    columns = [
+        {
+            "vendor_key": f"doc_{requirement.pk}",
+            "column_key": f"doc_{requirement.pk}",
+            "vendor_name": requirement.document_type,
+            "column_name": requirement.document_type,
+            "vendor_code": "tender_document",
+            "column_code": "tender_document",
+            "status": "required" if requirement.mandatory else "optional",
+        }
+        for requirement in requirements
+    ]
+    columns.append(
+        {
+            "vendor_key": "action_review",
+            "column_key": "action_review",
+            "vendor_name": "Pre-Qualification",
+            "column_name": "Pre-Qualification",
+            "vendor_code": "Action",
+            "column_code": "Action",
+            "status": "info",
+        }
+    )
+    matrix, _created = TenderDocumentCompletionMatrix.objects.select_for_update().get_or_create(
+        tender=locked,
+        defaults={"name": f"{locked.number} Document Completion"},
+    )
+    matrix.name = f"{locked.number} Document Completion"
+    matrix.document_columns = columns
+    matrix.footer_totals = {}
+    matrix.save(update_fields=["name", "document_columns", "footer_totals", "updated_at"])
+
+    existing_lines = _require_bounded(
+        list(
+            TenderDocumentCompletionLine.objects.select_for_update(of=("self",))
+            .filter(tender_id=locked.pk)
+            .order_by("sequence", "pk")[: MAX_TENDER_COMPLETION_VENDORS + 1]
+        ),
+        limit=MAX_TENDER_COMPLETION_VENDORS,
+        label="Tender Document Completion rows",
+    )
+    existing_by_vendor = {line.vendor_id: line for line in existing_lines}
+    active_vendor_ids = {prequalification.vendor_id for prequalification in prequalifications}
+    stale_ids = [line.pk for line in existing_lines if line.vendor_id not in active_vendor_ids]
+    if stale_ids:
+        TenderDocumentCompletionLine.objects.filter(pk__in=stale_ids).delete()
+
+    now = timezone.now()
+    created_lines = []
+    changed_lines = []
+    for index, prequalification in enumerate(prequalifications, start=1):
+        cells = []
+        valid_count = 0
+        for requirement in requirements:
+            review = review_by_key.get(
+                (prequalification.pk, requirement.document_type.casefold())
+            )
+            line_status = review.status if review else VendorDocumentReview.Status.DRAFT
+            is_valid = line_status == VendorDocumentReview.Status.ACCEPTED
+            if is_valid:
+                valid_count += 1
+            display_status = "valid" if is_valid else "draft" if not review else "missing"
+            outward_line_status = "approved" if is_valid else line_status
+            cells.append(
+                {
+                    "vendor_key": f"doc_{requirement.pk}",
+                    "column_key": f"doc_{requirement.pk}",
+                    "vendor_name": requirement.document_type,
+                    "column_name": requirement.document_type,
+                    "vendor_code": "Document",
+                    "column_code": "Document",
+                    "document_id": requirement.pk,
+                    "document_line_id": review.pk if review else None,
+                    "line_status": outward_line_status,
+                    "description": review.notes if review else requirement.title,
+                    "file_name": (
+                        review.document.attachment_url.rsplit("/", 1)[-1]
+                        if review and review.document_id and review.document.attachment_url
+                        else review.attachment_url.rsplit("/", 1)[-1]
+                        if review and review.attachment_url
+                        else ""
+                    ),
+                    "status": display_status,
+                    "price_display": "Valid" if is_valid else "Draft" if not review else "Missing",
+                    "subline_1": "" if is_valid else "Required" if requirement.mandatory and review else "",
+                    "subline_2": "",
+                    "tone": "success" if is_valid else "neutral" if not review else "danger",
+                }
+            )
+        cells.append(
+            {
+                "vendor_key": "action_review",
+                "column_key": "action_review",
+                "vendor_name": "Pre-Qualification",
+                "column_name": "Pre-Qualification",
+                "vendor_code": "Action",
+                "column_code": "Action",
+                "status": "review",
+                "price_display": "Review",
+                "subline_1": str(prequalification.pk),
+                "subline_2": "",
+                "tone": "info",
+                "action": "review_prequalification",
+                "action_model": "vendor-prequalifications",
+                "action_res_id": prequalification.pk,
+                "prequalification_id": prequalification.pk,
+                "is_action": True,
+            }
+        )
+        total_count = len(requirements)
+        values = {
+            "matrix": matrix,
+            "tender": locked,
+            "vendor": prequalification.vendor,
+            "sequence": index * 10,
+            "vendor_name": str(prequalification.vendor.partner),
+            "vendor_subtitle": prequalification.vendor.registration_number,
+            "completion_summary": (
+                f"{valid_count}/{total_count} Valid" if total_count else "No Documents"
+            ),
+            "document_cells": cells,
+        }
+        line = existing_by_vendor.get(prequalification.vendor_id)
+        if line is None:
+            created_lines.append(TenderDocumentCompletionLine(**values))
+            continue
+        for field_name, value in values.items():
+            setattr(line, field_name, value)
+        line.updated_at = now
+        changed_lines.append(line)
+    if created_lines:
+        TenderDocumentCompletionLine.objects.bulk_create(created_lines, batch_size=500)
+    if changed_lines:
+        TenderDocumentCompletionLine.objects.bulk_update(
+            changed_lines,
+            [
+                "matrix",
+                "tender",
+                "vendor",
+                "sequence",
+                "vendor_name",
+                "vendor_subtitle",
+                "completion_summary",
+                "document_cells",
+                "updated_at",
+            ],
+            batch_size=500,
+        )
+    return matrix
+
+
+def qualified_tender_document_completion_vendor_ids(tender):
+    matrix = sync_tender_document_completion(tender)
+    if matrix is None:
+        return set()
+    lines = _require_bounded(
+        list(
+            TenderDocumentCompletionLine.objects.filter(matrix_id=matrix.pk)
+            .order_by("sequence", "pk")[: MAX_TENDER_COMPLETION_VENDORS + 1]
+        ),
+        limit=MAX_TENDER_COMPLETION_VENDORS,
+        label="Tender Document Completion rows",
+    )
+    return {line.vendor_id for line in lines if _tender_completion_line_is_qualified(line)}
+
+
 @transaction.atomic
 def transition_vendor_prequalification(prequalification, action, actor=None, *, reason=""):
     locked = (
@@ -1176,6 +1574,7 @@ def transition_vendor_prequalification(prequalification, action, actor=None, *, 
         locked.save(update_fields=["status", "reviewer", "rejection_reason", "updated_at"])
     else:
         raise ValidationError("Unsupported Vendor Prequalification workflow action.")
+    sync_tender_document_completion(locked.tender_id)
     return locked
 
 
@@ -1190,6 +1589,16 @@ def transition_vendor_document_review(review, action, actor=None, *, reason=""):
         pk=locked.prequalification_id
     )
     tender = locked.prequalification.tender
+    if action in {"approve", "reject", "revision"} and not (
+        actor
+        and (
+            actor.is_superuser
+            or actor.groups.filter(name=PURCHASE_MANAGER).exists()
+        )
+    ):
+        raise ValidationError(
+            "Only Purchase Managers can approve, reject, or request revision of prequalification documents."
+        )
     if tender and tender.method == PurchaseTender.Method.PQTE and tender.status != PurchaseTender.Status.DOCUMENT_SUBMISSION:
         raise ValidationError(
             "Prequalification documents can only be reviewed during Tender Document Submission."
@@ -1230,6 +1639,8 @@ def transition_vendor_document_review(review, action, actor=None, *, reason=""):
     locked.save(update_fields=["status", "reviewer", "reviewed_at", "notes", "updated_at"])
     lines = _prequalification_document_lines(prequalification.pk, lock=True)
     _sync_prequalification_status_locked(prequalification, lines)
+    if tender:
+        sync_tender_document_completion(tender.pk)
     return locked
 
 
@@ -1363,6 +1774,7 @@ def create_purchase_request_rfqs(
                     quantity=quantity,
                     unit_price=line.estimated_unit_price,
                     promised_date=locked.required_date,
+                    expiry_date=response_deadline,
                 )
             )
             totals[quotation.pk] += quantity * line.estimated_unit_price
@@ -1884,6 +2296,7 @@ def create_blanket_order_rfq(blanket_order, *, releases=None, actor=None):
             quantity=quantity,
             unit_price=line.unit_price,
             promised_date=blanket.date_end,
+            expiry_date=quotation.response_deadline,
         )
         for line, quantity in selected
     ]
@@ -2015,6 +2428,21 @@ def transition_blanket_order(blanket_order, action, actor=None):
         raise ValidationError("That Blanket Order action is not available in the current state.")
     if action == "approve":
         _validate_purchase_vendor_eligibility(locked.company_id, locked.vendor_id)
+    if action in {"submit", "approve"}:
+        blanket_lines = _require_bounded(
+            list(
+                BlanketOrderLine.objects.filter(blanket_order_id=locked.pk)
+                .select_related("product")
+                .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+            ),
+            limit=MAX_PURCHASE_DOCUMENT_LINES,
+            label="Blanket order",
+        )
+        validate_vendor_pricelist_product_eligibility(
+            document=locked,
+            lines=blanket_lines,
+            transaction_date=locked.date_start,
+        )
     locked.status = target
     update_fields = ["status", "updated_at"]
     if action in {"close", "reopen"}:
@@ -3628,12 +4056,24 @@ def transition_purchase_tender(tender, action, actor=None, *, reason=""):
         sources, target = transitions[action]
         if locked.status not in sources:
             raise ValidationError("That Tender action is not available in the current state.")
+        if action == "open-bids":
+            if locked.method != PurchaseTender.Method.PQTE:
+                raise ValidationError(
+                    "Only Prequalification Tenders can move from Document Submission to Bid Submission."
+                )
+            qualified_vendor_ids = qualified_tender_document_completion_vendor_ids(locked)
+            if not qualified_vendor_ids:
+                raise ValidationError(
+                    "At least one Document Completion row must be qualified before Bid Submission."
+                )
         locked.status = target
         if action == "publish" and not locked.publish_date:
             locked.publish_date = timezone.localdate()
             locked.save(update_fields=["status", "publish_date", "updated_at"])
         else:
             locked.save(update_fields=["status", "updated_at"])
+        if action == "open-submission" and locked.method == PurchaseTender.Method.PQTE:
+            sync_tender_document_completion(locked)
         return locked
     if action == "award":
         if locked.status != PurchaseTender.Status.BID_SELECTION:
@@ -4851,6 +5291,7 @@ def create_purchase_vendor_bill(order, actor=None):
             for invoice_line, (line, quantity) in zip(invoice_lines, invoiceable)
         ]
     )
+    _auto_close_purchase_order_if_received_and_billed(locked.pk)
     locked._created_vendor_bill_id = invoice.pk
     return locked
 
@@ -4877,12 +5318,80 @@ def _sync_order_receiving(order, lines):
         defaults={"receiving_status": receiving_status},
     )
     order.received_percentage = percentage
-    update_fields = ["received_percentage", "updated_at"]
-    if stock_lines and received >= ordered and order.status == PurchaseOrder.Status.CONFIRMED:
-        order.status = PurchaseOrder.Status.COMPLETED
-        update_fields.append("status")
-    order.save(update_fields=update_fields)
+    order.save(update_fields=["received_percentage", "updated_at"])
     return order
+
+
+def _auto_close_purchase_order_if_received_and_billed(order_id):
+    """Match HMX: close a PO only after every received stock line is fully billed."""
+    order = PurchaseOrder.objects.select_for_update().filter(pk=order_id).first()
+    if order is None or order.status not in {
+        PurchaseOrder.Status.CONFIRMED,
+        PurchaseOrder.Status.COMPLETED,
+    }:
+        return False
+
+    lines = _require_bounded(
+        list(
+            PurchaseOrderLine.objects.select_for_update(of=("self",))
+            .filter(order_id=order.pk)
+            .select_related("product")
+            .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="Purchase order",
+    )
+    stock_lines = [line for line in lines if _stockable(line) and line.quantity > 0]
+    if not stock_lines or any(line.received_quantity != line.quantity for line in stock_lines):
+        return False
+
+    pending_rows = _require_bounded(
+        list(
+            PurchaseBillLineProvenance.objects.filter(
+                order_line__order_id=order.pk,
+                invoice_line__invoice__status=Invoice.Status.DRAFT,
+            )
+            .values("order_line_id")
+            .annotate(quantity=Sum("quantity"))
+            .order_by("order_line_id")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="Pending vendor bill line groups",
+    )
+    pending_by_line = {
+        row["order_line_id"]: row["quantity"] or ZERO
+        for row in pending_rows
+    }
+    if any(
+        line.billed_quantity + pending_by_line.get(line.pk, ZERO) != line.received_quantity
+        for line in stock_lines
+    ):
+        return False
+
+    if ServiceWorkOrder.objects.filter(source_order_id=order.pk).exclude(
+        status=ServiceWorkOrder.Status.DONE
+    ).exists():
+        return False
+
+    billing_plan_id = (
+        PurchaseOrderInvoiceAccounting.objects.filter(order_id=order.pk)
+        .values_list("pk", flat=True)
+        .first()
+    )
+    if billing_plan_id:
+        active_plan_invoices = PurchaseInvoiceAccounting.objects.filter(
+            order_accounting_id=billing_plan_id,
+        ).exclude(invoice__status=Invoice.Status.CANCELLED)
+        if active_plan_invoices.exclude(
+            invoice__status__in=[Invoice.Status.POSTED, Invoice.Status.PAID]
+        ).exists():
+            return False
+        if _posted_purchase_downpayment_balance(billing_plan_id) > 0:
+            return False
+
+    order.status = PurchaseOrder.Status.CLOSED
+    order.save(update_fields=["status", "updated_at"])
+    return True
 
 
 def _validate_order_for_receiving(order, lines):
@@ -5064,8 +5573,19 @@ def confirm_purchase_order(order, actor=None):
     ), limit=MAX_PURCHASE_DOCUMENT_LINES, label="Purchase order")
     _validate_purchase_vendor_eligibility(locked.company_id, locked.vendor_id)
     _validate_order_for_receiving(locked, lines)
+    validate_vendor_pricelist_product_eligibility(
+        document=locked,
+        lines=lines,
+        transaction_date=locked.order_date,
+    )
     _validate_vendor_pricelist_moq(locked, lines)
-    locked.total = sum((line.subtotal for line in lines), ZERO)
+    order_total = sum((line.subtotal for line in lines), ZERO)
+    purchase_limit = enforce_vendor_purchase_limit(order=locked, order_total=order_total)
+    locked.total = order_total
+    if purchase_limit.requires_approval and locked.status == PurchaseOrder.Status.DRAFT:
+        locked.status = PurchaseOrder.Status.WAITING_APPROVAL
+        locked.save(update_fields=["total", "status", "updated_at"])
+        return locked
     _sync_service_work_orders_locked(locked, lines, activate=True)
     control = PurchaseOrderControl.objects.select_for_update().filter(order_id=locked.pk).first()
     if (
@@ -5091,6 +5611,7 @@ def confirm_purchase_order(order, actor=None):
     )
     if receiving_behavior == PurchaseSetting.ReceivingBehavior.AUTO and any(_stockable(line) for line in lines):
         _create_goods_receipts_locked(locked, actor)
+    sync_purchase_three_way_match({locked.pk})
     return locked
 
 
@@ -5218,6 +5739,8 @@ def receive_goods_receipt(receipt, actor):
         .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
     ), limit=MAX_PURCHASE_DOCUMENT_LINES, label="Purchase order")
     _sync_order_receiving(order, all_order_lines)
+    sync_purchase_three_way_match({order.pk})
+    _auto_close_purchase_order_if_received_and_billed(order.pk)
     return locked
 
 
@@ -5587,6 +6110,7 @@ def cancel_purchase_order(order, actor, *, acknowledge_received_return=False):
     locked.status = PurchaseOrder.Status.CANCELLED
     locked.received_percentage = ZERO
     locked.save(update_fields=["status", "received_percentage", "updated_at"])
+    sync_purchase_three_way_match({locked.pk})
     return locked
 
 
@@ -5609,6 +6133,7 @@ def handle_purchase_document_action(
             "complete": complete_purchase_order,
             "close": close_purchase_order,
             "cancel": cancel_purchase_order,
+            "revise": revise_purchase_order,
         }
     elif entity == "goods-receipts":
         handlers = {
@@ -5760,6 +6285,8 @@ def handle_purchase_document_action(
             actor,
             acknowledge_received_return=acknowledge_received_return,
         )
+    if entity == "purchases" and action == "revise":
+        return handler(instance, actor, reason=reason)
     if entity == "service-work-orders" and action == "create-bill":
         return handler(instance, actor)
     if entity in {

@@ -1,0 +1,4 @@
+from .detail_config import HR_DETAIL_ENTITY_CONFIG
+
+
+ENTITY_CONFIG = HR_DETAIL_ENTITY_CONFIG

@@ -8,10 +8,13 @@ from modules.organization.context import scope_queryset as scope_organization_qu
 from .access import scope_purchase_queryset
 from .models import (
     BlanketOrder,
+    DirectPurchase,
     GoodsReceipt,
     ProductBudget,
     PurchaseInsight,
+    PurchaseQuotation,
     PurchaseRequest,
+    PurchaseTender,
     VendorPerformanceEvaluation,
     VendorPerformanceScoreHistory,
     VendorProfile,
@@ -102,10 +105,44 @@ def _insight_analytics(feature_slug, user):
     }
 
 
+def _lifecycle_analytics(user):
+    """HMX lifecycle totals adapted to GS Shop's separate sourcing models."""
+
+    requests = _scoped(user, "purchase-requests", PurchaseRequest)
+    quotations = _scoped(user, "purchase-quotations", PurchaseQuotation)
+    orders = _scoped(user, "purchases", PurchaseOrder).filter(direct_purchase_source__isnull=True)
+    direct_purchases = _scoped(user, "direct-purchases", DirectPurchase)
+    tenders = _scoped(user, "purchase-tenders", PurchaseTender)
+    blanket_orders = _scoped(user, "blanket-orders", BlanketOrder)
+    breakdown = [
+        {"label": "Purchase Request", "total": requests.count()},
+        {"label": "Request for Quotation", "total": quotations.count()},
+        {"label": "Purchase Order", "total": orders.count()},
+        {"label": "Direct Purchase", "total": direct_purchases.count()},
+        {"label": "Purchase Tender", "total": tenders.count()},
+        {"label": "Blanket Order", "total": blanket_orders.count()},
+    ]
+    totals = {row["label"]: row["total"] for row in breakdown}
+    return {
+        "metrics": [
+            _metric("Lifecycle Documents", sum(totals.values()), "All visible purchase stages", "blue"),
+            _metric("Purchase Requests", totals["Purchase Request"], "Demand intake", "amber"),
+            _metric("Active Sourcing", totals["Request for Quotation"] + totals["Purchase Tender"], "RFQs and tenders", "violet"),
+            _metric("Purchase Orders", totals["Purchase Order"], "Non-direct purchase orders", "blue"),
+        ],
+        "breakdown_title": "Purchase lifecycle stages",
+        "breakdown": breakdown,
+        "recent_title": "Recently updated purchase orders",
+        "recent": list(orders.select_related("vendor").order_by("-updated_at")[:8]),
+    }
+
+
 def build_purchase_analytics(feature_slug, user):
     """Return procurement analytics using a fixed number of aggregate queries."""
     if feature_slug not in ANALYTIC_FEATURES:
         return None
+    if feature_slug == "overview":
+        return _lifecycle_analytics(user)
     if feature_slug in {"spend-analysis", "purchase-performance", "order-analysis"}:
         return _order_analytics(user)
     if feature_slug in {"demand-analysis", "request-analysis"}:

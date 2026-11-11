@@ -28,6 +28,10 @@ from .models import (
     PurchaseOrderMilestone,
     ServiceWorkOrder,
 )
+from .three_way_match import (
+    sync_purchase_three_way_match,
+    validate_strict_purchase_three_way_match,
+)
 
 
 ZERO = Decimal("0")
@@ -35,6 +39,7 @@ MAX_PURCHASE_BILL_LINES = 500
 
 
 def _purchase_invoice_posting(*, invoice, rows, partner_account, total, journal, actor=None):
+    validate_strict_purchase_three_way_match(invoice=invoice, rows=rows)
     provenance = (
         PurchaseInvoiceAccounting.objects.select_for_update(of=("self",))
         .select_related("order_accounting__order", "source_downpayment_invoice__invoice")
@@ -346,6 +351,10 @@ def mark_purchase_vendor_bill_posted(*, invoice, entry=None, actor=None):
         )
     _sync_accounting_controls({document.order_id})
     _sync_billing_plan_after_post(invoice)
+    sync_purchase_three_way_match({document.order_id})
+    from .services import _auto_close_purchase_order_if_received_and_billed
+
+    _auto_close_purchase_order_if_received_and_billed(document.order_id)
 
 
 @transaction.atomic
@@ -399,6 +408,7 @@ def mark_purchase_vendor_bill_cancelled(*, invoice, actor=None):
         )
     _sync_accounting_controls({document.order_id})
     _sync_billing_plan_after_cancel(invoice)
+    sync_purchase_three_way_match({document.order_id})
 
 
 def register_purchase_invoice_extension():

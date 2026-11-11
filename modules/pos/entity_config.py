@@ -226,3 +226,5 @@ POS_DOCUMENT_CONFIG.update(
         "pos-inventory-transfers": _document(pos_models.POSInventoryTransferLine, "lines", POS_ENTITY_CONFIG["pos-inventory-transfers"]["form_fields"], ["product", "quantity", "received_quantity", "returned_quantity", "unit", "lot_serial"], "Inventory Transfer Lines", actions=POS_ENTITY_CONFIG["pos-inventory-transfers"]["workflow"], editable_statuses=["draft", "ready", "in_transit", "received"], line_select_related=("product",)),
     }
 )
+
+ENTITY_CONFIG = POS_ENTITY_CONFIG

@@ -1,0 +1,4 @@
+interface:
+  display_name: "ERP Modular Architecture"
+  short_description: "Enforce modular ERP extension conventions"
+  default_prompt: "Use $erp-modular-architecture to implement this ERP module change without adding avoidable central registry coupling."

@@ -140,3 +140,5 @@ APPROVAL_ENTITY_CONFIG = {
         "select_related": ["content_type"],
     },
 }
+
+ENTITY_CONFIG = APPROVAL_ENTITY_CONFIG

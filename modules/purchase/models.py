@@ -1,3 +1,5 @@
+from calendar import monthrange
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
@@ -24,6 +26,14 @@ def current_year():
     return timezone.localdate().year
 
 
+def add_calendar_months(value, months):
+    """Return the HMX-style calendar-month expiry without adding a dependency."""
+    month_index = value.month - 1 + int(months)
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    return value.replace(year=year, month=month, day=min(value.day, monthrange(year, month)[1]))
+
+
 def validate_purchase_configuration_company(instance, errors):
     order_type_id = getattr(instance, "order_type_id", None)
     order_template_id = getattr(instance, "order_template_id", None)
@@ -41,6 +51,27 @@ class ApprovalStatus(models.TextChoices):
     APPROVED = "approved", "Approved"
     REJECTED = "rejected", "Rejected"
     CANCELLED = "cancelled", "Cancelled"
+
+
+class ThreeWayMatchStatus(models.TextChoices):
+    AWAITING_RECEIPT = "awaiting_receipt", "Awaiting Receipt"
+    PARTIALLY_RECEIVED = "partially_received", "Partially Received"
+    PARTIALLY_MATCHED = "partially_matched", "Partially Matched"
+    FULLY_MATCHED = "fully_matched", "Fully Matched"
+    RECEIPT_EXCEPTION = "receipt_exception", "Receipt Exception"
+    BILLING_EXCEPTION = "billing_exception", "Billing Exception"
+    PRICE_EXCEPTION = "price_exception", "Price Exception"
+
+
+THREE_WAY_MATCH_STATUS_PRECEDENCE = {
+    ThreeWayMatchStatus.AWAITING_RECEIPT: 1,
+    ThreeWayMatchStatus.PARTIALLY_RECEIVED: 2,
+    ThreeWayMatchStatus.PARTIALLY_MATCHED: 3,
+    ThreeWayMatchStatus.FULLY_MATCHED: 4,
+    ThreeWayMatchStatus.RECEIPT_EXCEPTION: 5,
+    ThreeWayMatchStatus.BILLING_EXCEPTION: 6,
+    ThreeWayMatchStatus.PRICE_EXCEPTION: 7,
+}
 
 
 PURCHASE_KPI_DEFINITIONS = {
@@ -139,6 +170,7 @@ class PurchaseRequest(TimeStampedModel):
         ]
 
     def clean(self):
+        self.apply_expiry_default()
         errors = {}
         validate_purchase_configuration_company(self, errors)
         if self.required_date and self.required_date < self.request_date:
@@ -153,6 +185,23 @@ class PurchaseRequest(TimeStampedModel):
             errors["destination_warehouse"] = "Destination warehouse must belong to the selected company."
         if errors:
             raise ValidationError(errors)
+
+    def apply_expiry_default(self):
+        if self.expiry_date or not self.company_id:
+            return
+        period_days = PurchaseSetting.objects.filter(company_id=self.company_id).values_list(
+            "pr_expiry_period_days",
+            flat=True,
+        ).first()
+        if period_days:
+            self.expiry_date = self.request_date + timedelta(days=period_days)
+
+    def save(self, *args, **kwargs):
+        self.apply_expiry_default()
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None and self.expiry_date:
+            kwargs["update_fields"] = set(update_fields) | {"expiry_date"}
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         return self.number
@@ -194,6 +243,7 @@ class PurchaseRequestLine(TimeStampedModel):
     re_request_quantity = models.DecimalField(max_digits=18, decimal_places=3, default=0, editable=False)
     ordered_quantity = models.DecimalField(max_digits=18, decimal_places=3, default=0)
     estimated_unit_price = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    expiry_date = models.DateField(blank=True, null=True)
     line_status = models.CharField(max_length=24, choices=Status.choices, default=Status.DRAFT, editable=False)
     approval_justification = models.TextField(blank=True)
     rejection_reason = models.CharField(max_length=120, blank=True)
@@ -208,6 +258,8 @@ class PurchaseRequestLine(TimeStampedModel):
         ordering = ["id"]
 
     def clean(self):
+        if not self.expiry_date and self.request_id:
+            self.expiry_date = self.request.expiry_date
         errors = {}
         if self.approved_quantity < 0:
             errors["approved_quantity"] = "Approved quantity cannot be negative."
@@ -224,6 +276,11 @@ class PurchaseRequestLine(TimeStampedModel):
                 errors[field_name] = "Converted quantities cannot be negative."
         if errors:
             raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        if not self.expiry_date and self.request_id:
+            self.expiry_date = self.request.expiry_date
+        return super().save(*args, **kwargs)
 
     @property
     def estimated_total(self):
@@ -304,7 +361,7 @@ class PurchaseQuotation(TimeStampedModel):
         related_name="purchase_quotations",
     )
     issue_date = models.DateField(default=timezone.localdate)
-    response_deadline = models.DateField()
+    response_deadline = models.DateField(blank=True)
     expected_date = models.DateField(blank=True, null=True)
     currency = models.CharField(max_length=3, default="IDR")
     quoted_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
@@ -326,6 +383,7 @@ class PurchaseQuotation(TimeStampedModel):
         return self.number
 
     def clean(self):
+        self.apply_expiry_default()
         errors = {}
         validate_purchase_configuration_company(self, errors)
         if self.vendor_id and self.company_id and self.vendor.company_id != self.company_id:
@@ -338,6 +396,23 @@ class PurchaseQuotation(TimeStampedModel):
             errors["response_deadline"] = "Response deadline must be on or after issue date."
         if errors:
             raise ValidationError(errors)
+
+    def apply_expiry_default(self):
+        if self.response_deadline or not self.company_id:
+            return
+        period_days = PurchaseSetting.objects.filter(company_id=self.company_id).values_list(
+            "rfq_expiry_period_days",
+            flat=True,
+        ).first()
+        if period_days:
+            self.response_deadline = self.issue_date + timedelta(days=period_days)
+
+    def save(self, *args, **kwargs):
+        self.apply_expiry_default()
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None and self.response_deadline:
+            kwargs["update_fields"] = set(update_fields) | {"response_deadline"}
+        return super().save(*args, **kwargs)
 
 
 class DirectPurchase(TimeStampedModel):
@@ -565,7 +640,7 @@ class PurchaseTender(TimeStampedModel):
     currency = models.CharField(max_length=3, default="IDR")
     publish_date = models.DateField(blank=True, null=True)
     bid_start_date = models.DateField(blank=True, null=True)
-    close_date = models.DateField()
+    close_date = models.DateField(blank=True)
     validity_days = models.PositiveIntegerField(default=30)
     budget_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     status = models.CharField(max_length=24, choices=Status.choices, default=Status.DRAFT)
@@ -588,6 +663,7 @@ class PurchaseTender(TimeStampedModel):
         return self.number
 
     def clean(self):
+        self.apply_expiry_default()
         errors = {}
         validate_purchase_configuration_company(self, errors)
         if self.publish_date and self.close_date and self.close_date < self.publish_date:
@@ -598,6 +674,23 @@ class PurchaseTender(TimeStampedModel):
             errors["warehouse"] = "Warehouse must belong to the selected company."
         if errors:
             raise ValidationError(errors)
+
+    def apply_expiry_default(self):
+        if self.close_date or not self.company_id:
+            return
+        period_days = PurchaseSetting.objects.filter(company_id=self.company_id).values_list(
+            "pt_expiry_period_days",
+            flat=True,
+        ).first()
+        if period_days:
+            self.close_date = timezone.localdate() + timedelta(days=period_days)
+
+    def save(self, *args, **kwargs):
+        self.apply_expiry_default()
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None and self.close_date:
+            kwargs["update_fields"] = set(update_fields) | {"close_date"}
+        return super().save(*args, **kwargs)
 
 
 class TenderBid(TimeStampedModel):
@@ -624,6 +717,42 @@ class TenderBid(TimeStampedModel):
 
     def __str__(self):
         return f"{self.tender} - {self.vendor}"
+
+    def clean(self):
+        errors = {}
+        if self.vendor_id and self.vendor.company_id != self.tender.company_id:
+            errors["vendor"] = "Tender Bid vendor must belong to the Tender company."
+        if (
+            self.tender_id
+            and self.vendor_id
+            and self.tender.method == PurchaseTender.Method.PQTE
+            and self.tender.status
+            in {
+                PurchaseTender.Status.BID_SUBMISSION,
+                PurchaseTender.Status.BID_SELECTION,
+                PurchaseTender.Status.AWARDED,
+                PurchaseTender.Status.CLOSED,
+            }
+        ):
+            profile_id = (
+                VendorProfile.objects.filter(
+                    company_id=self.tender.company_id,
+                    partner_id=self.vendor_id,
+                    active=True,
+                )
+                .values_list("pk", flat=True)
+                .first()
+            )
+            if not profile_id or not VendorPrequalification.objects.filter(
+                tender_id=self.tender_id,
+                vendor_id=profile_id,
+                status=VendorPrequalification.Status.APPROVED,
+            ).exists():
+                errors["vendor"] = (
+                    "Vendor must pass Tender Document Completion before entering Bid Submission."
+                )
+        if errors:
+            raise ValidationError(errors)
 
 
 class BlanketOrder(TimeStampedModel):
@@ -709,6 +838,144 @@ class VendorCategory(TimeStampedModel):
         return f"{self.code} - {self.name}"
 
 
+class PurchaseLegalDocument(TimeStampedModel):
+    class DocumentUsage(models.TextChoices):
+        STANDARD_VENDOR = "standard_vendor", "Standard Vendor"
+        TENDER_DOCUMENT = "tender_document", "Tender Document"
+        ADDITIONAL_VENDOR = "additional_vendor", "Additional Vendor"
+
+    class RequirementType(models.TextChoices):
+        REQUIRED = "required", "Required"
+        ADDITIONAL = "additional", "Additional"
+        OPTIONAL = "optional", "Optional"
+
+    class ApplyTo(models.TextChoices):
+        CATEGORY = "category", "Vendor Category"
+        VENDOR = "vendor", "Specific Vendor"
+        BOTH = "both", "Both"
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="purchase_legal_document_types")
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    document_usage = models.CharField(
+        max_length=50,
+        choices=DocumentUsage.choices,
+        default=DocumentUsage.STANDARD_VENDOR,
+    )
+    requirement_type = models.CharField(
+        max_length=16,
+        choices=RequirementType.choices,
+        default=RequirementType.REQUIRED,
+    )
+    apply_to = models.CharField(max_length=16, choices=ApplyTo.choices, default=ApplyTo.BOTH)
+    applicable_vendors = models.ManyToManyField(
+        "VendorProfile",
+        blank=True,
+        related_name="applicable_legal_document_types",
+    )
+    applicable_categories = models.ManyToManyField(
+        VendorCategory,
+        blank=True,
+        related_name="applicable_legal_document_types",
+    )
+    is_blocking = models.BooleanField(default=True)
+    expiry_applicable = models.BooleanField(default=False)
+    default_validity_months = models.PositiveIntegerField(blank=True, null=True)
+    expiry_date_required = models.BooleanField(default=False)
+    reminder_before_expiry_days = models.PositiveIntegerField(blank=True, null=True)
+    is_demo = models.BooleanField(default=False)
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["name", "pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "name"],
+                condition=models.Q(is_demo=False),
+                name="unique_live_purchase_legal_document_name",
+            )
+        ]
+
+    def clean(self):
+        errors = {}
+        if self.requirement_type == self.RequirementType.OPTIONAL and self.is_blocking:
+            errors["is_blocking"] = "Optional documents cannot be blocking."
+        if self.expiry_date_required and not self.expiry_applicable:
+            errors["expiry_date_required"] = "Expiry date cannot be required when expiry is not applicable."
+        if not self.expiry_applicable and self.default_validity_months is not None:
+            errors["default_validity_months"] = "Default validity requires expiry tracking."
+        if not self.expiry_applicable and self.reminder_before_expiry_days is not None:
+            errors["reminder_before_expiry_days"] = "Expiry reminders require expiry tracking."
+        if errors:
+            raise ValidationError(errors)
+
+    def __str__(self):
+        return self.name
+
+
+class PurchaseLegalDocumentAttachment(TimeStampedModel):
+    MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024
+    MAX_TOTAL_SIZE_BYTES = 100 * 1024 * 1024
+
+    legal_document = models.ForeignKey(
+        PurchaseLegalDocument,
+        on_delete=models.CASCADE,
+        related_name="attachments",
+    )
+    file = models.FileField(
+        upload_to="purchase_legal_docs/attachments/",
+        validators=[FileExtensionValidator(["pdf"])],
+    )
+    file_name = models.CharField(max_length=255, editable=False)
+    size_bytes = models.PositiveBigIntegerField(default=0, editable=False)
+
+    class Meta:
+        ordering = ["legal_document", "file_name", "pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["legal_document", "file_name"],
+                name="unique_purchase_legal_document_attachment_name",
+            )
+        ]
+
+    def clean(self):
+        errors = {}
+        if self.file:
+            self.file_name = self.file.name.rsplit("/", 1)[-1]
+            self.size_bytes = self.file.size
+            if self.size_bytes > self.MAX_FILE_SIZE_BYTES:
+                errors["file"] = "Each legal-document attachment must be 25 MB or smaller."
+            try:
+                position = self.file.tell()
+            except (AttributeError, OSError):
+                position = None
+            try:
+                self.file.seek(0)
+                if self.file.read(4) != b"%PDF":
+                    errors["file"] = "Legal-document attachments must be valid PDF files."
+            finally:
+                if position is not None:
+                    self.file.seek(position)
+        if self.legal_document_id:
+            existing_total = (
+                type(self).objects.filter(legal_document_id=self.legal_document_id)
+                .exclude(pk=self.pk)
+                .aggregate(total=models.Sum("size_bytes"))["total"]
+                or 0
+            )
+            if existing_total + self.size_bytes > self.MAX_TOTAL_SIZE_BYTES:
+                errors["file"] = "Total legal-document attachments must be 100 MB or smaller."
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.file_name
+
+
 class VendorProfile(TimeStampedModel):
     class Status(models.TextChoices):
         DRAFT = "draft", "Draft"
@@ -722,6 +989,15 @@ class VendorProfile(TimeStampedModel):
     category = models.ForeignKey(VendorCategory, on_delete=models.SET_NULL, blank=True, null=True, related_name="vendors")
     registration_number = models.CharField(max_length=80, blank=True)
     tax_number = models.CharField(max_length=80, blank=True)
+    purchase_credit_limit = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        blank=True,
+        null=True,
+        validators=[MinValueValidator(Decimal("0"))],
+        verbose_name="Purchase Limit",
+        help_text="Purchase limit assigned to this vendor; new vendors inherit Purchase Settings when omitted.",
+    )
     rating = models.DecimalField(max_digits=4, decimal_places=2, default=0, validators=[MaxValueValidator(5)])
     active = models.BooleanField(default=True)
     approved_by = models.ForeignKey(
@@ -775,11 +1051,32 @@ class VendorProfile(TimeStampedModel):
             registration_number__iexact=self.registration_number,
         ).exclude(pk=self.pk).exists():
             errors["registration_number"] = "Vendor registration number must be unique per company."
+        if not self.registration_number and self.company_id:
+            sequence_mode = PurchaseSetting.objects.filter(company_id=self.company_id).values_list(
+                "vendor_sequence_mode",
+                flat=True,
+            ).first()
+            if sequence_mode == PurchaseSetting.SequenceMode.MANUAL:
+                errors["registration_number"] = "Vendor Code is required when manual generation is enabled."
         if errors:
             raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
+        setting_values = (
+            PurchaseSetting.objects.filter(company_id=self.company_id)
+            .values("vendor_sequence_mode", "credit_limit")
+            .first()
+        ) or {}
+        if self._state.adding and self.purchase_credit_limit is None:
+            self.purchase_credit_limit = setting_values.get("credit_limit") or Decimal("0")
+        if self.purchase_credit_limit is not None and self.purchase_credit_limit < 0:
+            raise ValidationError({"purchase_credit_limit": "Purchase Limit cannot be negative."})
         if not self.registration_number:
+            sequence_mode = setting_values.get("vendor_sequence_mode")
+            if sequence_mode == PurchaseSetting.SequenceMode.MANUAL:
+                raise ValidationError(
+                    {"registration_number": "Vendor Code is required when manual generation is enabled."}
+                )
             self.registration_number = f"VEN-{uuid4().hex[:12].upper()}"
         super().save(*args, **kwargs)
 
@@ -811,7 +1108,14 @@ class VendorLegalDocument(TimeStampedModel):
         SUPERSEDED = "superseded", "Superseded"
 
     vendor = models.ForeignKey(VendorProfile, on_delete=models.CASCADE, related_name="legal_documents")
-    document_type = models.CharField(max_length=100)
+    legal_document = models.ForeignKey(
+        PurchaseLegalDocument,
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="vendor_documents",
+    )
+    document_type = models.CharField(max_length=255, blank=True)
     document_number = models.CharField(max_length=100, blank=True)
     issue_date = models.DateField(blank=True, null=True)
     expiry_date = models.DateField(blank=True, null=True)
@@ -859,9 +1163,42 @@ class VendorLegalDocument(TimeStampedModel):
 
     class Meta:
         ordering = ["vendor__partner__name", "document_type"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["vendor", "legal_document"],
+                condition=(
+                    models.Q(legal_document__isnull=False, renewal_source="")
+                    & ~models.Q(review_status="superseded")
+                ),
+                name="unique_active_vendor_legal_requirement",
+            )
+        ]
+
+    def apply_legal_document_configuration(self):
+        if not self.legal_document_id:
+            return
+        config = self.legal_document
+        self.document_type = config.name
+        self.requirement_type = config.requirement_type
+        self.mandatory = config.requirement_type == PurchaseLegalDocument.RequirementType.REQUIRED
+        self.is_blocking = config.is_blocking
+        self.expiry_required = config.expiry_date_required
+        self.reminder_before_expiry_days = config.reminder_before_expiry_days or 0
+        if (
+            self.issue_date
+            and not self.expiry_date
+            and config.expiry_applicable
+            and config.default_validity_months
+        ):
+            self.expiry_date = add_calendar_months(self.issue_date, config.default_validity_months)
 
     def clean(self):
+        self.apply_legal_document_configuration()
         errors = {}
+        if not self.legal_document_id and not self.document_type.strip():
+            errors["document_type"] = "Document type is required."
+        if self.legal_document_id and self.legal_document.company_id != self.vendor.company_id:
+            errors["legal_document"] = "Legal document type must belong to the Vendor company."
         if self.expiry_date and self.issue_date and self.expiry_date < self.issue_date:
             errors["expiry_date"] = "Expiry date cannot be earlier than issue date."
         if self.attachment_url and self.expiry_required and not self.expiry_date:
@@ -870,6 +1207,21 @@ class VendorLegalDocument(TimeStampedModel):
             errors["is_blocking"] = "Optional legal documents cannot block Vendor approval."
         if errors:
             raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.apply_legal_document_configuration()
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None and self.legal_document_id:
+            kwargs["update_fields"] = set(update_fields) | {
+                "document_type",
+                "requirement_type",
+                "mandatory",
+                "is_blocking",
+                "expiry_required",
+                "reminder_before_expiry_days",
+                "expiry_date",
+            }
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.vendor} - {self.document_type}"
@@ -959,7 +1311,7 @@ class VendorDocumentReview(TimeStampedModel):
 
     prequalification = models.ForeignKey(VendorPrequalification, on_delete=models.CASCADE, related_name="document_reviews")
     sequence = models.PositiveIntegerField(default=10)
-    document_type = models.CharField(max_length=100, blank=True)
+    document_type = models.CharField(max_length=255, blank=True)
     document = models.ForeignKey(
         VendorLegalDocument,
         on_delete=models.PROTECT,
@@ -1368,6 +1720,11 @@ class VendorPerformanceTemplate(TimeStampedModel):
         max_length=32,
         choices=PartialScoringRule.choices,
         default=PartialScoringRule.MARK_INSUFFICIENT,
+    )
+    vendor_categories = models.ManyToManyField(
+        VendorCategory,
+        blank=True,
+        related_name="vendor_performance_templates",
     )
     notes = models.TextField(blank=True)
     # Kept as read-only compatibility columns for records created before the
@@ -2305,7 +2662,7 @@ class PurchaseRemarkTemplate(TimeStampedModel):
         ALL = "all", "Purchase Request & Purchase Order"
 
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="purchase_remark_templates")
-    code = models.CharField(max_length=64)
+    code = models.CharField(max_length=64, blank=True, editable=False)
     name = models.CharField(max_length=255)
     remark_type = models.CharField(max_length=32, choices=RemarkType.choices, default=RemarkType.GENERAL)
     applicable_document = models.CharField(
@@ -2324,6 +2681,17 @@ class PurchaseRemarkTemplate(TimeStampedModel):
                 name="unique_purchase_remark_template_code",
             )
         ]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            persisted_code = type(self).objects.filter(pk=self.pk).values_list("code", flat=True).first()
+            if persisted_code and self.code != persisted_code:
+                raise ValidationError({"code": "Remark Template code cannot be changed."})
+        elif self.code:
+            raise ValidationError({"code": "Remark Template code is generated automatically."})
+        if not self.code:
+            self.code = f"PRM-{self.company.code}-{uuid4().hex[:12].upper()}"[:64]
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.code} - {self.name}"
@@ -2407,6 +2775,10 @@ class PurchaseMilestoneTemplateLine(TimeStampedModel):
 
 
 class PurchaseSetting(TimeStampedModel):
+    class SequenceMode(models.TextChoices):
+        AUTOMATIC = "auto", "Automatic"
+        MANUAL = "manual", "Manual"
+
     class RFQVendorEligibility(models.TextChoices):
         APPROVED_ONLY = "approved_only", "Approved Vendors Only"
         ALLOW_DRAFT = "allow_draft_on_rfq", "Allow Draft Vendors on RFQ"
@@ -2419,7 +2791,20 @@ class PurchaseSetting(TimeStampedModel):
         MANUAL = "manual", "Create vendor bill in draft"
         AUTO = "auto", "Post and pay vendor bill automatically"
 
+    class ThreeWayMatchMode(models.TextChoices):
+        MONITORING_ONLY = "monitoring_only", "Monitoring Only"
+        STRICT = "strict", "Strict"
+
+    class RevisionSequenceMode(models.TextChoices):
+        APPEND_SUFFIX = "append_suffix", "Append Revision Suffix"
+        FOLLOW_SEQUENCE = "follow_sequence", "Follow Sequence Master Data"
+
     company = models.OneToOneField(Company, on_delete=models.PROTECT, related_name="purchase_setting")
+    vendor_sequence_mode = models.CharField(
+        max_length=16,
+        choices=SequenceMode.choices,
+        default=SequenceMode.AUTOMATIC,
+    )
     default_currency = models.CharField(max_length=3, default="IDR")
     request_approval_levels = models.PositiveSmallIntegerField(default=1, validators=[MinValueValidator(1), MaxValueValidator(5)])
     order_approval_levels = models.PositiveSmallIntegerField(default=1, validators=[MinValueValidator(1), MaxValueValidator(5)])
@@ -2435,9 +2820,97 @@ class PurchaseSetting(TimeStampedModel):
         choices=ValidateBillBehavior.choices,
         default=ValidateBillBehavior.MANUAL,
     )
+    credit_limit = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        default=0,
+        validators=[MinValueValidator(Decimal("0"))],
+        verbose_name="Default Purchase Limit",
+    )
+    is_soft_block_limit = models.BooleanField(default=False, verbose_name="Soft Block Limit")
+    soft_block_threshold_percent = models.DecimalField(
+        max_digits=9,
+        decimal_places=4,
+        default=0,
+        validators=[MinValueValidator(Decimal("0"))],
+        verbose_name="Soft Block Threshold Percentage",
+    )
+    is_warning_block_limit = models.BooleanField(default=False, verbose_name="Warning Block Limit")
+    warning_block_threshold_percent = models.DecimalField(
+        max_digits=9,
+        decimal_places=4,
+        default=0,
+        validators=[MinValueValidator(Decimal("0"))],
+        verbose_name="Warning Block Threshold Percentage",
+    )
+    is_hard_block_limit = models.BooleanField(default=False, verbose_name="Hard Block Limit")
+    hard_block_threshold_percent = models.DecimalField(
+        max_digits=9,
+        decimal_places=4,
+        default=0,
+        validators=[MinValueValidator(Decimal("0"))],
+        verbose_name="Hard Block Threshold Percentage",
+    )
+    purchase_three_way_match_mode = models.CharField(
+        max_length=20,
+        choices=ThreeWayMatchMode.choices,
+        default=ThreeWayMatchMode.MONITORING_ONLY,
+        verbose_name="3-Way Matching Mode",
+    )
+    purchase_match_quantity_tolerance = models.DecimalField(
+        max_digits=18,
+        decimal_places=3,
+        default=0,
+        validators=[MinValueValidator(Decimal("0"))],
+        verbose_name="Quantity Tolerance",
+        help_text="Allowed absolute quantity variance in the Purchase Order line unit.",
+    )
+    purchase_match_price_tolerance = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        default=0,
+        validators=[MinValueValidator(Decimal("0"))],
+        verbose_name="Unit Price Tolerance",
+        help_text="Allowed absolute unit-price variance in the Purchase Order currency.",
+    )
+    restrict_product_by_vendor_pricelist = models.BooleanField(
+        default=False,
+        verbose_name="Product Vendor Pricelist Filter",
+        help_text=(
+            "When enabled, Purchase Order and Blanket Order lines may only use products in an active "
+            "vendor pricelist valid on the transaction date."
+        ),
+    )
+    allow_order_revision = models.BooleanField(
+        default=False,
+        verbose_name="Allow Order Revision",
+        help_text="Allow eligible Purchase Orders to create a new draft revision.",
+    )
+    order_revision_sequence_mode = models.CharField(
+        max_length=32,
+        choices=RevisionSequenceMode.choices,
+        blank=True,
+        default="",
+        verbose_name="Revised Document Sequence Numbering",
+    )
     tender_award_response_working_days = models.PositiveSmallIntegerField(
         default=3,
         validators=[MinValueValidator(1), MaxValueValidator(260)],
+    )
+    pr_expiry_period_days = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+        validators=[MinValueValidator(1)],
+    )
+    rfq_expiry_period_days = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+        validators=[MinValueValidator(1)],
+    )
+    pt_expiry_period_days = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+        validators=[MinValueValidator(1)],
     )
     require_vendor_prequalification = models.BooleanField(default=True)
     rfq_vendor_eligibility = models.CharField(
@@ -2446,6 +2919,10 @@ class PurchaseSetting(TimeStampedModel):
         default=RFQVendorEligibility.APPROVED_ONLY,
     )
     vendor_performance_scoring_enabled = models.BooleanField(default=False)
+    vendor_performance_evaluation_period = models.PositiveIntegerField(
+        default=12,
+        validators=[MinValueValidator(1)],
+    )
     vendor_performance_recalculation_enabled = models.BooleanField(default=False)
     vendor_performance_default_template = models.ForeignKey(
         VendorPerformanceTemplate,
@@ -2457,6 +2934,67 @@ class PurchaseSetting(TimeStampedModel):
 
     class Meta:
         ordering = ["company__name"]
+
+    def clean(self):
+        errors = {}
+        if (
+            self.is_warning_block_limit
+            and self.is_soft_block_limit
+            and self.warning_block_threshold_percent >= self.soft_block_threshold_percent
+        ):
+            errors["warning_block_threshold_percent"] = (
+                "Warning threshold must be less than Soft Block threshold."
+            )
+        if (
+            self.is_soft_block_limit
+            and self.is_hard_block_limit
+            and self.soft_block_threshold_percent >= self.hard_block_threshold_percent
+        ):
+            errors["soft_block_threshold_percent"] = (
+                "Soft Block threshold must be less than Hard Block threshold."
+            )
+        template = self.vendor_performance_default_template
+        if template and template.company_id != self.company_id:
+            errors["vendor_performance_default_template"] = (
+                "The default Vendor Performance Template must belong to the Purchase Settings company."
+            )
+        if self.vendor_performance_scoring_enabled:
+            if not template:
+                errors["vendor_performance_default_template"] = (
+                    "A default Vendor Performance Template is required when scoring is enabled."
+                )
+            elif not template.active:
+                errors["vendor_performance_default_template"] = (
+                    "The default Vendor Performance Template must be active."
+                )
+            else:
+                if template.qualitative_weight + template.quantitative_weight != Decimal("100"):
+                    errors["vendor_performance_default_template"] = (
+                        "Template qualitative and quantitative weights must total 100%."
+                    )
+                elif template.delivery_accuracy_weight + template.rejection_rate_weight != Decimal("100"):
+                    errors["vendor_performance_default_template"] = (
+                        "Template delivery accuracy and rejection rate weights must total 100%."
+                    )
+                else:
+                    active_lines = template.lines.filter(active=True).aggregate(
+                        count=models.Count("pk"),
+                        total=models.Sum("weight"),
+                    )
+                    if not active_lines["count"]:
+                        errors["vendor_performance_default_template"] = (
+                            "The default Vendor Performance Template requires at least one active criterion."
+                        )
+                    elif active_lines["total"] != Decimal("100"):
+                        errors["vendor_performance_default_template"] = (
+                            "Active Vendor Performance Template criterion weights must total 100%."
+                        )
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         return f"Purchase Settings - {self.company}"
@@ -2537,6 +3075,21 @@ class PurchaseOrderControl(TimeStampedModel):
     communication_history = models.TextField(blank=True)
     receiving_status = models.CharField(max_length=20, choices=ReceivingStatus.choices, default=ReceivingStatus.NOT_RECEIVED)
     accounting_status = models.CharField(max_length=20, choices=AccountingStatus.choices, default=AccountingStatus.NOT_BILLED)
+    match_status = models.CharField(
+        max_length=24,
+        choices=ThreeWayMatchStatus.choices,
+        blank=True,
+        default="",
+        editable=False,
+    )
+    purchase_limit_requires_approval = models.BooleanField(default=False, editable=False)
+    purchase_limit_warning_message = models.TextField(blank=True, editable=False)
+    purchase_limit_total = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        default=0,
+        editable=False,
+    )
     approval_reference = models.CharField(max_length=80, blank=True)
 
     class Meta:
@@ -2544,6 +3097,59 @@ class PurchaseOrderControl(TimeStampedModel):
 
     def __str__(self):
         return str(self.order)
+
+
+class PurchaseThreeWayMatch(TimeStampedModel):
+    """Purchase-owned, persisted 3-way matching snapshot for one PO line."""
+
+    order_line = models.OneToOneField(
+        PurchaseOrderLine,
+        on_delete=models.CASCADE,
+        related_name="purchase_three_way_match",
+    )
+    matching_billed_quantity = models.DecimalField(
+        max_digits=18,
+        decimal_places=3,
+        default=0,
+        editable=False,
+    )
+    remaining_to_receive = models.DecimalField(
+        max_digits=18,
+        decimal_places=3,
+        default=0,
+        editable=False,
+    )
+    received_not_billed = models.DecimalField(
+        max_digits=18,
+        decimal_places=3,
+        default=0,
+        editable=False,
+    )
+    over_received = models.DecimalField(
+        max_digits=18,
+        decimal_places=3,
+        default=0,
+        editable=False,
+    )
+    over_billed = models.DecimalField(
+        max_digits=18,
+        decimal_places=3,
+        default=0,
+        editable=False,
+    )
+    match_status = models.CharField(
+        max_length=24,
+        choices=ThreeWayMatchStatus.choices,
+        blank=True,
+        default="",
+        editable=False,
+    )
+
+    class Meta:
+        ordering = ["order_line_id"]
+
+    def __str__(self):
+        return f"{self.order_line} - {self.match_status or 'not applicable'}"
 
 
 class PurchaseOrderMilestone(TimeStampedModel):
@@ -2860,6 +3466,7 @@ class PurchaseQuotationLine(TimeStampedModel):
     tax_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0, validators=[MaxValueValidator(100)])
     discount_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0, validators=[MaxValueValidator(100)])
     promised_date = models.DateField(blank=True, null=True)
+    expiry_date = models.DateField(blank=True, null=True)
 
     class Meta:
         ordering = ["id"]
@@ -2870,6 +3477,8 @@ class PurchaseQuotationLine(TimeStampedModel):
         return discounted * (Decimal("1") + self.tax_percent / Decimal("100"))
 
     def clean(self):
+        if not self.expiry_date and self.quotation_id:
+            self.expiry_date = self.quotation.response_deadline
         errors = {}
         if self.request_line_id and self.quotation.request_id and self.request_line.request_id != self.quotation.request_id:
             errors["request_line"] = "The request line must belong to the quotation's purchase request."
@@ -2881,6 +3490,11 @@ class PurchaseQuotationLine(TimeStampedModel):
             errors["unit_price"] = "Unit price cannot be negative."
         if errors:
             raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        if not self.expiry_date and self.quotation_id:
+            self.expiry_date = self.quotation.response_deadline
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.quotation} - {self.description}"
@@ -3143,11 +3757,18 @@ class TenderDocument(TimeStampedModel):
         REVISION = "revision", "Revision Required"
 
     tender = models.ForeignKey(PurchaseTender, on_delete=models.CASCADE, related_name="documents")
+    legal_document = models.ForeignKey(
+        PurchaseLegalDocument,
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="tender_requirements",
+    )
     bid = models.ForeignKey(TenderBid, on_delete=models.CASCADE, blank=True, null=True, related_name="documents")
     vendor = models.ForeignKey(Contact, on_delete=models.PROTECT, blank=True, null=True, related_name="tender_documents")
-    document_type = models.CharField(max_length=100)
+    document_type = models.CharField(max_length=255)
     title = models.CharField(max_length=180)
-    attachment_url = models.URLField()
+    attachment_url = models.URLField(blank=True)
     mandatory = models.BooleanField(default=False)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
     review_note = models.TextField(blank=True)
@@ -3156,13 +3777,101 @@ class TenderDocument(TimeStampedModel):
         ordering = ["tender", "document_type", "title"]
 
     def clean(self):
+        self.apply_legal_document_configuration()
+        errors = {}
         if self.bid_id and self.bid.tender_id != self.tender_id:
-            raise ValidationError({"bid": "The bid must belong to this tender."})
+            errors["bid"] = "The bid must belong to this tender."
         if self.bid_id and self.vendor_id and self.bid.vendor_id != self.vendor_id:
-            raise ValidationError({"vendor": "The vendor must match the selected bid."})
+            errors["vendor"] = "The vendor must match the selected bid."
+        if self.legal_document_id:
+            if self.legal_document.company_id != self.tender.company_id:
+                errors["legal_document"] = "Tender document requirement must belong to the Tender company."
+            if self.legal_document.document_usage not in {
+                PurchaseLegalDocument.DocumentUsage.TENDER_DOCUMENT,
+                PurchaseLegalDocument.DocumentUsage.ADDITIONAL_VENDOR,
+            }:
+                errors["legal_document"] = "Tender requirements only accept Tender or Additional Vendor documents."
+        if errors:
+            raise ValidationError(errors)
+
+    def apply_legal_document_configuration(self):
+        if not self.legal_document_id:
+            return
+        self.document_type = self.legal_document.name
+        if not self.title:
+            self.title = self.legal_document.name
+        self.mandatory = self.legal_document.requirement_type != PurchaseLegalDocument.RequirementType.OPTIONAL
+
+    def save(self, *args, **kwargs):
+        self.apply_legal_document_configuration()
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None and self.legal_document_id:
+            kwargs["update_fields"] = set(update_fields) | {"document_type", "title", "mandatory"}
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.tender} - {self.title}"
+
+
+class TenderDocumentCompletionMatrix(TimeStampedModel):
+    tender = models.OneToOneField(
+        PurchaseTender,
+        on_delete=models.CASCADE,
+        related_name="document_completion_matrix",
+    )
+    name = models.CharField(max_length=255)
+    document_columns = models.JSONField(default=list, blank=True)
+    footer_totals = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["pk"]
+
+    def __str__(self):
+        return self.name
+
+
+class TenderDocumentCompletionLine(TimeStampedModel):
+    matrix = models.ForeignKey(
+        TenderDocumentCompletionMatrix,
+        on_delete=models.CASCADE,
+        related_name="lines",
+    )
+    tender = models.ForeignKey(
+        PurchaseTender,
+        on_delete=models.CASCADE,
+        related_name="document_completion_lines",
+    )
+    vendor = models.ForeignKey(
+        VendorProfile,
+        on_delete=models.CASCADE,
+        related_name="tender_document_completion_lines",
+    )
+    sequence = models.PositiveIntegerField(default=10)
+    vendor_name = models.CharField(max_length=255)
+    vendor_subtitle = models.CharField(max_length=255, blank=True)
+    completion_summary = models.CharField(max_length=64, default="-")
+    document_cells = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        ordering = ["sequence", "pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tender", "vendor"],
+                name="unique_tender_document_completion_vendor",
+            )
+        ]
+
+    def clean(self):
+        errors = {}
+        if self.matrix_id and self.matrix.tender_id != self.tender_id:
+            errors["matrix"] = "Document Completion matrix must belong to the selected Tender."
+        if self.vendor_id and self.vendor.company_id != self.tender.company_id:
+            errors["vendor"] = "Document Completion vendor must belong to the Tender company."
+        if errors:
+            raise ValidationError(errors)
+
+    def __str__(self):
+        return f"{self.tender} - {self.vendor_name}"
 
 
 class TenderAuditLog(TimeStampedModel):
@@ -3199,7 +3908,6 @@ class BlanketOrderLine(TimeStampedModel):
 
     class Meta:
         ordering = ["product__name"]
-        constraints = [models.UniqueConstraint(fields=["blanket_order", "product"], name="unique_blanket_order_product")]
 
     def clean(self):
         if self.released_quantity > self.agreed_quantity:
@@ -3734,6 +4442,20 @@ class PurchaseContractTerm(TimeStampedModel):
 
 class PurchaseOrderRevision(TimeStampedModel):
     order = models.ForeignKey(PurchaseOrder, on_delete=models.CASCADE, related_name="revisions")
+    revised_order = models.OneToOneField(
+        PurchaseOrder,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="revision_source",
+    )
+    original_order = models.ForeignKey(
+        PurchaseOrder,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="revision_chain",
+    )
     revision_number = models.PositiveIntegerField()
     reason = models.TextField()
     snapshot = models.JSONField(default=dict)

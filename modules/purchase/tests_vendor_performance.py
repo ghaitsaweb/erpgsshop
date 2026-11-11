@@ -14,6 +14,7 @@ from .models import (
     GoodsReceipt,
     GoodsReceiptLine,
     PurchaseSetting,
+    VendorCategory,
     VendorPerformanceEvaluation,
     VendorPerformanceScoreHistory,
     VendorPerformanceTemplate,
@@ -31,6 +32,11 @@ class VendorPerformanceParityTests(TestCase):
             email="vendor-performance@example.com",
         )
         self.company = Company.objects.create(code="VPE", name="Vendor Performance")
+        self.category = VendorCategory.objects.create(
+            company=self.company,
+            code="VPE",
+            name="Performance Vendors",
+        )
         self.vendor_contact = Contact.objects.create(
             company=self.company,
             code="VPE-VENDOR",
@@ -40,6 +46,7 @@ class VendorPerformanceParityTests(TestCase):
         self.vendor = VendorProfile.objects.create(
             company=self.company,
             partner=self.vendor_contact,
+            category=self.category,
             status=VendorProfile.Status.ACTIVE,
         )
         self.warehouse = Warehouse.objects.create(
@@ -174,6 +181,38 @@ class VendorPerformanceParityTests(TestCase):
         with self.assertRaisesMessage(ValidationError, "Only draft"):
             evaluation.notes = "Late edit"
             evaluation.save()
+
+    def test_scoring_settings_require_an_active_valid_default_template(self):
+        self.setting.vendor_performance_scoring_enabled = True
+        self.setting.vendor_performance_default_template = None
+        with self.assertRaisesMessage(ValidationError, "default Vendor Performance Template is required"):
+            self.setting.save()
+
+        self.setting.vendor_performance_default_template = self.template
+        self.template.active = False
+        self.template.save(update_fields=["active", "updated_at"])
+        with self.assertRaisesMessage(ValidationError, "must be active"):
+            self.setting.save()
+
+        self.template.active = True
+        self.template.save(update_fields=["active", "updated_at"])
+        self.template.lines.filter(sequence=10).update(weight=Decimal("40"))
+        with self.assertRaisesMessage(ValidationError, "criterion weights must total 100%"):
+            self.setting.save()
+
+        self.template.lines.filter(sequence=10).update(weight=Decimal("50"))
+        self.template.vendor_categories.add(self.category)
+        self.setting.vendor_performance_evaluation_period = 0
+        with self.assertRaises(ValidationError) as invalid_period:
+            self.setting.save()
+        self.assertIn("vendor_performance_evaluation_period", invalid_period.exception.message_dict)
+
+        self.setting.vendor_performance_evaluation_period = 12
+        self.setting.save()
+        self.setting.refresh_from_db()
+        self.assertTrue(self.setting.vendor_performance_scoring_enabled)
+        self.assertEqual(self.setting.vendor_performance_evaluation_period, 12)
+        self.assertEqual(list(self.template.vendor_categories.all()), [self.category])
 
     def test_approval_calculates_receipt_score_and_immutable_history(self):
         self.receipt_evidence()

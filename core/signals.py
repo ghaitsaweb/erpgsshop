@@ -11,6 +11,7 @@ from .models import (
     recalculate_total,
 )
 from .sales import sale_total_recalculation_suppressed
+from .total_controls import document_total_recalculation_suppressed
 
 
 @receiver([post_save, post_delete], sender=SaleOrderLine)
@@ -21,7 +22,8 @@ def update_sale_total(sender, instance, **kwargs):
 
 @receiver([post_save, post_delete], sender=PurchaseOrderLine)
 def update_purchase_total(sender, instance, **kwargs):
-    recalculate_total(instance.order)
+    if not document_total_recalculation_suppressed("purchase_order"):
+        recalculate_total(instance.order)
 
 
 @receiver([post_save, post_delete], sender=InvoiceLine)

@@ -143,7 +143,7 @@ class PurchaseReceivingParityTests(TestCase):
         order_line.refresh_from_db()
         self.product.refresh_from_db()
         control = PurchaseOrderControl.objects.get(order=order)
-        self.assertEqual(order.status, PurchaseOrder.Status.COMPLETED)
+        self.assertEqual(order.status, PurchaseOrder.Status.CONFIRMED)
         self.assertEqual(order.received_percentage, Decimal("100.00"))
         self.assertEqual(order_line.received_quantity, Decimal("10"))
         self.assertEqual(self.product.current_stock, Decimal("10"))
@@ -368,6 +368,42 @@ class PurchaseReceivingParityTests(TestCase):
         self.assertEqual(order_line.billed_quantity, Decimal("4"))
         self.assertEqual(document.status, "approved")
         self.assertEqual(control.accounting_status, PurchaseOrderControl.AccountingStatus.BILLED)
+        order.refresh_from_db()
+        self.assertEqual(order.status, PurchaseOrder.Status.CONFIRMED)
+
+    def test_full_receipt_then_draft_bill_auto_closes_order(self):
+        order, _order_line = self.order_with_line(
+            number="PO-AUTO-CLOSE-GR-FIRST",
+            quantity=Decimal("5"),
+        )
+        confirm_purchase_order(order, self.actor)
+        create_goods_receipts(order, self.actor)
+        self.post_receipt(GoodsReceipt.objects.get(order=order))
+
+        order.refresh_from_db()
+        self.assertEqual(order.status, PurchaseOrder.Status.CONFIRMED)
+
+        create_purchase_vendor_bill(order, self.actor)
+
+        order.refresh_from_db()
+        self.assertEqual(order.status, PurchaseOrder.Status.CLOSED)
+
+    def test_draft_bill_then_full_receipt_auto_closes_order(self):
+        order, _order_line = self.order_with_line(
+            number="PO-AUTO-CLOSE-BILL-FIRST",
+            quantity=Decimal("5"),
+        )
+        confirm_purchase_order(order, self.actor)
+        create_purchase_vendor_bill(order, self.actor)
+
+        order.refresh_from_db()
+        self.assertEqual(order.status, PurchaseOrder.Status.CONFIRMED)
+
+        create_goods_receipts(order, self.actor)
+        self.post_receipt(GoodsReceipt.objects.get(order=order))
+
+        order.refresh_from_db()
+        self.assertEqual(order.status, PurchaseOrder.Status.CLOSED)
 
     def test_cancelled_draft_bill_releases_quantity_for_rebilling(self):
         order, _order_line = self.order_with_line(number="PO-BILL-CANCEL", quantity=Decimal("2"))

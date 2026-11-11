@@ -1,3 +1,6 @@
+from .core_parity_config import CORE_PARITY_ENTITY_CONFIG
+from .ecosystem_config import ECOSYSTEM_ENTITY_CONFIG
+from .localization_config import LOCALIZATION_ENTITY_CONFIG
 from .models import (
     AccountCheque,
     AccountDeposit,
@@ -25,6 +28,7 @@ from .models import (
     RecurringJournal,
     WithholdingTax,
 )
+from .parity_config import PARITY_ENTITY_CONFIG
 
 
 POST_WORKFLOW = {
@@ -230,4 +234,14 @@ ACCOUNTING_DOCUMENT_CONFIG = {
             "reverse": {"label": "Reverse", "from": ["posted"], "to": "reversed", "service_controls_state": True},
         },
     },
+}
+
+# Standard installed-app registry. Legacy sub-configs remain separate for their
+# document metadata, while entity discovery consumes this single module contract.
+ENTITY_CONFIG = {
+    **ACCOUNTING_ENTITY_CONFIG,
+    **PARITY_ENTITY_CONFIG,
+    **ECOSYSTEM_ENTITY_CONFIG,
+    **CORE_PARITY_ENTITY_CONFIG,
+    **LOCALIZATION_ENTITY_CONFIG,
 }

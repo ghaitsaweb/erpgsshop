@@ -1,10 +1,13 @@
 from dataclasses import dataclass
 from typing import Callable
 
+from django.core.exceptions import ImproperlyConfigured
+from django.db.models import ForeignKey, OneToOneField
 from django.db.models import Q, QuerySet
 
 
 SmartActionFilter = Callable[[QuerySet, object], QuerySet]
+SmartActionAvailability = Callable[[object], bool]
 
 
 @dataclass(frozen=True)
@@ -23,6 +26,7 @@ class SmartActionDefinition:
     allow_edit: bool = True
     allow_delete: bool = False
     allow_select: bool = False
+    is_available: SmartActionAvailability | None = None
 
 
 def _children_on(field_name):
@@ -41,6 +45,13 @@ def _parent_on(field_name):
         return queryset.filter(pk=getattr(source, f"{field_name}_id"))
 
     return filter_queryset
+
+
+def _has_parent_on(field_name):
+    def is_available(source):
+        return getattr(source, f"{field_name}_id", None) is not None
+
+    return is_available
 
 
 def _relation_pair(
@@ -225,6 +236,30 @@ def _vendor_profile_category(queryset, source):
 
 def _vendor_legal_documents(queryset, source):
     return queryset.filter(vendor_id=source.pk)
+
+
+def _vendor_legal_document_requirements(queryset, source):
+    additional_match = Q(
+        apply_to__in=["vendor", "both"],
+        applicable_vendors=source,
+    )
+    if source.category_id:
+        additional_match |= Q(
+            apply_to__in=["category", "both"],
+            applicable_categories=source.category_id,
+        )
+    return (
+        queryset.filter(
+            company_id=source.company_id,
+            active=True,
+            document_usage="standard_vendor",
+        )
+        .filter(
+            Q(requirement_type__in=["required", "optional"])
+            | (Q(requirement_type="additional") & additional_match)
+        )
+        .distinct()
+    )
 
 
 def _vendor_legal_document_profile(queryset, source):
@@ -559,7 +594,7 @@ def _document_tender(queryset, source):
     return queryset.filter(pk=source.tender_id)
 
 
-SMART_ACTIONS = (
+EXPLICIT_SMART_ACTIONS = (
     SmartActionDefinition(
         key="sales.invoices",
         source_entity="sales",
@@ -1187,6 +1222,15 @@ SMART_ACTIONS = (
         label="Legal Documents",
         icon="▤",
         filter_queryset=_vendor_legal_documents,
+    ),
+    SmartActionDefinition(
+        key="vendor-profiles.legal-document-requirements",
+        source_entity="vendor-profiles",
+        target_entity="purchase-legal-documents",
+        label="Legal Document Requirements",
+        icon="✓",
+        filter_queryset=_vendor_legal_document_requirements,
+        allow_edit=False,
     ),
     SmartActionDefinition(
         key="vendor-legal-documents.vendor",
@@ -2282,7 +2326,115 @@ SMART_ACTIONS = (
 )
 
 
+SMART_ACTIONS = list(EXPLICIT_SMART_ACTIONS)
 SMART_ACTIONS_BY_KEY = {definition.key: definition for definition in SMART_ACTIONS}
+
+
+def _relation_key_part(value):
+    return value.replace("_", "-").strip("-")
+
+
+def _entity_label(config, *, plural):
+    key = "title" if plural else "singular"
+    label = config.get(key)
+    if label:
+        return str(label)
+    model = config["model"]
+    model_label = model._meta.verbose_name_plural if plural else model._meta.verbose_name
+    return str(model_label).title()
+
+
+def build_standard_smart_actions(entity_config, explicit_actions=()):
+    """Derive bidirectional actions for registered concrete model relations."""
+
+    model_entities = {}
+    for entity, config in sorted(entity_config.items()):
+        model = config.get("model")
+        if model is None or config.get("auto_smart_actions", True) is False:
+            continue
+        existing = model_entities.get(model)
+        if existing is not None:
+            raise ImproperlyConfigured(
+                f"Smart action discovery is ambiguous for {model._meta.label}: "
+                f"entities '{existing}' and '{entity}' use the same model."
+            )
+        model_entities[model] = entity
+
+    occupied_keys = {definition.key for definition in explicit_actions}
+    explicit_pairs = {
+        (definition.source_entity, definition.target_entity)
+        for definition in explicit_actions
+    }
+    generated = []
+
+    def add(definition):
+        if definition.key in occupied_keys:
+            raise ImproperlyConfigured(
+                f"Generated smart action key '{definition.key}' collides with another definition."
+            )
+        occupied_keys.add(definition.key)
+        generated.append(definition)
+
+    for child_entity, child_config in sorted(entity_config.items()):
+        child_model = child_config.get("model")
+        if child_model not in model_entities:
+            continue
+        excluded_fields = set(child_config.get("smart_action_exclude_fields", ()))
+        for field in child_model._meta.concrete_fields:
+            if not isinstance(field, (ForeignKey, OneToOneField)) or field.name in excluded_fields:
+                continue
+            parent_entity = model_entities.get(field.remote_field.model)
+            if parent_entity is None:
+                continue
+            parent_config = entity_config[parent_entity]
+
+            if (child_entity, parent_entity) not in explicit_pairs:
+                add(
+                    SmartActionDefinition(
+                        key=f"{child_entity}.{_relation_key_part(field.name)}",
+                        source_entity=child_entity,
+                        target_entity=parent_entity,
+                        label=_entity_label(parent_config, plural=False),
+                        icon="↩",
+                        filter_queryset=_parent_on(field.name),
+                        show_count=False,
+                        hide_when_empty=False,
+                        is_available=_has_parent_on(field.name),
+                    )
+                )
+
+            related_name = field.remote_field.related_name
+            if related_name == "+" or (parent_entity, child_entity) in explicit_pairs:
+                continue
+            reverse_name = related_name or field.related_query_name()
+            add(
+                SmartActionDefinition(
+                    key=f"{parent_entity}.{_relation_key_part(reverse_name)}",
+                    source_entity=parent_entity,
+                    target_entity=child_entity,
+                    label=_entity_label(child_config, plural=True),
+                    icon="▤",
+                    filter_queryset=_children_on(field.name),
+                    show_count=False,
+                    hide_when_empty=False,
+                )
+            )
+    return tuple(generated)
+
+
+def configure_standard_smart_actions(entity_config):
+    """Idempotently combine explicit exceptions with model-derived defaults."""
+
+    generated = build_standard_smart_actions(entity_config, EXPLICIT_SMART_ACTIONS)
+    definitions = [*EXPLICIT_SMART_ACTIONS, *generated]
+    by_key = {}
+    for definition in definitions:
+        if definition.key in by_key:
+            raise ImproperlyConfigured(f"Duplicate smart action key '{definition.key}'.")
+        by_key[definition.key] = definition
+    SMART_ACTIONS[:] = definitions
+    SMART_ACTIONS_BY_KEY.clear()
+    SMART_ACTIONS_BY_KEY.update(by_key)
 
 
 def smart_actions_for_source(entity):

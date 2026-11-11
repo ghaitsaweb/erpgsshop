@@ -33,8 +33,14 @@ from .forms import (
     StyledModelForm,
 )
 from .developer import developer_field_metadata, developer_metadata
+from .document_registry import apply_document_extensions
+from .entity_registry import discover_installed_entity_configs, merge_entity_configs
 from .record_navigation import build_record_navigation
-from .smart_actions import get_smart_action, smart_actions_for_source
+from .smart_actions import (
+    configure_standard_smart_actions,
+    get_smart_action,
+    smart_actions_for_source,
+)
 from .models import (
     Attendance,
     Company,
@@ -79,11 +85,10 @@ from modules.finance.access import (
     scope_accounting_form,
     scope_accounting_queryset,
 )
-from modules.finance.entity_config import ACCOUNTING_DOCUMENT_CONFIG, ACCOUNTING_ENTITY_CONFIG
-from modules.finance.ecosystem_config import ECOSYSTEM_DOCUMENT_CONFIG, ECOSYSTEM_ENTITY_CONFIG
-from modules.finance.core_parity_config import CORE_PARITY_DOCUMENT_CONFIG, CORE_PARITY_ENTITY_CONFIG
-from modules.finance.localization_config import LOCALIZATION_ENTITY_CONFIG
-from modules.finance.parity_config import PARITY_DOCUMENT_CONFIG, PARITY_ENTITY_CONFIG
+from modules.finance.entity_config import ACCOUNTING_DOCUMENT_CONFIG
+from modules.finance.ecosystem_config import ECOSYSTEM_DOCUMENT_CONFIG
+from modules.finance.core_parity_config import CORE_PARITY_DOCUMENT_CONFIG
+from modules.finance.parity_config import PARITY_DOCUMENT_CONFIG
 from modules.finance.models import (
     Account,
     AccountPayment,
@@ -255,8 +260,8 @@ from modules.operations.models import (
     QualityInspection,
     WorkPackage,
 )
-from modules.pos.models import KitchenTicket, POSOrder, POSOrderLine, POSRegister, POSSession, RestaurantTable
-from modules.pos.entity_config import POS_DOCUMENT_CONFIG, POS_ENTITY_CONFIG
+from modules.pos.models import POSOrder, POSOrderLine
+from modules.pos.entity_config import POS_DOCUMENT_CONFIG
 from modules.pos.access import can_pos_entity_action, can_pos_workflow_action, scope_pos_form, scope_pos_queryset
 from modules.organization.context import get_current_context
 from modules.organization.context import scope_form as scope_organization_form
@@ -265,7 +270,6 @@ from modules.organization.forms import BranchForm
 from modules.organization.models import Branch
 from modules.apphub.models import ERPApp
 from modules.apphub.workspaces import ENTITY_APP_MAP
-from modules.approval_workflow.entity_config import APPROVAL_ENTITY_CONFIG
 from modules.approval_workflow.access import (
     can_approval_entity_action,
     is_approval_entity,
@@ -286,7 +290,6 @@ from modules.approval_workflow.services import (
     submit_for_approval,
 )
 from modules.hr.access import can_hr_entity_action, can_hr_workflow_action, scope_hr_form, scope_hr_queryset
-from modules.hr.detail_config import HR_DETAIL_ENTITY_CONFIG
 from modules.hr.contract_views import contract_attachment_download as serve_contract_attachment
 from modules.hr.contract_views import contract_create
 from modules.hr.contract_views import contract_workspace
@@ -297,7 +300,6 @@ from modules.purchase.access import (
     scope_purchase_form,
     scope_purchase_queryset,
 )
-from modules.purchase.entity_config import PURCHASE_ENTITY_CONFIG
 from modules.purchase.models import (
     BlanketOrder,
     BlanketOrderLine,
@@ -313,7 +315,6 @@ from modules.purchase.models import (
     PurchaseInvoiceAccounting,
     PurchaseOrderControl,
     PurchaseOrderInvoiceAccounting,
-    PurchaseOrderRevision,
     PurchasePeppolEvent,
     PurchaseQuotation,
     PurchaseQuotationLine,
@@ -1282,53 +1283,6 @@ ENTITY_CONFIG = {
         "form_fields": ["book", "student", "borrowed_date", "due_date", "returned_date", "status"],
         "select_related": ["book", "student"],
     },
-    # POS and F&B
-    "pos-registers": {
-        "model": POSRegister,
-        "title": "POS Registers",
-        "singular": "POS Register",
-        "columns": [("code", "Code"), ("name", "Register"), ("company", "Company"), ("warehouse", "Warehouse"), ("active", "Active")],
-        "search": ["code", "name"],
-        "form_fields": ["company", "code", "name", "warehouse", "active"],
-        "select_related": ["company", "warehouse"],
-    },
-    "pos-sessions": {
-        "model": POSSession,
-        "title": "POS Sessions",
-        "singular": "POS Session",
-        "columns": [("register", "Register"), ("opened_by", "Opened By"), ("opened_at", "Opened"), ("closed_at", "Closed"), ("opening_cash", "Opening Cash"), ("status", "Status")],
-        "search": ["register__code", "register__name", "opened_by__username"],
-        "form_fields": ["register", "opened_by", "opened_at", "closed_at", "opening_cash", "closing_cash", "status"],
-        "select_related": ["register", "opened_by"],
-    },
-    "pos-orders": {
-        "model": POSOrder,
-        "title": "POS Orders",
-        "singular": "POS Order",
-        "columns": [("number", "Number"), ("session", "Session"), ("order_type", "Type"), ("customer", "Customer"), ("total", "Total"), ("status", "Status")],
-        "search": ["number", "customer__name", "session__register__name"],
-        "form_fields": ["session", "number", "customer", "order_type", "restaurant_table", "paid_amount", "payment_method", "status"],
-        "select_related": ["session", "session__register", "customer", "restaurant_table"],
-        "admin_detail": True,
-    },
-    "restaurant-tables": {
-        "model": RestaurantTable,
-        "title": "Restaurant Tables",
-        "singular": "Restaurant Table",
-        "columns": [("name", "Table"), ("area", "Area"), ("register", "Register"), ("seats", "Seats"), ("status", "Status")],
-        "search": ["name", "area", "register__name"],
-        "form_fields": ["register", "name", "area", "seats", "status"],
-        "select_related": ["register"],
-    },
-    "kitchen-tickets": {
-        "model": KitchenTicket,
-        "title": "Kitchen Tickets",
-        "singular": "Kitchen Ticket",
-        "columns": [("order", "Order"), ("station", "Station"), ("status", "Status"), ("created_at", "Created")],
-        "search": ["order__number", "station", "notes"],
-        "form_fields": ["order", "station", "status", "notes"],
-        "select_related": ["order"],
-    },
     # AI Coworker
     "ai-workspaces": {
         "model": AIWorkspace,
@@ -1772,16 +1726,8 @@ ENTITY_CONFIG.update(
     }
 )
 
-ENTITY_CONFIG.update(PURCHASE_ENTITY_CONFIG)
-ENTITY_CONFIG.update(HR_DETAIL_ENTITY_CONFIG)
-ENTITY_CONFIG.update(APPROVAL_ENTITY_CONFIG)
-ENTITY_CONFIG.update(CONSTRUCTION_ENTITY_CONFIG)
-ENTITY_CONFIG.update(POS_ENTITY_CONFIG)
-ENTITY_CONFIG.update(ACCOUNTING_ENTITY_CONFIG)
-ENTITY_CONFIG.update(PARITY_ENTITY_CONFIG)
-ENTITY_CONFIG.update(ECOSYSTEM_ENTITY_CONFIG)
-ENTITY_CONFIG.update(CORE_PARITY_ENTITY_CONFIG)
-ENTITY_CONFIG.update(LOCALIZATION_ENTITY_CONFIG)
+ENTITY_CONFIG = merge_entity_configs(ENTITY_CONFIG, discover_installed_entity_configs())
+configure_standard_smart_actions(ENTITY_CONFIG)
 
 
 DOCUMENT_CONFIG = {
@@ -2540,6 +2486,7 @@ DOCUMENT_CONFIG["construction-progressive-claims"]["actions"]["recompute"] = {
 DOCUMENT_CONFIG["construction-material-demands"]["actions"]["create-purchase-request"] = {
     "label": "Create Purchase Request", "from": ["approved"], "to": "approved", "primary": True, "preserve_status": True,
 }
+apply_document_extensions(DOCUMENT_CONFIG)
 
 
 def health(request):
@@ -2720,6 +2667,8 @@ def _record_smart_actions(request, source_entity, source):
     """Build fixed-query, permission-aware actions for one scoped record."""
     actions = []
     for definition in smart_actions_for_source(source_entity):
+        if definition.is_available is not None and not definition.is_available(source):
+            continue
         target_config = _config(definition.target_entity)
         target_model = target_config["model"]
         if not _can(request.user, "view", target_model, definition.target_entity):
@@ -2895,12 +2844,22 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
             CashAdvanceLineForm if entity == "cash-advances" and index == 0 else
             ExpenseClaimLineForm if entity == "expenses" and index == 0 else StyledModelForm
         )
+        configured_line_limit = section.get("line_limit", document.get("line_limit"))
         if is_derived_line_total:
             formset_options = {
                 "formset": CashAdvanceLineFormSet if entity == "cash-advances" else ExpenseClaimLineFormSet,
                 "max_num": 100,
                 "validate_max": True,
                 "absolute_max": 120,
+            }
+        elif configured_line_limit is not None:
+            configured_line_limit = int(configured_line_limit)
+            if configured_line_limit < 1:
+                raise ImproperlyConfigured(f"Document '{entity}' has an invalid line_limit.")
+            formset_options = {
+                "max_num": configured_line_limit,
+                "validate_max": True,
+                "absolute_max": configured_line_limit + 20,
             }
         elif entity == "sales":
             formset_options = {
@@ -2989,7 +2948,12 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
                 saved.save()
             for section in line_sections:
                 section["formset"].instance = saved
-                if entity == "cash-advances":
+                line_saver = section.get("line_saver", document.get("line_saver"))
+                if line_saver is not None:
+                    if not callable(line_saver):
+                        raise ImproperlyConfigured(f"Document '{entity}' line_saver must be callable.")
+                    line_saver(saved, section["formset"])
+                elif entity == "cash-advances":
                     save_cash_advance_lines(saved, section["formset"])
                 elif entity == "expenses":
                     save_expense_claim_lines(saved, section["formset"])
@@ -3027,6 +2991,10 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
         if instance
         and current_status in definition["from"]
         and _can_workflow(request.user, entity, key, instance)
+        and (
+            definition.get("is_available") is None
+            or definition["is_available"](instance)
+        )
     ]
     if entity == "purchase-tenders" and instance and current_status == PurchaseTender.Status.AWARDED:
         decision_actions = {
@@ -4894,6 +4862,9 @@ def document_action(request, entity, pk, action):
                 if invoice_id:
                     messages.success(request, f"Draft vendor bill created from {instance.number}.")
                     return redirect("entity_edit", entity="invoices", pk=invoice_id)
+            if definition.get("redirect_to_result") and instance.pk != pk:
+                messages.success(request, f"{config['singular']} revision {instance.number} created as Draft.")
+                return redirect("entity_edit", entity=entity, pk=instance.pk)
             if entity == "purchase-quotations" and action == "select":
                 order_id = getattr(instance, "_created_purchase_order_id", None)
                 if order_id:
@@ -4928,20 +4899,6 @@ def document_action(request, entity, pk, action):
                 previous_status=previous_status,
                 new_status=instance.status,
                 actor=request.user,
-            )
-        if entity == "purchases" and action == "revise":
-            last_revision = instance.revisions.aggregate(value=Max("revision_number"))["value"] or 0
-            PurchaseOrderRevision.objects.create(
-                order=instance,
-                revision_number=last_revision + 1,
-                reason="Workflow revision requested",
-                snapshot={
-                    "previous_status": previous_status,
-                    "total": str(instance.total),
-                    "order_date": instance.order_date.isoformat(),
-                    "line_count": instance.lines.count(),
-                },
-                changed_by=request.user,
             )
     display_method = getattr(instance, f"get_{workflow_field}_display", None)
     display_status = display_method() if display_method else str(getattr(instance, workflow_field, target_status)).replace("_", " ").title()

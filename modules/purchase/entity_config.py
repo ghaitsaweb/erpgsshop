@@ -5,6 +5,7 @@ from django.db import models
 from core.models import PurchaseOrderLine
 
 from . import models as purchase_models
+from .forms import PurchaseLegalDocumentForm
 
 
 APPROVAL_WORKFLOW = {
@@ -442,6 +443,8 @@ ENTITY_MODELS = {
     "tender-bids": purchase_models.TenderBid,
     "blanket-orders": purchase_models.BlanketOrder,
     "vendor-categories": purchase_models.VendorCategory,
+    "purchase-legal-documents": purchase_models.PurchaseLegalDocument,
+    "purchase-legal-document-attachments": purchase_models.PurchaseLegalDocumentAttachment,
     "vendor-profiles": purchase_models.VendorProfile,
     "vendor-legal-documents": purchase_models.VendorLegalDocument,
     "vendor-prequalifications": purchase_models.VendorPrequalification,
@@ -473,6 +476,7 @@ ENTITY_MODELS = {
     "purchase-milestone-template-lines": purchase_models.PurchaseMilestoneTemplateLine,
     "purchase-settings": purchase_models.PurchaseSetting,
     "purchase-order-controls": purchase_models.PurchaseOrderControl,
+    "purchase-three-way-matches": purchase_models.PurchaseThreeWayMatch,
     "purchase-order-lines": PurchaseOrderLine,
     "purchase-order-milestones": purchase_models.PurchaseOrderMilestone,
     "product-budget-groups": purchase_models.ProductBudgetGroup,
@@ -496,6 +500,8 @@ ENTITY_MODELS = {
     "tender-award-responses": purchase_models.TenderAwardResponse,
     "tender-invitations": purchase_models.TenderInvitation,
     "tender-documents": purchase_models.TenderDocument,
+    "tender-document-completion-matrices": purchase_models.TenderDocumentCompletionMatrix,
+    "tender-document-completion-lines": purchase_models.TenderDocumentCompletionLine,
     "tender-audit-logs": purchase_models.TenderAuditLog,
     "blanket-order-lines": purchase_models.BlanketOrderLine,
     "purchase-product-categories": purchase_models.PurchaseProductCategory,
@@ -526,6 +532,11 @@ def _build_config(entity, model):
         for field in model._meta.concrete_fields
         if field.editable and not field.auto_created and field.name not in {"id", "created_at", "updated_at"}
     ]
+    form_fields = fields + [
+        field
+        for field in model._meta.many_to_many
+        if field.editable and not field.auto_created
+    ]
     display_fields = [field for field in fields if not isinstance(field, models.TextField)][:5]
     status_field = next((field for field in fields if field.name == "status"), None)
     if status_field and status_field not in display_fields:
@@ -540,7 +551,7 @@ def _build_config(entity, model):
             for field in fields
             if isinstance(field, (models.CharField, models.TextField, models.EmailField, models.URLField))
         ],
-        "form_fields": [field.name for field in fields],
+        "form_fields": [field.name for field in form_fields],
         "select_related": [field.name for field in fields if field.many_to_one or field.one_to_one],
     }
     if entity == "purchase-requests":
@@ -572,9 +583,26 @@ def _build_config(entity, model):
             ("registration_number", "Vendor Code"),
             ("partner", "Vendor"),
             ("category", "Category"),
+            ("purchase_credit_limit", "Purchase Limit"),
             ("active", "Active"),
             ("status", "Status"),
         ]
+    if entity == "purchase-legal-documents":
+        config["form"] = PurchaseLegalDocumentForm
+        config["columns"] = [
+            ("name", "Document Name"),
+            ("document_usage", "Usage"),
+            ("requirement_type", "Requirement Type"),
+            ("is_blocking", "Blocking"),
+            ("active", "Active"),
+        ]
+    if entity == "purchase-legal-document-attachments":
+        config["columns"] = [
+            ("legal_document", "Legal Document"),
+            ("file_name", "File Name"),
+            ("size_bytes", "Size (Bytes)"),
+        ]
+        config["form_fields"] = ["legal_document", "file"]
     if entity == "vendor-legal-documents":
         config["workflow_field"] = "review_status"
         config["workflow_locked_statuses"] = {"approved", "superseded"}
@@ -584,6 +612,63 @@ def _build_config(entity, model):
             ("expiry_date", "Expiry Date"),
             ("status", "Expiry Status"),
             ("review_status", "Review Status"),
+        ]
+        config["form_fields"] = [
+            "vendor",
+            "legal_document",
+            "document_number",
+            "issue_date",
+            "expiry_date",
+            "attachment_url",
+            "renewal_source",
+        ]
+    if entity == "tender-documents":
+        config["columns"] = [
+            ("tender", "Tender"),
+            ("document_type", "Document Type"),
+            ("title", "Title"),
+            ("mandatory", "Mandatory"),
+            ("status", "Status"),
+        ]
+        config["form_fields"] = [
+            "tender",
+            "legal_document",
+            "bid",
+            "vendor",
+            "document_type",
+            "title",
+            "attachment_url",
+            "mandatory",
+            "status",
+            "review_note",
+        ]
+    if entity == "tender-document-completion-matrices":
+        config.update(
+            {
+                "creatable": False,
+                "editable": False,
+                "deletable": False,
+                "readonly_detail": True,
+            }
+        )
+        config["columns"] = [
+            ("tender", "Tender"),
+            ("name", "Matrix"),
+        ]
+    if entity == "tender-document-completion-lines":
+        config.update(
+            {
+                "creatable": False,
+                "editable": False,
+                "deletable": False,
+                "readonly_detail": True,
+            }
+        )
+        config["columns"] = [
+            ("tender", "Tender"),
+            ("vendor_name", "Vendor"),
+            ("vendor_subtitle", "Vendor Info"),
+            ("completion_summary", "Completion"),
         ]
     if entity == "vendor-prequalifications":
         config["workflow_locked_statuses"] = {"approved"}
@@ -859,6 +944,7 @@ def _build_config(entity, model):
         ]
     if entity in {
         "purchase-order-lines",
+        "purchase-three-way-matches",
         "tender-audit-logs",
         "vendor-transaction-history",
         "vendor-performance-score-history",
@@ -877,6 +963,7 @@ def _build_config(entity, model):
 
 
 PURCHASE_ENTITY_CONFIG = {entity: _build_config(entity, model) for entity, model in ENTITY_MODELS.items()}
+ENTITY_CONFIG = PURCHASE_ENTITY_CONFIG
 
 if "purchase-accounting-documents" in PURCHASE_ENTITY_CONFIG:
     approval = PURCHASE_ENTITY_CONFIG["purchase-accounting-documents"].get("workflow", {}).get("approve")

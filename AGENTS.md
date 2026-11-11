@@ -2,6 +2,11 @@
 
 ## Mandatory skill usage
 
+- Use `$erp-modular-architecture` whenever adding or changing an ERP module,
+  model relationship, entity registry, menu, smart action, workflow, permission,
+  or module-owned UI. Standard behavior must be supplied through generic
+  discovery/extension points; reserve explicit central declarations for genuine
+  cross-module exceptions.
 - Use `$hmx-erp-parity` whenever ERP GS Shop development is requested as HMX
   parity, 1:1 behavior, copying from HMX, or continued work based on HMX. The
   user-designated HMX worktree is the behavioral source; resolve it per server,

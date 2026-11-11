@@ -4,10 +4,46 @@ from django import forms
 from django.forms import formset_factory
 from django.utils import timezone
 
+from core.forms import StyledModelForm
 from core.models import Contact
 
-from .models import AwardStrategy, PurchaseTender
+from .models import AwardStrategy, PurchaseLegalDocument, PurchaseTender
 from .services import MAX_PURCHASE_DOCUMENT_LINES
+
+
+class PurchaseLegalDocumentForm(StyledModelForm):
+    class Meta:
+        model = PurchaseLegalDocument
+        fields = [
+            "company",
+            "name",
+            "description",
+            "document_usage",
+            "requirement_type",
+            "is_blocking",
+            "expiry_applicable",
+            "expiry_date_required",
+            "default_validity_months",
+            "reminder_before_expiry_days",
+            "apply_to",
+            "applicable_vendors",
+            "applicable_categories",
+            "active",
+        ]
+
+    def clean(self):
+        cleaned = super().clean()
+        company = cleaned.get("company")
+        vendors = cleaned.get("applicable_vendors")
+        categories = cleaned.get("applicable_categories")
+        if company and vendors is not None and vendors.exclude(company=company).exists():
+            self.add_error("applicable_vendors", "Every applicable Vendor must belong to the selected company.")
+        if company and categories is not None and categories.exclude(company=company).exists():
+            self.add_error(
+                "applicable_categories",
+                "Every applicable Vendor Category must belong to the selected company.",
+            )
+        return cleaned
 
 
 class PurchaseRequestRFQForm(forms.Form):

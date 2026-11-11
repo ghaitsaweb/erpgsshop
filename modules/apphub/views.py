@@ -257,9 +257,15 @@ def app_workspace(request, slug):
         from core.views import ENTITY_CONFIG, _can, _scope_queryset
 
         def can_open_menu_item(item):
-            return not item.get("entity") or (
-                item["entity"] in ENTITY_CONFIG
-                and _can(request.user, "view", ENTITY_CONFIG[item["entity"]]["model"], item["entity"])
+            permission_entity = item.get("permission_entity") or item.get("entity")
+            return not permission_entity or (
+                permission_entity in ENTITY_CONFIG
+                and _can(
+                    request.user,
+                    "view",
+                    ENTITY_CONFIG[permission_entity]["model"],
+                    permission_entity,
+                )
             )
 
         workspace_menu_groups = [

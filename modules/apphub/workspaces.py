@@ -1033,6 +1033,18 @@ APP_MENU_GROUPS = {
         {"label": "Catalog", "icon": "C", "entities": ["products"]},
     ],
     "sales": [
+        {
+            "label": "Dashboard",
+            "icon": "D",
+            "items": [
+                {
+                    "label": "Sales Dashboard",
+                    "feature": "dashboard",
+                    "feature_url_name": "sales_feature",
+                    "permission_entity": "sales",
+                }
+            ],
+        },
         {"label": "Sales", "icon": "S", "entities": ["sales", "rental-details"]},
         {"label": "Invoicing", "icon": "I", "entities": ["invoices"]},
         {"label": "Sales Tax", "icon": "T", "entities": ["sale-order-localizations", "sale-order-localized-tax-lines"]},

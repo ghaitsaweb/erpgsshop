@@ -8,6 +8,7 @@
   <title>{% block title %}ERP GSSHOP{% endblock %}</title>
   <link rel="icon" href="{% static 'img/logo.svg' %}" type="image/svg+xml">
   <link rel="stylesheet" href="{% static 'css/app.css' %}">
+  {% block extra_css %}{% endblock %}
 </head>
 <body data-developer-mode="{% if developer_mode %}true{% else %}false{% endif %}" data-current-route="{{ request.resolver_match.view_name|default:'' }}" data-current-app="{{ active_app_slug|default:'' }}" data-current-entity="{{ developer_page_meta.entity|default:'' }}" data-current-model="{{ developer_page_meta.model|default:'' }}" data-current-table="{{ developer_page_meta.table|default:'' }}" data-current-object-id="{{ developer_page_meta.object_id|default:'' }}">
   <div class="app-shell">
@@ -358,5 +359,6 @@
   <script src="{% static 'js/organization-context.js' %}"></script>
   <script src="{% static 'js/organization-form-scope.js' %}"></script>
   {% if can_use_developer_mode %}<script src="{% static 'js/developer-mode.js' %}"></script>{% endif %}
+  {% block extra_js %}{% endblock %}
 </body>
 </html>

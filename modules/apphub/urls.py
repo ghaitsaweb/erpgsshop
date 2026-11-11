@@ -1,5 +1,7 @@
 from django.urls import path
 
+from modules.sales import views as sales_views
+
 from . import views
 
 
@@ -8,6 +10,7 @@ urlpatterns = [
     path("apps/refresh/", views.refresh_app_catalog, name="app_catalog_refresh"),
     path("apps/developer-mode/", views.set_developer_mode, name="developer_mode"),
     path("apps/developer-mode/switch-profile/", views.switch_developer_profile, name="developer_switch_profile"),
+    path("apps/sales/feature/<slug:feature>/", sales_views.dashboard, name="sales_feature"),
     path("apps/hr/feature/<slug:feature>/", views.hr_feature, name="hr_feature"),
     path("apps/accounting/feature/<slug:feature>/", views.accounting_feature, name="accounting_feature"),
     path("apps/accounting/feature/<slug:feature>/export.csv", views.accounting_feature_export, name="accounting_feature_export"),

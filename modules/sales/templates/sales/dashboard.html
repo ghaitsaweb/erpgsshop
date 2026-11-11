@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}Sales Dashboard · ERP GSSHOP{% endblock %}
+{% block page_title %}Sales Dashboard{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{% static 'sales/css/dashboard.css' %}">{% endblock %}
+{% block content %}
+  <section class="sales-dash-hero" data-sales-tour-target="overview">
+    <div>
+      <span class="sales-live-badge"><i></i> Live sales intelligence</span>
+      <h2>Sales Dashboard</h2>
+      <p>Sales performance for {{ analytics.branch_count }} branch{{ analytics.branch_count|pluralize:"es" }} · {{ analytics.period_label }}</p>
+      <button class="sales-demo-button" type="button" data-sales-tour-open><span>▶</span> Demo fitur ini</button>
+    </div>
+    {% if can_add_sale %}
+      <a class="sales-new-order" href="{% url 'entity_create' 'sales' %}" data-sales-tour-target="new-order"><span>＋</span> New Sales Order</a>
+    {% endif %}
+  </section>
+
+  <section class="sales-network-card" data-sales-tour-target="network">
+    <header class="sales-network-head">
+      <div>
+        <p class="sales-section-kicker">Branch network</p>
+        <h2>{{ analytics.country }} <span>· revenue by branch · {{ analytics.period_label }}</span></h2>
+      </div>
+      <div class="sales-network-tools">
+        <span class="sales-compare-pill" data-sales-tour-target="comparison">↗ Compare with same period last year</span>
+        <form method="get" class="sales-date-filter" data-sales-tour-target="period">
+          <label><span>From</span><input type="date" name="date_from" value="{{ analytics.date_from|date:'Y-m-d' }}"></label>
+          <label><span>To</span><input type="date" name="date_to" value="{{ analytics.date_to|date:'Y-m-d' }}"></label>
+          <button type="submit">Apply</button>
+          <a href="{% url 'sales_feature' 'dashboard' %}" aria-label="Reset period">↺</a>
+        </form>
+      </div>
+    </header>
+    {% if analytics.filter_error %}<p class="sales-filter-error">{{ analytics.filter_error }}</p>{% endif %}
+
+    <div class="sales-network-layout">
+      <div class="sales-map" aria-label="Revenue network across selected Indonesian branches">
+        <svg class="sales-map-islands" viewBox="0 0 1000 480" role="img" aria-label="Stylized map of Indonesia">
+          <defs>
+            <pattern id="sales-map-dots" width="13" height="13" patternUnits="userSpaceOnUse">
+              <circle cx="3" cy="3" r="2.4" fill="#7169d4"></circle>
+            </pattern>
+            <linearGradient id="sales-map-glow" x1="0" x2="1">
+              <stop offset="0" stop-color="#f0edff"></stop><stop offset="1" stop-color="#ebe9ff"></stop>
+            </linearGradient>
+          </defs>
+          <ellipse cx="505" cy="280" rx="310" ry="135" fill="url(#sales-map-glow)" opacity=".35"></ellipse>
+          <path d="M84 150c42-34 84-32 126-3 27 19 43 52 68 74 25 23 64 39 58 57-8 23-69 7-102-8-37-17-55-43-83-66-32-27-76-35-67-54z" fill="url(#sales-map-dots)" opacity=".76"></path>
+          <path d="M263 326c89-18 200-21 300-9 42 5 66 19 52 31-26 20-135 15-221 12-71-3-145-10-131-34z" fill="url(#sales-map-dots)" opacity=".78"></path>
+          <path d="M394 118c60-39 153-28 191 21 25 31 6 64-11 99-13 26-42 53-83 45-40-8-49-43-74-65-22-20-54-45-23-100z" fill="url(#sales-map-dots)" opacity=".74"></path>
+          <path d="M625 145c15-28 43-27 61-4 13 16 4 36 20 49 21 17 57 5 69 31 10 24-28 35-35 60-6 21 18 45-5 61-24 16-43-13-57-29-18-21-53-30-48-56 5-27 36-34 27-57-9-22-45-27-32-55z" fill="url(#sales-map-dots)" opacity=".76"></path>
+          <path d="M789 196c46-33 125-36 169 1 24 20 15 62-9 83-34 30-93 20-136 6-34-11-58-66-24-90z" fill="url(#sales-map-dots)" opacity=".72"></path>
+          <path d="M584 375c17-10 45-8 63 1m25 8c14-8 34-7 49 2m28 7c18-9 40-7 55 3" fill="none" stroke="#7169d4" stroke-width="8" stroke-linecap="round" stroke-dasharray="1 15" opacity=".7"></path>
+        </svg>
+        <svg class="sales-map-links" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+          {% for link in analytics.branch_links %}
+            <path class="sales-link-{{ link.kind }} sales-tone-{{ link.tone }}" d="{{ link.path }}"></path>
+          {% endfor %}
+        </svg>
+        {% for branch in analytics.branches %}
+          <button
+            class="sales-branch-pin sales-tone-{{ branch.tone }}{% if forloop.first %} is-active{% endif %}"
+            type="button"
+            style="--x: {{ branch.x }}%; --y: {{ branch.y }}%; --pin-height: {% widthratio branch.share 100 82 %}px"
+            data-sales-branch="{{ branch.id }}"
+            aria-label="{{ branch.name }}, {{ branch.revenue_label }}, {{ branch.order_count }} orders"
+          >
+            <span class="sales-pin-label"><strong>{{ branch.name }}{% if branch.is_main %} (HQ){% endif %}</strong><small>{{ branch.revenue_label }}</small></span>
+            <i></i><em></em>
+          </button>
+        {% empty %}
+          <div class="sales-map-empty"><strong>No branch revenue yet</strong><span>Create or confirm sales orders in the selected period.</span></div>
+        {% endfor %}
+      </div>
+
+      <aside class="sales-branch-ranking" data-sales-tour-target="ranking">
+        <div class="sales-ranking-title"><span>Branch performance</span><small>{{ analytics.revenue_label }} total</small></div>
+        {% for branch in analytics.branches %}
+          <button class="sales-ranking-row sales-tone-{{ branch.tone }}{% if forloop.first %} is-active{% endif %}" type="button" data-sales-branch="{{ branch.id }}">
+            <span class="sales-ranking-name"><i></i><strong>{{ branch.name }}{% if branch.is_main %} (HQ){% endif %}</strong><small>{{ branch.order_count }} orders · {{ branch.share_label }}%</small></span>
+            <strong class="sales-ranking-value">{{ branch.revenue_label }}</strong>
+            <svg viewBox="0 0 50 22" aria-hidden="true"><path d="{{ branch.spark_path }}"></path></svg>
+            <span class="sales-ranking-progress"><i style="width: {{ branch.share|stringformat:'f' }}%"></i></span>
+          </button>
+        {% empty %}
+          <p class="sales-ranking-empty">No branch data in this period.</p>
+        {% endfor %}
+      </aside>
+    </div>
+  </section>
+
+  <section class="sales-kpi-grid" aria-label="Sales dashboard metrics" data-sales-tour-target="metrics">
+    {% for metric in analytics.metrics %}
+      <article class="sales-kpi sales-kpi-{{ metric.tone }}"{% if metric.key == 'promo' %} data-sales-tour-target="promo"{% endif %}>
+        <span class="sales-kpi-icon">{% if metric.key == 'revenue' %}↗{% elif metric.key == 'orders' %}▣{% elif metric.key == 'average' %}≈{% else %}⌘{% endif %}</span>
+        <div>
+          <small>{{ metric.label }}</small>
+          <strong>{{ metric.value }}</strong>
+          <p class="sales-kpi-change is-{{ metric.detail.tone }}">{{ metric.detail.label }}</p>
+        </div>
+      </article>
+    {% endfor %}
+  </section>
+
+  <div class="sales-detail-grid">
+    <section class="sales-insight-card sales-trend-card" data-sales-tour-target="trend">
+      <header>
+        <div><p class="sales-section-kicker">Revenue trend</p><h2>This year compared with last year</h2></div>
+        <div class="sales-chart-switch" role="group" aria-label="Revenue chart display">
+          <button type="button" class="is-active" data-sales-chart-mode="bar" aria-pressed="true">Bar</button>
+          <button type="button" data-sales-chart-mode="line" aria-pressed="false">Line</button>
+        </div>
+      </header>
+      <div class="sales-trend-legend"><span><i></i>{{ analytics.trend.end_year }}</span><span><i></i>{{ analytics.trend.end_year|add:'-1' }}</span></div>
+      <div class="sales-trend-chart" data-sales-chart>
+        <svg class="sales-trend-lines" viewBox="0 0 1200 240" preserveAspectRatio="none" aria-hidden="true">
+          <polyline class="sales-trend-current" points="{{ analytics.trend.current_polyline }}"></polyline>
+          <polyline class="sales-trend-previous" points="{{ analytics.trend.previous_polyline }}"></polyline>
+        </svg>
+        <div class="sales-trend-bars">
+          {% for point in analytics.trend.points %}
+            <div class="sales-trend-column" title="{{ point.label }}: {{ point.value_label }} · previous {{ point.previous_label }}">
+              <span><i style="height: {{ point.height|stringformat:'f' }}%"></i><em style="height: {{ point.previous_height|stringformat:'f' }}%"></em></span>
+              <small>{{ point.label }}</small>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+    </section>
+
+    <section class="sales-insight-card" data-sales-tour-target="pipeline">
+      <header><div><p class="sales-section-kicker">Sales pulse</p><h2>Order pipeline</h2></div><a href="{% url 'entity_list' 'sales' %}">View all orders →</a></header>
+      <div class="sales-pipeline-list">
+        {% for status in analytics.statuses %}
+          <div class="sales-pipeline-row">
+            <span><strong>{{ status.label }}</strong><small>{{ status.count }} orders</small></span>
+            <i><em style="width: {{ status.share|stringformat:'f' }}%"></em></i>
+            <b>{{ status.share|floatformat:0 }}%</b>
+          </div>
+        {% empty %}<p class="sales-empty">No sales orders in this period.</p>{% endfor %}
+      </div>
+    </section>
+
+  </div>
+
+  <div class="sales-tour" data-sales-tour hidden>
+    <button class="sales-tour-backdrop" type="button" data-sales-tour-close aria-label="Close feature tour"></button>
+    <div class="sales-tour-spotlight" data-sales-tour-spotlight aria-hidden="true"></div>
+    <section class="sales-tour-dialog" role="dialog" aria-modal="true" aria-labelledby="sales-tour-title">
+      <button class="sales-tour-close" type="button" data-sales-tour-close aria-label="Close">×</button>
+      <div class="sales-tour-step"><strong data-sales-tour-count>1 / 7</strong><span>Sales Dashboard</span></div>
+      <h2 id="sales-tour-title" data-sales-tour-title></h2>
+      <p data-sales-tour-copy></p>
+      <div class="sales-tour-dots" data-sales-tour-dots aria-hidden="true"></div>
+      <footer><button type="button" data-sales-tour-back>Back</button><button type="button" data-sales-tour-next>Next</button></footer>
+    </section>
+  </div>
+{% endblock %}
+{% block extra_js %}<script defer src="{% static 'sales/js/dashboard.js' %}"></script>{% endblock %}

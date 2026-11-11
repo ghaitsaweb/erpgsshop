@@ -24,6 +24,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "core.apps.CoreConfig",
+    "modules.sales.apps.SalesConfig",
     "modules.organization.apps.OrganizationConfig",
     "modules.apphub.apps.AppHubConfig",
     "modules.approval_workflow.apps.ApprovalWorkflowConfig",

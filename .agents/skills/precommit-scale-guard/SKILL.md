@@ -55,6 +55,34 @@ The reason must be concrete and at least 12 characters. Preserve access rules,
 company isolation, validation, transaction behavior, and complete business
 results while batching.
 
+### Use the smallest meaningful test scope
+
+Derive test labels from the files and behavior actually changed. During
+iteration, run the affected test class or method first. Before handoff, run the
+owning module's focused suite plus only its direct integration points. Do not
+select a repository-wide suite, a broad app label, or every installed module
+merely because that command is convenient.
+
+Expand the scope when the change affects shared/core contracts, routing,
+permissions, middleware, migrations, or another module's public integration;
+also expand it when a focused failure shows a wider dependency. Report the
+exact labels run and why they cover the change. Focused scope must not be used
+to hide a known related failure.
+
+For Django repositories with a verified isolated test database, prefer
+`--keepdb` during repeated runs so migrations are reused. Confirm that the
+database name is a test database and that the command cannot target normal or
+production data. A first-time database may still require all project
+migrations; do not start that expensive setup silently when a narrower existing
+test environment or a targeted smoke check can provide useful feedback first.
+If a focused test label still triggers a first-time all-application schema
+bootstrap, stop before waiting for that broad setup unless the repository gate
+or user explicitly requires it. Run the narrow static/runtime checks that are
+available and report the unit test as `NOT RUN — isolated test database not
+ready`; never describe an all-application bootstrap as focused execution.
+Never trade isolation, authorization coverage, or query-growth evidence for
+speed, and never use the application database as a test database.
+
 Run the repository's supported unit tests for changed behavior in an isolated
 test database. For N+1 or query-growth risk, compare a small and larger fixture
 with the repository query-count helper when available. For new hot queries,

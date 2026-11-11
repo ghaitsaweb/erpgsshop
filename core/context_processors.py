@@ -21,8 +21,9 @@ def navigation(request):
     url_name = resolver.url_name if resolver else ""
     kwargs = resolver.kwargs if resolver else {}
     entity = kwargs.get("entity")
-    feature = kwargs.get("feature") if url_name in {"hr_feature", "purchase_feature", "construction_feature", "pos_feature", "pos_fnb_feature"} else None
+    feature = kwargs.get("feature") if url_name in {"sales_feature", "hr_feature", "purchase_feature", "construction_feature", "pos_feature", "pos_fnb_feature"} else None
     feature_app_slug = {
+        "sales_feature": "sales",
         "hr_feature": "hr",
         "purchase_feature": "purchase",
         "construction_feature": "construction",
@@ -68,9 +69,15 @@ def navigation(request):
         from core.views import ENTITY_CONFIG, _can
 
         def can_open_menu_item(item):
-            return not item.get("entity") or (
-                item["entity"] in ENTITY_CONFIG
-                and _can(request.user, "view", ENTITY_CONFIG[item["entity"]]["model"], item["entity"])
+            permission_entity = item.get("permission_entity") or item.get("entity")
+            return not permission_entity or (
+                permission_entity in ENTITY_CONFIG
+                and _can(
+                    request.user,
+                    "view",
+                    ENTITY_CONFIG[permission_entity]["model"],
+                    permission_entity,
+                )
             )
 
         menu_groups = [
@@ -179,7 +186,13 @@ def navigation(request):
                         if config and _can(request.user, "view", config["model"], item_entity):
                             target_url = reverse("entity_list", args=[item_entity])
                     elif item.get("feature"):
-                        target_url = reverse(item["feature_url_name"], args=[item["feature"]])
+                        permission_entity = item.get("permission_entity")
+                        permission_config = ENTITY_CONFIG.get(permission_entity) if permission_entity else None
+                        if not permission_entity or (
+                            permission_config
+                            and _can(request.user, "view", permission_config["model"], permission_entity)
+                        ):
+                            target_url = reverse(item["feature_url_name"], args=[item["feature"]])
                     elif item.get("app_slug"):
                         target_url = reverse("app_workspace", args=[item["app_slug"]])
                     elif item.get("url"):

@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% load static l10n %}
+{% block title %}{{ analytics.title }} · ERP GSSHOP{% endblock %}
+{% block page_title %}{{ analytics.title }}{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{% static 'purchase/css/dashboard.css' %}">{% endblock %}
+{% block content %}
+  <section class="purchase-hero" data-branch-tour-target="overview">
+    <div>
+      <span class="purchase-live-badge"><i></i> {{ analytics.live_badge }}</span>
+      <h2>{{ analytics.title }}</h2>
+      <p>{{ analytics.intro }} · {{ analytics.period_label }}</p>
+      <button class="purchase-demo-button" type="button" data-branch-tour-open><span>▶</span> Demo fitur ini</button>
+    </div>
+    <div class="purchase-hero-actions">
+      <a class="purchase-action secondary" href="{% url 'entity_list' analytics.secondary_entity %}">{{ analytics.secondary_label }}</a>
+      <a class="purchase-action primary" href="{% url 'entity_list' analytics.primary_entity %}">{{ analytics.primary_label }} →</a>
+    </div>
+  </section>
+
+  <section class="purchase-network-card" data-branch-tour-target="network">
+    <header class="purchase-network-head">
+      <div>
+        <p class="purchase-network-kicker">Branch network</p>
+        <h2>{{ analytics.country }} <span>· {{ analytics.network_title }} · {{ analytics.period_label }}</span></h2>
+      </div>
+      <div class="purchase-network-tools">
+        <span class="purchase-scope-pill">↗ {{ analytics.scope_pill }}</span>
+        <form method="get" class="purchase-date-filter">
+          <label><span>From</span><input type="date" name="date_from" value="{{ analytics.date_from|date:'Y-m-d' }}"></label>
+          <label><span>To</span><input type="date" name="date_to" value="{{ analytics.date_to|date:'Y-m-d' }}"></label>
+          <button type="submit">Apply</button>
+          <a href="{% url analytics.route_name analytics.feature_slug %}" aria-label="Reset period">↺</a>
+        </form>
+      </div>
+    </header>
+    {% if analytics.filter_error %}<p class="purchase-filter-error">{{ analytics.filter_error }}</p>{% endif %}
+
+    <div class="purchase-network-layout">
+      <div class="purchase-map" aria-label="{{ analytics.network_title }} across selected Indonesian branches">
+        <svg class="purchase-map-islands" viewBox="0 0 1000 480" role="img" aria-label="Stylized map of Indonesia">
+          <defs>
+            <pattern id="branch-map-dots" width="13" height="13" patternUnits="userSpaceOnUse"><circle cx="3" cy="3" r="2.4" fill="#2563a9"></circle></pattern>
+            <linearGradient id="branch-map-glow" x1="0" x2="1"><stop offset="0" stop-color="#e0f2fe"></stop><stop offset="1" stop-color="#ecfdf5"></stop></linearGradient>
+          </defs>
+          <ellipse cx="505" cy="280" rx="310" ry="135" fill="url(#branch-map-glow)" opacity=".42"></ellipse>
+          <path d="M84 150c42-34 84-32 126-3 27 19 43 52 68 74 25 23 64 39 58 57-8 23-69 7-102-8-37-17-55-43-83-66-32-27-76-35-67-54z" fill="url(#branch-map-dots)" opacity=".76"></path>
+          <path d="M263 326c89-18 200-21 300-9 42 5 66 19 52 31-26 20-135 15-221 12-71-3-145-10-131-34z" fill="url(#branch-map-dots)" opacity=".78"></path>
+          <path d="M394 118c60-39 153-28 191 21 25 31 6 64-11 99-13 26-42 53-83 45-40-8-49-43-74-65-22-20-54-45-23-100z" fill="url(#branch-map-dots)" opacity=".74"></path>
+          <path d="M625 145c15-28 43-27 61-4 13 16 4 36 20 49 21 17 57 5 69 31 10 24-28 35-35 60-6 21 18 45-5 61-24 16-43-13-57-29-18-21-53-30-48-56 5-27 36-34 27-57-9-22-45-27-32-55z" fill="url(#branch-map-dots)" opacity=".76"></path>
+          <path d="M789 196c46-33 125-36 169 1 24 20 15 62-9 83-34 30-93 20-136 6-34-11-58-66-24-90z" fill="url(#branch-map-dots)" opacity=".72"></path>
+          <path d="M584 375c17-10 45-8 63 1m25 8c14-8 34-7 49 2m28 7c18-9 40-7 55 3" fill="none" stroke="#2563a9" stroke-width="8" stroke-linecap="round" stroke-dasharray="1 15" opacity=".7"></path>
+        </svg>
+        <svg class="purchase-map-links" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+          {% for link in analytics.branch_links %}<path class="purchase-link-{{ link.kind }} purchase-tone-{{ link.tone }}" d="{{ link.path }}"></path>{% endfor %}
+        </svg>
+        {% for branch in analytics.branches %}
+          <button class="purchase-branch-pin purchase-tone-{{ branch.tone }}{% if forloop.first %} is-active{% endif %}" type="button"
+            style="--x: {{ branch.x }}%; --y: {{ branch.y }}%; --pin-height: {% widthratio branch.share 100 82 %}px"
+            data-branch-dashboard-branch="{{ branch.id }}" aria-label="{{ branch.name }}, {{ branch.value_label }}, {{ branch.count_label }}">
+            <span class="purchase-pin-label"><strong>{{ branch.name }}{% if branch.is_main %} (HQ){% endif %}</strong><small>{{ branch.value_label }}</small></span><i></i><em></em>
+          </button>
+        {% empty %}<div class="purchase-map-empty"><strong>{{ analytics.network_empty }}</strong><span>Try another period or add transactions.</span></div>{% endfor %}
+      </div>
+      <aside class="purchase-branch-ranking">
+        <div class="purchase-ranking-title"><span>Branch performance</span><small>{{ analytics.network_total_label }}</small></div>
+        {% for branch in analytics.branches %}
+          <button class="purchase-ranking-row purchase-tone-{{ branch.tone }}{% if forloop.first %} is-active{% endif %}" type="button" data-branch-dashboard-branch="{{ branch.id }}">
+            <span class="purchase-ranking-name"><i></i><strong>{{ branch.name }}{% if branch.is_main %} (HQ){% endif %}</strong><small>{{ branch.count_label }} · {{ branch.share_label }}%</small></span>
+            <strong class="purchase-ranking-value">{{ branch.value_label }}</strong>
+            <svg viewBox="0 0 50 22" aria-hidden="true"><path d="{{ branch.spark_path }}"></path></svg>
+            <span class="purchase-ranking-progress"><i style="width: {{ branch.share|stringformat:'f' }}%"></i></span>
+          </button>
+        {% empty %}<p class="purchase-ranking-empty">No branch data in this period.</p>{% endfor %}
+      </aside>
+    </div>
+  </section>
+
+  <section class="purchase-metrics" data-branch-tour-target="metrics">
+    {% for metric in analytics.metrics %}
+      <article class="purchase-metric {{ metric.tone }}"><span class="purchase-metric-icon">{{ forloop.counter|stringformat:"02d" }}</span><p>{{ metric.label }}</p><strong>{{ metric.value }}</strong><small>{{ metric.detail }}</small></article>
+    {% endfor %}
+  </section>
+
+  <section class="purchase-panel purchase-flow-panel" data-branch-tour-target="flow">
+    <header class="purchase-panel-head"><div><p class="purchase-kicker">Operational flow</p><h2>{{ analytics.flow_title }}</h2></div><span>{{ analytics.period_label }}</span></header>
+    <div class="purchase-flow">
+      {% for stage in analytics.pipeline %}
+        <article class="purchase-flow-stage {{ stage.tone }}"><span class="purchase-stage-index">{{ forloop.counter|stringformat:"02d" }}</span><strong>{{ stage.value }}</strong><h3>{{ stage.label }}</h3><p>{{ stage.detail }}</p></article>
+        {% if not forloop.last %}<span class="purchase-flow-arrow" aria-hidden="true">→</span>{% endif %}
+      {% endfor %}
+    </div>
+  </section>
+
+  <div class="purchase-insight-grid" data-branch-tour-target="breakdown">
+    <section class="purchase-panel">
+      <header class="purchase-panel-head"><div><p class="purchase-kicker">Distribution</p><h2>{{ analytics.breakdown_title }}</h2></div></header>
+      <div class="purchase-bars">
+        {% for row in analytics.breakdown %}<div class="purchase-bar-row"><span>{{ row.label }}</span><strong>{{ row.total }}</strong><i><b style="--bar-width: {{ row.share|unlocalize }}%"></b></i></div>{% empty %}<p class="purchase-empty">No data in this period.</p>{% endfor %}
+      </div>
+    </section>
+    <section class="purchase-panel">
+      <header class="purchase-panel-head"><div><p class="purchase-kicker">Performance</p><h2>{{ analytics.secondary_title }}</h2></div></header>
+      <div class="purchase-bars receipt">
+        {% for row in analytics.secondary_rows %}<div class="purchase-bar-row"><span>{{ row.label }}</span><strong>{{ row.total }}</strong><i><b style="--bar-width: {{ row.share|unlocalize }}%"></b></i></div>{% empty %}<p class="purchase-empty">No data in this period.</p>{% endfor %}
+      </div>
+    </section>
+  </div>
+
+  <section class="purchase-panel purchase-table-panel" data-branch-tour-target="records">
+    <header class="purchase-panel-head"><div><p class="purchase-kicker">Operational follow-up</p><h2>{{ analytics.recent_title }}</h2></div><a href="{% url 'entity_list' analytics.primary_entity %}">View all {{ analytics.primary_label }} →</a></header>
+    <div class="purchase-table-wrap"><table>
+      <thead><tr>{% for header in analytics.table_headers %}<th>{{ header }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for row in analytics.recent_rows %}<tr>{% for cell in row.cells %}<td{% if cell.align == 'right' %} class="align-right"{% endif %}>{% if cell.url %}<a href="{{ cell.url }}">{{ cell.value }}</a>{% elif cell.status %}<span class="status status-{{ cell.status }}">{{ cell.value }}</span>{% else %}{{ cell.value }}{% endif %}</td>{% endfor %}</tr>{% empty %}<tr><td colspan="6" class="purchase-empty">No records in this period.</td></tr>{% endfor %}
+      </tbody>
+    </table></div>
+  </section>
+
+  {{ analytics.tour_steps|json_script:"branch-dashboard-tour-steps" }}
+  <div class="purchase-tour" data-branch-tour hidden>
+    <button class="purchase-tour-backdrop" type="button" data-branch-tour-close aria-label="Close feature tour"></button>
+    <div class="purchase-tour-spotlight" data-branch-tour-spotlight aria-hidden="true"></div>
+    <section class="purchase-tour-dialog" role="dialog" aria-modal="true" aria-labelledby="branch-tour-title">
+      <button class="purchase-tour-close" type="button" data-branch-tour-close aria-label="Close">×</button>
+      <div class="purchase-tour-step"><strong data-branch-tour-count></strong><span>{{ analytics.title }}</span></div>
+      <h2 id="branch-tour-title" data-branch-tour-title></h2><p data-branch-tour-copy></p>
+      <div class="purchase-tour-dots" data-branch-tour-dots aria-hidden="true"></div>
+      <footer><button type="button" data-branch-tour-back>Kembali</button><button type="button" data-branch-tour-next>Lanjut</button></footer>
+    </section>
+  </div>
+{% endblock %}
+{% block extra_js %}<script defer src="{% static 'apphub/js/branch_dashboard.js' %}"></script>{% endblock %}

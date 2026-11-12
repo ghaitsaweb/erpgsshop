@@ -36,6 +36,7 @@ from .workspaces import (
     hr_feature_definition,
 )
 from modules.construction.dashboard import build_construction_analytics
+from modules.apphub.domain_dashboards import build_inventory_dashboard, build_manufacturing_dashboard
 from modules.finance.dashboard import build_accounting_analytics
 from modules.finance.report_exports import render_analytics_excel, render_analytics_pdf
 from modules.hr.dashboard import build_hr_analytics
@@ -395,9 +396,51 @@ def hr_feature(request, feature):
             },
         )
 
-    analytics = build_hr_analytics(feature, request.user)
-    template = "apphub/hr_analytics.html" if analytics is not None else "apphub/hr_feature.html"
+    analytics = build_hr_analytics(feature, request.user, request.GET)
+    template = analytics.get("template_name", "apphub/hr_analytics.html") if analytics is not None else "apphub/hr_feature.html"
     return render(request, template, {"app": app, "feature": definition, "analytics": analytics})
+
+
+def _domain_dashboard(request, *, app_slug, feature, builder, permission_entity, permission_model):
+    if feature != "dashboard":
+        raise Http404(f"{app_slug.replace('-', ' ').title()} feature not found.")
+    app = get_object_or_404(ERPApp, slug=app_slug)
+    if not can_access_app(request.user, app.slug):
+        return _app_access_denied(request)
+    from core.views import _can
+    if not _can(request.user, "view", permission_model, permission_entity):
+        return _app_access_denied(request)
+    request.session["active_erp_app"] = app_slug
+    if not app.enabled:
+        messages.info(request, f"Install {app.name} to open this feature.")
+        return redirect("app_workspace", slug=app_slug)
+    group, item = find_menu_feature(app_slug, feature)
+    definition = {
+        "slug": feature,
+        "title": item["label"] if item else f"{app.name} Dashboard",
+        "group": group["label"] if group else "Dashboard",
+        "description": f"Review {app.name.lower()} performance across your organization scope.",
+    }
+    analytics = builder(request.user, request.GET)
+    return render(request, analytics["template_name"], {"app": app, "feature": definition, "analytics": analytics})
+
+
+@login_required
+def inventory_feature(request, feature):
+    from core.models import StockMove
+    return _domain_dashboard(
+        request, app_slug="inventory", feature=feature, builder=build_inventory_dashboard,
+        permission_entity="stock-moves", permission_model=StockMove,
+    )
+
+
+@login_required
+def manufacturing_feature(request, feature):
+    from modules.operations.models import ManufacturingOrder
+    return _domain_dashboard(
+        request, app_slug="manufacturing", feature=feature, builder=build_manufacturing_dashboard,
+        permission_entity="manufacturing-orders", permission_model=ManufacturingOrder,
+    )
 
 
 @login_required
@@ -427,7 +470,8 @@ def accounting_feature(request, feature):
         url = reverse(route_name, args=[feature])
         return f"{url}?{query_string}" if query_string else url
 
-    return render(request, "apphub/hr_analytics.html", {
+    template_name = analytics.get("template_name", "apphub/hr_analytics.html")
+    return render(request, template_name, {
         "app": app,
         "feature": definition,
         "analytics": analytics,

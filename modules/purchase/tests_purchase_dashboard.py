@@ -165,6 +165,9 @@ class PurchaseReceivingDashboardTests(TestCase):
         pipeline = {row["label"]: row["value"] for row in analytics["pipeline"]}
         self.assertEqual(pipeline["Partially Received"], 1)
         self.assertEqual(pipeline["Fully Received"], 1)
+        self.assertEqual(len(analytics["branches"]), 1)
+        self.assertEqual(analytics["branches"][0]["value"], Decimal("2000"))
+        self.assertEqual(analytics["branches"][0]["order_count"], 2)
         self.assertEqual({row["number"] for row in analytics["recent_orders"]}, {"PO-PARTIAL", "PO-FULL"})
 
     def test_dashboard_rejects_unbounded_period(self):
@@ -205,7 +208,7 @@ class PurchaseReceivingDashboardTests(TestCase):
             reset_current_context(token)
 
         self.assertEqual(len(large_queries), len(small_queries))
-        self.assertLessEqual(len(large_queries), 9)
+        self.assertLessEqual(len(large_queries), 12)
         self.assertEqual(small["metrics"][0]["detail"], "2 active PO in period")
         self.assertEqual(large["metrics"][0]["detail"], "12 active PO in period")
         self.assertLessEqual(len(large["recent_orders"]), 8)
@@ -230,6 +233,10 @@ class PurchaseReceivingDashboardTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Branch network")
+        self.assertContains(response, "PO value by branch")
+        self.assertContains(response, "Demo fitur ini")
+        self.assertContains(response, "data-purchase-tour")
         self.assertContains(response, "Purchase Order → Goods Receipt")
         self.assertContains(response, "Receiving progress")
         self.assertContains(response, "Latest Purchase Orders")

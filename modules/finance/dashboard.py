@@ -4,11 +4,22 @@ import calendar
 from datetime import date, timedelta
 from decimal import Decimal
 
-from django.db.models import Count, DecimalField, F, Q, Sum, Value
-from django.db.models.functions import Coalesce
+from django.contrib.contenttypes.models import ContentType
+from django.db.models import BigIntegerField, CharField, Count, DecimalField, F, OuterRef, Q, Subquery, Sum, Value
+from django.db.models.functions import Cast, Coalesce
+from django.urls import reverse
 from django.utils import timezone
 
-from modules.organization.context import scope_queryset as scope_organization_queryset
+from modules.organization.context import get_current_context, scope_queryset as scope_organization_queryset
+from modules.organization.dashboard import (
+    branch_links,
+    branch_nodes,
+    money,
+    parse_dashboard_period,
+    period_label,
+    status_rows,
+)
+from modules.organization.models import Branch, RecordOrganizationScope
 
 from .access import scope_accounting_queryset
 from .models import (
@@ -120,6 +131,121 @@ def _journal_summary(user, feature_slug):
         "breakdown": breakdown,
         "recent_title": "Recent journal entries",
         "recent": list(entries.select_related("company", "journal").order_by("-entry_date", "-id")[:8]),
+    }
+
+
+def _accounting_dashboard(user, params=None):
+    start, end, error = parse_dashboard_period(params)
+    entries = _scoped(user, "journal-entries", JournalEntry).filter(entry_date__range=(start, end))
+    posted = entries.filter(status=JournalEntry.Status.POSTED)
+    summary = entries.aggregate(
+        total=Count("pk"),
+        posted=Count("pk", filter=Q(status=JournalEntry.Status.POSTED)),
+        draft=Count("pk", filter=Q(status=JournalEntry.Status.DRAFT)),
+        posted_value=Sum("total_debit", filter=Q(status=JournalEntry.Status.POSTED)),
+    )
+    posted_value = summary["posted_value"] or Decimal("0")
+    content_type = ContentType.objects.get_for_model(JournalEntry, for_concrete_model=False)
+    explicit_branch = Subquery(
+        RecordOrganizationScope.objects.filter(
+            content_type=content_type,
+            object_id=Cast(OuterRef("pk"), output_field=CharField()),
+        ).order_by().values("branch_id")[:1],
+        output_field=BigIntegerField(),
+    )
+    main_branch = Subquery(
+        Branch.objects.filter(company_id=OuterRef("company_id"), is_main=True)
+        .order_by("pk").values("pk")[:1],
+        output_field=BigIntegerField(),
+    )
+    branch_rows = list(
+        posted.annotate(
+            dashboard_branch_id=Coalesce(explicit_branch, main_branch, output_field=BigIntegerField())
+        )
+        .values("dashboard_branch_id")
+        .annotate(dashboard_value=Sum("total_debit"), dashboard_count=Count("pk"))
+        .order_by("-dashboard_value", "dashboard_branch_id")[:8]
+    )
+    branches = branch_nodes(
+        branch_rows, get_current_context(), total_value=posted_value,
+        value_formatter=money, count_suffix="entries",
+    )
+    journal_rows = list(
+        posted.values("journal__name")
+        .annotate(total=Sum("total_debit"))
+        .order_by("-total", "journal__name")[:6]
+    )
+    journal_total = sum((row["total"] or Decimal("0")) for row in journal_rows)
+    journals = [
+        {
+            "label": row["journal__name"] or "Unassigned journal",
+            "total": money(row["total"]),
+            "share": float((row["total"] or 0) / journal_total * 100) if journal_total else 0,
+        }
+        for row in journal_rows
+    ]
+    recent = []
+    for entry in entries.select_related("journal").order_by("-entry_date", "-pk")[:8]:
+        recent.append({"cells": [
+            {"value": entry.number, "url": reverse("entity_edit", args=["journal-entries", entry.pk])},
+            {"value": entry.journal.name if entry.journal_id else "Unassigned"},
+            {"value": entry.reference or "—"},
+            {"value": entry.entry_date.strftime("%d %b %Y")},
+            {"value": money(entry.total_debit), "align": "right"},
+            {"value": entry.get_status_display(), "status": entry.status},
+        ]})
+    return {
+        "template_name": "apphub/branch_dashboard.html",
+        "feature_slug": "dashboard",
+        "app_label": "Accounting",
+        "route_name": "accounting_feature",
+        "title": "Accounting Dashboard",
+        "live_badge": "Live financial control",
+        "intro": f"Posted journal visibility across {len(branches)} branches",
+        "country": "Indonesia",
+        "date_from": start,
+        "date_to": end,
+        "period_label": period_label(start, end),
+        "filter_error": error,
+        "branches": branches,
+        "branch_links": branch_links(branches),
+        "branch_count": len(branches),
+        "network_title": "posted journal value by branch",
+        "scope_pill": "Journal Entry to financial reporting visibility",
+        "network_total_label": f"{money(posted_value)} posted",
+        "network_empty": "No posted journal value in this period.",
+        "primary_entity": "journal-entries",
+        "primary_label": "Journal Entries",
+        "secondary_entity": "journal-items",
+        "secondary_label": "Journal Items",
+        "metrics": [
+            _metric("Journal Entries", summary["total"], "Entries in selected period", "blue"),
+            _metric("Posted Value", money(posted_value), "Posted debit movement", "green"),
+            _metric("Posted Entries", summary["posted"], "Finalized journals", "violet"),
+            _metric("Draft Entries", summary["draft"], "Awaiting posting", "amber"),
+        ],
+        "flow_title": "Draft → Posted Journal → Financial Reports",
+        "pipeline": [
+            {"label": "Draft", "value": summary["draft"], "detail": "Awaiting validation", "tone": "blue"},
+            {"label": "Posted", "value": summary["posted"], "detail": "Finalized entries", "tone": "green"},
+            {"label": "Reversed", "value": entries.filter(status=JournalEntry.Status.REVERSED).count(), "detail": "Entries reversed", "tone": "violet"},
+            {"label": "Cancelled", "value": entries.filter(status=JournalEntry.Status.CANCELLED).count(), "detail": "Entries cancelled", "tone": "amber"},
+        ],
+        "breakdown_title": "Journal Entry status",
+        "breakdown": status_rows(entries, JournalEntry.Status.choices),
+        "secondary_title": "Posted value by journal",
+        "secondary_rows": journals,
+        "recent_title": "Latest Journal Entries",
+        "table_headers": ["Journal Entry", "Journal", "Reference", "Date", "Debit", "Status"],
+        "recent_rows": recent,
+        "tour_steps": [
+            {"target": "overview", "title": "Kontrol accounting dari satu layar", "copy": "Dashboard menyatukan Journal Entry, nilai posted, status draft, dan aktivitas cabang."},
+            {"target": "network", "title": "Nilai jurnal per cabang", "copy": "Peta menunjukkan posted journal value pada setiap cabang dalam scope dan periode Anda."},
+            {"target": "metrics", "title": "KPI keuangan yang langsung terlihat", "copy": "Journal Entries, Posted Value, Posted Entries, dan Draft Entries dihitung dari ledger nyata."},
+            {"target": "flow", "title": "Alur validasi jurnal", "copy": "Pipeline memperlihatkan journal Draft, Posted, Reversed, dan Cancelled untuk pengendalian closing."},
+            {"target": "breakdown", "title": "Distribusi status dan jurnal", "copy": "Bandingkan status entry serta konsentrasi posted value berdasarkan journal."},
+            {"target": "records", "title": "Jurnal terbaru siap diaudit", "copy": "Klik nomor Journal Entry untuk langsung meninjau transaksi dan journal items."},
+        ],
     }
 
 
@@ -513,11 +639,13 @@ def _treasury_summary(user, feature_slug):
 def build_accounting_analytics(feature_slug, user, params=None):
     if feature_slug not in ACCOUNTING_ANALYTIC_FEATURES:
         return None
+    if feature_slug == "dashboard":
+        return _accounting_dashboard(user, params)
     if feature_slug == "profit-loss":
         return _profit_loss_statement(user, params)
     if feature_slug in {
         "general-ledger", "general-ledger-report", "trial-balance", "journal-audit", "day-book",
-        "journal-entry-report", "dashboard", "accounting-vision", "cost-center-ledger",
+        "journal-entry-report", "accounting-vision", "cost-center-ledger",
     }:
         return _journal_summary(user, feature_slug)
     if feature_slug in {

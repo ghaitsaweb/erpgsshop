@@ -21,10 +21,13 @@ def navigation(request):
     url_name = resolver.url_name if resolver else ""
     kwargs = resolver.kwargs if resolver else {}
     entity = kwargs.get("entity")
-    feature = kwargs.get("feature") if url_name in {"sales_feature", "hr_feature", "purchase_feature", "construction_feature", "pos_feature", "pos_fnb_feature"} else None
+    feature = kwargs.get("feature") if url_name in {"sales_feature", "hr_feature", "inventory_feature", "manufacturing_feature", "accounting_feature", "purchase_feature", "construction_feature", "pos_feature", "pos_fnb_feature"} else None
     feature_app_slug = {
         "sales_feature": "sales",
         "hr_feature": "hr",
+        "inventory_feature": "inventory",
+        "manufacturing_feature": "manufacturing",
+        "accounting_feature": "accounting",
         "purchase_feature": "purchase",
         "construction_feature": "construction",
         "pos_feature": "pos",
@@ -274,6 +277,14 @@ def navigation(request):
     elif url_name == "accounting_feature" and feature:
         breadcrumbs.append({"label": "Accounting", "url": reverse("app_workspace", args=["accounting"])})
         group, item = find_menu_feature("accounting", feature)
+        if item:
+            breadcrumbs.append({"label": group["label"]})
+            breadcrumbs.append({"label": item["label"]})
+    elif url_name in {"inventory_feature", "manufacturing_feature"} and feature:
+        app_slug = "inventory" if url_name == "inventory_feature" else "manufacturing"
+        app_label = "Inventory" if app_slug == "inventory" else "Manufacturing"
+        breadcrumbs.append({"label": app_label, "url": reverse("app_workspace", args=[app_slug])})
+        group, item = find_menu_feature(app_slug, feature)
         if item:
             breadcrumbs.append({"label": group["label"]})
             breadcrumbs.append({"label": item["label"]})

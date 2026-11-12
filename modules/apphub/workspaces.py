@@ -1033,6 +1033,9 @@ APP_MENU_GROUPS = {
         {"label": "Directory", "icon": "D", "entities": ["contacts"]},
     ],
     "inventory": [
+        {"label": "Dashboard", "icon": "D", "items": [
+            {"label": "Inventory Dashboard", "feature": "dashboard", "feature_url_name": "inventory_feature", "permission_entity": "stock-moves"},
+        ]},
         {"label": "Inventory Operations", "icon": "I", "entities": ["warehouses", "stock-moves"]},
         {"label": "Catalog", "icon": "C", "entities": ["products"]},
     ],
@@ -1059,7 +1062,7 @@ APP_MENU_GROUPS = {
             "label": "Dashboard",
             "icon": "D",
             "items": [
-                {"label": "Overview", "feature": "dashboard"},
+                {"label": "Accounting Dashboard", "feature": "dashboard"},
                 {"label": "Accounting Vision", "feature": "accounting-vision"},
                 {"label": "Income Overview", "feature": "income-overview"},
                 {"label": "Aging Summary", "feature": "aging-summary"},
@@ -1485,7 +1488,7 @@ APP_MENU_GROUPS = {
             "label": "Dashboard",
             "icon": "D",
             "items": [
-                {"label": "Human Resources Overview", "app_slug": "hr"},
+                {"label": "Human Resources Dashboard", "feature": "dashboard", "feature_url_name": "hr_feature", "permission_entity": "employees"},
                 {"label": "My Dashboard", "feature": "my-dashboard"},
                 {"label": "Director Dashboard", "feature": "director-dashboard"},
                 {"label": "HR Operational", "feature": "hr-operational"},
@@ -1718,6 +1721,9 @@ APP_MENU_GROUPS = {
         {"label": "People", "icon": "E", "entities": ["employees"]},
     ],
     "manufacturing": [
+        {"label": "Dashboard", "icon": "D", "items": [
+            {"label": "Manufacturing Dashboard", "feature": "dashboard", "feature_url_name": "manufacturing_feature", "permission_entity": "manufacturing-orders"},
+        ]},
         {"label": "Production", "icon": "P", "entities": ["manufacturing-orders", "boms"]},
         {"label": "Resources", "icon": "R", "entities": ["products", "warehouses"]},
     ],

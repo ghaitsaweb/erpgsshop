@@ -3,11 +3,29 @@
 from datetime import date
 from decimal import Decimal
 
-from django.db.models import Avg, Count, DecimalField, ExpressionWrapper, F, Q, Sum
+from django.contrib.contenttypes.models import ContentType
+from django.db.models import (
+    Avg,
+    BigIntegerField,
+    CharField,
+    Count,
+    DecimalField,
+    ExpressionWrapper,
+    F,
+    OuterRef,
+    Q,
+    Subquery,
+    Sum,
+)
+from django.db.models.functions import Cast, Coalesce
 from django.utils import timezone
 
 from core.models import PurchaseOrder, PurchaseOrderLine
-from modules.organization.context import scope_queryset as scope_organization_queryset
+from modules.organization.context import (
+    get_current_context,
+    scope_queryset as scope_organization_queryset,
+)
+from modules.organization.models import Branch, RecordOrganizationScope
 
 from .access import can_purchase_entity_action, scope_purchase_queryset
 from .models import (
@@ -29,6 +47,36 @@ from .models import (
 MAX_DASHBOARD_DAYS = 366
 RECENT_DASHBOARD_ROWS = 8
 TOP_VENDOR_ROWS = 6
+MAX_BRANCH_NODES = 8
+
+CITY_POSITIONS = {
+    "medan": (16, 32),
+    "jakarta": (39, 62),
+    "bandung": (34, 69),
+    "semarang": (48, 60),
+    "surabaya": (58, 66),
+    "balikpapan": (63, 43),
+    "makassar": (67, 66),
+    "denpasar": (62, 76),
+    "manado": (77, 35),
+    "jayapura": (90, 54),
+}
+FALLBACK_POSITIONS = (
+    (18, 34),
+    (39, 62),
+    (49, 56),
+    (59, 66),
+    (64, 42),
+    (72, 69),
+    (82, 40),
+    (89, 57),
+)
+SPARK_PATHS = (
+    "M1 17 L7 10 L13 15 L19 5 L25 13 L31 9 L37 18 L43 6 L49 10",
+    "M1 16 L7 13 L13 6 L19 8 L25 14 L31 11 L37 16 L43 3 L49 12",
+    "M1 8 L7 14 L13 10 L19 17 L25 7 L31 13 L37 5 L43 14 L49 11",
+    "M1 13 L7 8 L13 11 L19 15 L25 14 L31 17 L37 6 L43 12 L49 4",
+)
 
 ANALYTIC_FEATURES = {
     "overview",
@@ -83,6 +131,134 @@ def _parse_period(params, today=None):
     if (end - start).days + 1 > MAX_DASHBOARD_DAYS:
         return default_start, default_end, f"Choose a period of at most {MAX_DASHBOARD_DAYS} days."
     return start, end, ""
+
+
+def _branch_position(branch_name, index):
+    normalized = (branch_name or "").lower()
+    for city, position in CITY_POSITIONS.items():
+        if city in normalized:
+            return position
+    return FALLBACK_POSITIONS[index % len(FALLBACK_POSITIONS)]
+
+
+def _branch_value_rows(orders, context):
+    selected_branch_ids = tuple(getattr(context, "active_branch_ids", ()) or ())
+    if not selected_branch_ids:
+        return []
+
+    content_type = ContentType.objects.get_for_model(PurchaseOrder, for_concrete_model=False)
+    explicit_branch = Subquery(
+        RecordOrganizationScope.objects.filter(
+            content_type=content_type,
+            object_id=Cast(OuterRef("pk"), output_field=CharField()),
+        )
+        .order_by()
+        .values("branch_id")[:1],
+        output_field=BigIntegerField(),
+    )
+    main_branch = Subquery(
+        Branch.objects.filter(company_id=OuterRef("company_id"), is_main=True)
+        .order_by("pk")
+        .values("pk")[:1],
+        output_field=BigIntegerField(),
+    )
+    return list(
+        orders.annotate(
+            dashboard_branch_id=Coalesce(
+                explicit_branch,
+                main_branch,
+                output_field=BigIntegerField(),
+            )
+        )
+        .filter(dashboard_branch_id__in=selected_branch_ids)
+        .values("dashboard_branch_id")
+        .annotate(purchase_value=Sum("total"), order_count=Count("pk"))
+        .order_by("-purchase_value", "dashboard_branch_id")[:MAX_BRANCH_NODES]
+    )
+
+
+def _branch_nodes(orders, context, total_value):
+    value_rows = _branch_value_rows(orders, context)
+    value_by_branch = {
+        row["dashboard_branch_id"]: {
+            "value": row["purchase_value"] or Decimal("0"),
+            "order_count": row["order_count"],
+        }
+        for row in value_rows
+    }
+    ordered_ids = list(value_by_branch)
+    selected_ids = tuple(getattr(context, "active_branch_ids", ()) or ())
+    if len(ordered_ids) < MAX_BRANCH_NODES:
+        zero_ids = list(
+            Branch.objects.filter(pk__in=selected_ids, active=True)
+            .exclude(pk__in=ordered_ids)
+            .order_by("company__name", "-is_main", "sequence", "name", "pk")
+            .values_list("pk", flat=True)[: MAX_BRANCH_NODES - len(ordered_ids)]
+        )
+        ordered_ids.extend(zero_ids)
+
+    branches = Branch.objects.filter(pk__in=ordered_ids).select_related("company").in_bulk()
+    nodes = []
+    for index, branch_id in enumerate(ordered_ids):
+        branch = branches.get(branch_id)
+        if branch is None:
+            continue
+        values = value_by_branch.get(branch_id, {"value": Decimal("0"), "order_count": 0})
+        purchase_value = values["value"]
+        share = float((purchase_value / total_value * 100) if total_value else 0)
+        x, y = _branch_position(branch.name, index)
+        nodes.append(
+            {
+                "id": branch.pk,
+                "name": branch.name,
+                "code": branch.code,
+                "company": branch.company.name,
+                "is_main": branch.is_main,
+                "value": purchase_value,
+                "value_label": _money(purchase_value),
+                "order_count": values["order_count"],
+                "share": share,
+                "share_label": f"{share:.1f}".replace(".", ","),
+                "x": x,
+                "y": y,
+                "tone": index % 6,
+                "spark_path": SPARK_PATHS[index % len(SPARK_PATHS)],
+            }
+        )
+    return nodes
+
+
+def _curve_path(source, target, bend=0):
+    midpoint_x = (source["x"] + target["x"]) / 2
+    midpoint_y = (source["y"] + target["y"]) / 2 - 7 - bend
+    return (
+        f'M {source["x"]} {source["y"]} '
+        f'Q {midpoint_x:.1f} {midpoint_y:.1f} {target["x"]} {target["y"]}'
+    )
+
+
+def _branch_links(nodes):
+    if len(nodes) < 2:
+        return []
+    hub = next((node for node in nodes if node["is_main"]), nodes[0])
+    satellites = [node for node in nodes if node["id"] != hub["id"]]
+    links = [
+        {
+            "path": _curve_path(hub, node, (index % 3) * 2),
+            "tone": node["tone"],
+            "kind": "primary",
+        }
+        for index, node in enumerate(satellites)
+    ]
+    links.extend(
+        {
+            "path": _curve_path(source, target, -3),
+            "tone": target["tone"],
+            "kind": "secondary",
+        }
+        for source, target in zip(satellites, satellites[1:])
+    )
+    return links
 
 
 def _dashboard_status_rows(queryset, choices):
@@ -193,6 +369,15 @@ def _purchase_receiving_analytics(user, params, *, today=None):
     )
 
     document_value = order_summary["document_value"] or Decimal("0")
+    organization_context = get_current_context()
+    branches = (
+        _branch_nodes(active_orders, organization_context, document_value)
+        if organization_context is not None
+        else []
+    )
+    selected_branch_count = len(
+        tuple(getattr(organization_context, "active_branch_ids", ()) or ())
+    )
     vendor_rows = list(
         active_orders.values("vendor_id", "vendor__name")
         .annotate(order_count=Count("pk"), value=Sum("total"))
@@ -271,6 +456,11 @@ def _purchase_receiving_analytics(user, params, *, today=None):
         "date_to": end,
         "filter_error": filter_error,
         "period_label": f"{start:%d/%m/%Y} – {end:%d/%m/%Y}",
+        "country": "Indonesia",
+        "branches": branches,
+        "branch_links": _branch_links(branches),
+        "branch_count": selected_branch_count,
+        "document_value_label": _money(document_value),
         "metrics": [
             _metric(
                 "Purchase Order Value",

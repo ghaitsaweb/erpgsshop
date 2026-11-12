@@ -4,35 +4,94 @@
 {% block page_title %}Purchase Dashboard{% endblock %}
 {% block extra_css %}<link rel="stylesheet" href="{% static 'purchase/css/dashboard.css' %}">{% endblock %}
 {% block content %}
-  <section class="purchase-hero">
+  <section class="purchase-hero" data-purchase-tour-target="overview">
     <div>
       <span class="purchase-live-badge"><i></i> Live procurement control</span>
       <h2>Purchase Dashboard</h2>
-      <p>Purchase Order to Goods Receipt visibility · {{ analytics.period_label }}</p>
+      <p>Purchase performance for {{ analytics.branch_count }} branch{{ analytics.branch_count|pluralize:"es" }} · {{ analytics.period_label }}</p>
+      <button class="purchase-demo-button" type="button" data-purchase-tour-open><span>▶</span> Demo fitur ini</button>
     </div>
     <div class="purchase-hero-actions">
       <a class="purchase-action secondary" href="{% url 'entity_list' 'goods-receipts' %}">Goods Receipts</a>
       {% if analytics.can_add_order %}
-        <a class="purchase-action primary" href="{% url 'entity_create' 'purchases' %}"><span>＋</span> New Purchase Order</a>
+        <a class="purchase-action primary" href="{% url 'entity_create' 'purchases' %}" data-purchase-tour-target="new-order"><span>＋</span> New Purchase Order</a>
       {% endif %}
     </div>
   </section>
 
-  <section class="purchase-filter-card">
-    <div>
-      <p class="purchase-kicker">Reporting period</p>
-      <strong>Orders created in this period, with their current receipt progress</strong>
-    </div>
-    <form method="get" class="purchase-date-filter">
-      <label><span>From</span><input type="date" name="date_from" value="{{ analytics.date_from|date:'Y-m-d' }}"></label>
-      <label><span>To</span><input type="date" name="date_to" value="{{ analytics.date_to|date:'Y-m-d' }}"></label>
-      <button type="submit">Apply</button>
-      <a href="{% url 'purchase_feature' 'overview' %}" aria-label="Reset period">↺</a>
-    </form>
+  <section class="purchase-network-card" data-purchase-tour-target="network">
+    <header class="purchase-network-head">
+      <div>
+        <p class="purchase-network-kicker">Branch network</p>
+        <h2>{{ analytics.country }} <span>· PO value by branch · {{ analytics.period_label }}</span></h2>
+      </div>
+      <div class="purchase-network-tools">
+        <span class="purchase-scope-pill">↗ Purchase Order to Goods Receipt visibility</span>
+        <form method="get" class="purchase-date-filter" data-purchase-tour-target="period">
+          <label><span>From</span><input type="date" name="date_from" value="{{ analytics.date_from|date:'Y-m-d' }}"></label>
+          <label><span>To</span><input type="date" name="date_to" value="{{ analytics.date_to|date:'Y-m-d' }}"></label>
+          <button type="submit">Apply</button>
+          <a href="{% url 'purchase_feature' 'overview' %}" aria-label="Reset period">↺</a>
+        </form>
+      </div>
+    </header>
     {% if analytics.filter_error %}<p class="purchase-filter-error">{{ analytics.filter_error }}</p>{% endif %}
+
+    <div class="purchase-network-layout">
+      <div class="purchase-map" aria-label="Purchase Order value network across selected Indonesian branches">
+        <svg class="purchase-map-islands" viewBox="0 0 1000 480" role="img" aria-label="Stylized map of Indonesia">
+          <defs>
+            <pattern id="purchase-map-dots" width="13" height="13" patternUnits="userSpaceOnUse">
+              <circle cx="3" cy="3" r="2.4" fill="#2563a9"></circle>
+            </pattern>
+            <linearGradient id="purchase-map-glow" x1="0" x2="1">
+              <stop offset="0" stop-color="#e0f2fe"></stop><stop offset="1" stop-color="#ecfdf5"></stop>
+            </linearGradient>
+          </defs>
+          <ellipse cx="505" cy="280" rx="310" ry="135" fill="url(#purchase-map-glow)" opacity=".42"></ellipse>
+          <path d="M84 150c42-34 84-32 126-3 27 19 43 52 68 74 25 23 64 39 58 57-8 23-69 7-102-8-37-17-55-43-83-66-32-27-76-35-67-54z" fill="url(#purchase-map-dots)" opacity=".76"></path>
+          <path d="M263 326c89-18 200-21 300-9 42 5 66 19 52 31-26 20-135 15-221 12-71-3-145-10-131-34z" fill="url(#purchase-map-dots)" opacity=".78"></path>
+          <path d="M394 118c60-39 153-28 191 21 25 31 6 64-11 99-13 26-42 53-83 45-40-8-49-43-74-65-22-20-54-45-23-100z" fill="url(#purchase-map-dots)" opacity=".74"></path>
+          <path d="M625 145c15-28 43-27 61-4 13 16 4 36 20 49 21 17 57 5 69 31 10 24-28 35-35 60-6 21 18 45-5 61-24 16-43-13-57-29-18-21-53-30-48-56 5-27 36-34 27-57-9-22-45-27-32-55z" fill="url(#purchase-map-dots)" opacity=".76"></path>
+          <path d="M789 196c46-33 125-36 169 1 24 20 15 62-9 83-34 30-93 20-136 6-34-11-58-66-24-90z" fill="url(#purchase-map-dots)" opacity=".72"></path>
+          <path d="M584 375c17-10 45-8 63 1m25 8c14-8 34-7 49 2m28 7c18-9 40-7 55 3" fill="none" stroke="#2563a9" stroke-width="8" stroke-linecap="round" stroke-dasharray="1 15" opacity=".7"></path>
+        </svg>
+        <svg class="purchase-map-links" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+          {% for link in analytics.branch_links %}
+            <path class="purchase-link-{{ link.kind }} purchase-tone-{{ link.tone }}" d="{{ link.path }}"></path>
+          {% endfor %}
+        </svg>
+        {% for branch in analytics.branches %}
+          <button
+            class="purchase-branch-pin purchase-tone-{{ branch.tone }}{% if forloop.first %} is-active{% endif %}"
+            type="button"
+            style="--x: {{ branch.x }}%; --y: {{ branch.y }}%; --pin-height: {% widthratio branch.share 100 82 %}px"
+            data-purchase-branch="{{ branch.id }}"
+            aria-label="{{ branch.name }}, {{ branch.value_label }}, {{ branch.order_count }} purchase orders"
+          >
+            <span class="purchase-pin-label"><strong>{{ branch.name }}{% if branch.is_main %} (HQ){% endif %}</strong><small>{{ branch.value_label }}</small></span>
+            <i></i><em></em>
+          </button>
+        {% empty %}
+          <div class="purchase-map-empty"><strong>No branch Purchase Order value yet</strong><span>Create or approve Purchase Orders in the selected period.</span></div>
+        {% endfor %}
+      </div>
+
+      <aside class="purchase-branch-ranking" data-purchase-tour-target="ranking">
+        <div class="purchase-ranking-title"><span>Branch purchasing</span><small>{{ analytics.document_value_label }} total</small></div>
+        {% for branch in analytics.branches %}
+          <button class="purchase-ranking-row purchase-tone-{{ branch.tone }}{% if forloop.first %} is-active{% endif %}" type="button" data-purchase-branch="{{ branch.id }}">
+            <span class="purchase-ranking-name"><i></i><strong>{{ branch.name }}{% if branch.is_main %} (HQ){% endif %}</strong><small>{{ branch.order_count }} PO · {{ branch.share_label }}%</small></span>
+            <strong class="purchase-ranking-value">{{ branch.value_label }}</strong>
+            <svg viewBox="0 0 50 22" aria-hidden="true"><path d="{{ branch.spark_path }}"></path></svg>
+            <span class="purchase-ranking-progress"><i style="width: {{ branch.share|stringformat:'f' }}%"></i></span>
+          </button>
+        {% empty %}<p class="purchase-ranking-empty">No branch data in this period.</p>{% endfor %}
+      </aside>
+    </div>
   </section>
 
-  <section class="purchase-metrics">
+  <section class="purchase-metrics" data-purchase-tour-target="metrics">
     {% for metric in analytics.metrics %}
       <article class="purchase-metric {{ metric.tone }}">
         <span class="purchase-metric-icon">{% if metric.tone == 'blue' %}PO{% elif metric.tone == 'green' %}✓{% elif metric.tone == 'amber' %}↗{% else %}GR{% endif %}</span>
@@ -43,7 +102,7 @@
     {% endfor %}
   </section>
 
-  <section class="purchase-panel purchase-flow-panel">
+  <section class="purchase-panel purchase-flow-panel" data-purchase-tour-target="flow">
     <header class="purchase-panel-head">
       <div><p class="purchase-kicker">Document flow</p><h2>Purchase Order → Goods Receipt</h2></div>
       <span>{{ analytics.period_label }}</span>
@@ -62,7 +121,7 @@
   </section>
 
   <div class="purchase-insight-grid">
-    <section class="purchase-panel purchase-completion-panel">
+    <section class="purchase-panel purchase-completion-panel" data-purchase-tour-target="receiving">
       <header class="purchase-panel-head">
         <div><p class="purchase-kicker">Receiving progress</p><h2>Ordered vs received</h2></div>
       </header>
@@ -124,7 +183,7 @@
     </section>
   </div>
 
-  <section class="purchase-panel purchase-table-panel">
+  <section class="purchase-panel purchase-table-panel" data-purchase-tour-target="orders">
     <header class="purchase-panel-head">
       <div><p class="purchase-kicker">Operational follow-up</p><h2>Latest Purchase Orders</h2></div>
       <a href="{% url 'entity_list' 'purchases' %}">View all Purchase Orders →</a>
@@ -173,4 +232,18 @@
       </table>
     </div>
   </section>
+
+  <div class="purchase-tour" data-purchase-tour hidden>
+    <button class="purchase-tour-backdrop" type="button" data-purchase-tour-close aria-label="Close feature tour"></button>
+    <div class="purchase-tour-spotlight" data-purchase-tour-spotlight aria-hidden="true"></div>
+    <section class="purchase-tour-dialog" role="dialog" aria-modal="true" aria-labelledby="purchase-tour-title">
+      <button class="purchase-tour-close" type="button" data-purchase-tour-close aria-label="Close">×</button>
+      <div class="purchase-tour-step"><strong data-purchase-tour-count>1 / 7</strong><span>Purchase Dashboard</span></div>
+      <h2 id="purchase-tour-title" data-purchase-tour-title></h2>
+      <p data-purchase-tour-copy></p>
+      <div class="purchase-tour-dots" data-purchase-tour-dots aria-hidden="true"></div>
+      <footer><button type="button" data-purchase-tour-back>Kembali</button><button type="button" data-purchase-tour-next>Lanjut</button></footer>
+    </section>
+  </div>
 {% endblock %}
+{% block extra_js %}<script defer src="{% static 'purchase/js/dashboard.js' %}"></script>{% endblock %}

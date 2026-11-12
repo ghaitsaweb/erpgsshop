@@ -541,10 +541,11 @@ def purchase_feature(request, feature):
     if not app.enabled:
         messages.info(request, "Install Purchase to open this feature.")
         return redirect("app_workspace", slug="purchase")
-    analytics = build_purchase_analytics(feature, request.user)
+    analytics = build_purchase_analytics(feature, request.user, request.GET)
     if analytics is None:
         raise Http404("Purchase analytics not found.")
-    return render(request, "apphub/hr_analytics.html", {"app": app, "feature": definition, "analytics": analytics})
+    template_name = analytics.get("template_name", "apphub/hr_analytics.html")
+    return render(request, template_name, {"app": app, "feature": definition, "analytics": analytics})
 
 
 @login_required

@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+{% load static l10n %}
+{% block title %}Purchase Dashboard · ERP GSSHOP{% endblock %}
+{% block page_title %}Purchase Dashboard{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{% static 'purchase/css/dashboard.css' %}">{% endblock %}
+{% block content %}
+  <section class="purchase-hero">
+    <div>
+      <span class="purchase-live-badge"><i></i> Live procurement control</span>
+      <h2>Purchase Dashboard</h2>
+      <p>Purchase Order to Goods Receipt visibility · {{ analytics.period_label }}</p>
+    </div>
+    <div class="purchase-hero-actions">
+      <a class="purchase-action secondary" href="{% url 'entity_list' 'goods-receipts' %}">Goods Receipts</a>
+      {% if analytics.can_add_order %}
+        <a class="purchase-action primary" href="{% url 'entity_create' 'purchases' %}"><span>＋</span> New Purchase Order</a>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="purchase-filter-card">
+    <div>
+      <p class="purchase-kicker">Reporting period</p>
+      <strong>Orders created in this period, with their current receipt progress</strong>
+    </div>
+    <form method="get" class="purchase-date-filter">
+      <label><span>From</span><input type="date" name="date_from" value="{{ analytics.date_from|date:'Y-m-d' }}"></label>
+      <label><span>To</span><input type="date" name="date_to" value="{{ analytics.date_to|date:'Y-m-d' }}"></label>
+      <button type="submit">Apply</button>
+      <a href="{% url 'purchase_feature' 'overview' %}" aria-label="Reset period">↺</a>
+    </form>
+    {% if analytics.filter_error %}<p class="purchase-filter-error">{{ analytics.filter_error }}</p>{% endif %}
+  </section>
+
+  <section class="purchase-metrics">
+    {% for metric in analytics.metrics %}
+      <article class="purchase-metric {{ metric.tone }}">
+        <span class="purchase-metric-icon">{% if metric.tone == 'blue' %}PO{% elif metric.tone == 'green' %}✓{% elif metric.tone == 'amber' %}↗{% else %}GR{% endif %}</span>
+        <p>{{ metric.label }}</p>
+        <strong>{{ metric.value }}</strong>
+        <small>{{ metric.detail }}</small>
+      </article>
+    {% endfor %}
+  </section>
+
+  <section class="purchase-panel purchase-flow-panel">
+    <header class="purchase-panel-head">
+      <div><p class="purchase-kicker">Document flow</p><h2>Purchase Order → Goods Receipt</h2></div>
+      <span>{{ analytics.period_label }}</span>
+    </header>
+    <div class="purchase-flow">
+      {% for stage in analytics.pipeline %}
+        <article class="purchase-flow-stage {{ stage.tone }}">
+          <span class="purchase-stage-index">{{ forloop.counter|stringformat:"02d" }}</span>
+          <strong>{{ stage.value }}</strong>
+          <h3>{{ stage.label }}</h3>
+          <p>{{ stage.detail }}</p>
+        </article>
+        {% if not forloop.last %}<span class="purchase-flow-arrow" aria-hidden="true">→</span>{% endif %}
+      {% endfor %}
+    </div>
+  </section>
+
+  <div class="purchase-insight-grid">
+    <section class="purchase-panel purchase-completion-panel">
+      <header class="purchase-panel-head">
+        <div><p class="purchase-kicker">Receiving progress</p><h2>Ordered vs received</h2></div>
+      </header>
+      <div class="purchase-completion-body">
+        <div class="purchase-ring" style="--purchase-progress: {{ analytics.completion_degrees|unlocalize }}deg">
+          <div><strong>{{ analytics.completion_label }}</strong><span>line value received</span></div>
+        </div>
+        <dl class="purchase-quantity-list">
+          <div><dt>Ordered quantity</dt><dd>{{ analytics.ordered_quantity_label }}</dd></div>
+          <div><dt>Received quantity</dt><dd>{{ analytics.received_quantity_label }}</dd></div>
+          <div><dt>Accepted quantity</dt><dd>{{ analytics.accepted_quantity_label }}</dd></div>
+          <div><dt>Rejected quantity</dt><dd>{{ analytics.rejected_quantity_label }}</dd></div>
+        </dl>
+      </div>
+    </section>
+
+    <section class="purchase-panel">
+      <header class="purchase-panel-head">
+        <div><p class="purchase-kicker">Order control</p><h2>PO status distribution</h2></div>
+      </header>
+      <div class="purchase-bars">
+        {% for row in analytics.order_statuses %}
+          <div class="purchase-bar-row">
+            <span>{{ row.label }}</span><strong>{{ row.total }}</strong>
+            <i><b style="--bar-width: {{ row.share|unlocalize }}%"></b></i>
+          </div>
+        {% empty %}<p class="purchase-empty">No purchase orders in this period.</p>{% endfor %}
+      </div>
+    </section>
+
+    <section class="purchase-panel">
+      <header class="purchase-panel-head">
+        <div><p class="purchase-kicker">Receipt control</p><h2>Goods Receipt status</h2></div>
+        <span>{{ analytics.receipt_order_count }} PO covered</span>
+      </header>
+      <div class="purchase-bars receipt">
+        {% for row in analytics.receipt_statuses %}
+          <div class="purchase-bar-row">
+            <span>{{ row.label }}</span><strong>{{ row.total }}</strong>
+            <i><b style="--bar-width: {{ row.share|unlocalize }}%"></b></i>
+          </div>
+        {% empty %}<p class="purchase-empty">No goods receipts in this period.</p>{% endfor %}
+      </div>
+    </section>
+
+    <section class="purchase-panel">
+      <header class="purchase-panel-head">
+        <div><p class="purchase-kicker">Vendor concentration</p><h2>Top vendors by PO value</h2></div>
+      </header>
+      <div class="purchase-vendors">
+        {% for vendor in analytics.vendors %}
+          <div class="purchase-vendor-row">
+            <span class="purchase-vendor-rank">{{ forloop.counter }}</span>
+            <div><strong>{{ vendor.vendor__name }}</strong><small>{{ vendor.order_count }} order{{ vendor.order_count|pluralize }}</small><i><b style="--bar-width: {{ vendor.share|unlocalize }}%"></b></i></div>
+            <span>{{ vendor.value_label }}</span>
+          </div>
+        {% empty %}<p class="purchase-empty">No vendor spend in this period.</p>{% endfor %}
+      </div>
+    </section>
+  </div>
+
+  <section class="purchase-panel purchase-table-panel">
+    <header class="purchase-panel-head">
+      <div><p class="purchase-kicker">Operational follow-up</p><h2>Latest Purchase Orders</h2></div>
+      <a href="{% url 'entity_list' 'purchases' %}">View all Purchase Orders →</a>
+    </header>
+    <div class="purchase-table-wrap">
+      <table>
+        <thead><tr><th>Purchase Order</th><th>Vendor</th><th>Order Date</th><th class="align-right">Value</th><th>Receipt Progress</th><th class="align-right">Posted GR</th><th>Status</th></tr></thead>
+        <tbody>
+          {% for order in analytics.recent_orders %}
+            <tr>
+              <td><a href="{% url 'entity_edit' 'purchases' order.pk %}">{{ order.number }}</a></td>
+              <td>{{ order.vendor__name }}</td>
+              <td>{{ order.order_date|date:"d M Y" }}</td>
+              <td class="align-right"><strong>{{ order.total_label }}</strong></td>
+              <td><div class="purchase-inline-progress"><i><b style="--bar-width: {{ order.received_percentage|unlocalize }}%"></b></i><span>{{ order.received_percentage|floatformat:1 }}%</span></div></td>
+              <td class="align-right">{{ order.receipt_count }}</td>
+              <td><span class="status status-{{ order.status }}">{{ order.status_label }}</span></td>
+            </tr>
+          {% empty %}<tr><td colspan="7" class="purchase-empty">No purchase orders in this period.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="purchase-panel purchase-table-panel">
+    <header class="purchase-panel-head">
+      <div><p class="purchase-kicker">Warehouse intake</p><h2>Latest Goods Receipts</h2></div>
+      <a href="{% url 'entity_list' 'goods-receipts' %}">View all Goods Receipts →</a>
+    </header>
+    <div class="purchase-table-wrap">
+      <table>
+        <thead><tr><th>Goods Receipt</th><th>Purchase Order</th><th>Vendor</th><th>Warehouse</th><th>Receipt Date</th><th>Mode</th><th>Status</th></tr></thead>
+        <tbody>
+          {% for receipt in analytics.recent_receipts %}
+            <tr>
+              <td><a href="{% url 'entity_edit' 'goods-receipts' receipt.pk %}">{{ receipt.number }}</a></td>
+              <td><a href="{% url 'entity_edit' 'purchases' receipt.order_id %}">{{ receipt.order.number }}</a></td>
+              <td>{{ receipt.order.vendor.name }}</td>
+              <td>{{ receipt.warehouse.name }}</td>
+              <td>{{ receipt.receipt_date|date:"d M Y" }}</td>
+              <td>{{ receipt.get_receiving_mode_display }}</td>
+              <td><span class="status status-{{ receipt.status }}">{{ receipt.get_status_display }}</span></td>
+            </tr>
+          {% empty %}<tr><td colspan="7" class="purchase-empty">No goods receipts in this period.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+{% endblock %}

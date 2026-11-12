@@ -1331,7 +1331,7 @@ APP_MENU_GROUPS = {
             "label": "Dashboard",
             "icon": "D",
             "items": [
-                {"label": "Overview", "feature": "overview"},
+                {"label": "Purchase Dashboard", "feature": "overview"},
                 {"label": "Insight Feed", "feature": "insight-feed"},
                 {"label": "Spend Analysis", "feature": "spend-analysis"},
                 {"label": "Supplier Performance", "feature": "supplier-performance"},

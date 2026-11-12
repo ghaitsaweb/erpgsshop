@@ -1,15 +1,20 @@
 """Bounded, company-scoped analytics for the Purchase workspace."""
 
-from django.db.models import Avg, Count, Sum
+from datetime import date
+from decimal import Decimal
 
-from core.models import PurchaseOrder
+from django.db.models import Avg, Count, DecimalField, ExpressionWrapper, F, Q, Sum
+from django.utils import timezone
+
+from core.models import PurchaseOrder, PurchaseOrderLine
 from modules.organization.context import scope_queryset as scope_organization_queryset
 
-from .access import scope_purchase_queryset
+from .access import can_purchase_entity_action, scope_purchase_queryset
 from .models import (
     BlanketOrder,
     DirectPurchase,
     GoodsReceipt,
+    GoodsReceiptLine,
     ProductBudget,
     PurchaseInsight,
     PurchaseQuotation,
@@ -20,6 +25,10 @@ from .models import (
     VendorProfile,
 )
 
+
+MAX_DASHBOARD_DAYS = 366
+RECENT_DASHBOARD_ROWS = 8
+TOP_VENDOR_ROWS = 6
 
 ANALYTIC_FEATURES = {
     "overview",
@@ -43,6 +52,267 @@ def _scoped(user, entity, model):
 
 def _metric(label, value, detail, tone="blue"):
     return {"label": label, "value": value or 0, "detail": detail, "tone": tone}
+
+
+def _money(value):
+    amount = Decimal(value or 0)
+    return f"Rp {amount:,.0f}".replace(",", ".")
+
+
+def _quantity(value):
+    amount = Decimal(value or 0)
+    rendered = f"{amount:,.3f}".rstrip("0").rstrip(".")
+    return rendered.replace(",", ".")
+
+
+def _parse_period(params, today=None):
+    today = today or timezone.localdate()
+    default_start = today.replace(day=1)
+    default_end = today
+    raw_start = (params.get("date_from") or "").strip()
+    raw_end = (params.get("date_to") or "").strip()
+    if not raw_start and not raw_end:
+        return default_start, default_end, ""
+    try:
+        start = date.fromisoformat(raw_start)
+        end = date.fromisoformat(raw_end)
+    except (TypeError, ValueError):
+        return default_start, default_end, "Use valid From and To dates."
+    if end < start:
+        return default_start, default_end, "To date cannot be earlier than From date."
+    if (end - start).days + 1 > MAX_DASHBOARD_DAYS:
+        return default_start, default_end, f"Choose a period of at most {MAX_DASHBOARD_DAYS} days."
+    return start, end, ""
+
+
+def _dashboard_status_rows(queryset, choices):
+    labels = dict(choices)
+    rows = list(queryset.values("status").annotate(total=Count("pk")).order_by("status"))
+    total = sum(row["total"] for row in rows)
+    return [
+        {
+            "value": row["status"],
+            "label": labels.get(row["status"], row["status"] or "Unassigned"),
+            "total": row["total"],
+            "share": (row["total"] / total * 100) if total else 0,
+        }
+        for row in rows
+    ]
+
+
+def _purchase_receiving_analytics(user, params, *, today=None):
+    """Build a date-bounded PO-to-receipt dashboard with fixed query growth."""
+
+    start, end, filter_error = _parse_period(params, today=today)
+    visible_orders = _scoped(user, "purchases", PurchaseOrder)
+    period_orders = visible_orders.filter(order_date__range=(start, end))
+    active_orders = period_orders.exclude(
+        status__in=(
+            PurchaseOrder.Status.REJECTED,
+            PurchaseOrder.Status.CANCELLED,
+            PurchaseOrder.Status.REVISED,
+            PurchaseOrder.Status.EXPIRED,
+        )
+    )
+    committed_statuses = (
+        PurchaseOrder.Status.CONFIRMED,
+        PurchaseOrder.Status.COMPLETED,
+        PurchaseOrder.Status.CLOSED,
+    )
+    order_summary = active_orders.aggregate(
+        order_count=Count("pk"),
+        document_value=Sum("total"),
+        draft_sent=Count(
+            "pk",
+            filter=Q(status__in=(PurchaseOrder.Status.DRAFT, PurchaseOrder.Status.SENT)),
+        ),
+        waiting_approval=Count("pk", filter=Q(status=PurchaseOrder.Status.WAITING_APPROVAL)),
+        awaiting_receipt=Count(
+            "pk",
+            filter=Q(status__in=committed_statuses, received_percentage=0),
+        ),
+        partially_received=Count(
+            "pk",
+            filter=Q(
+                status__in=committed_statuses,
+                received_percentage__gt=0,
+                received_percentage__lt=100,
+            ),
+        ),
+        fully_received=Count(
+            "pk",
+            filter=Q(status__in=committed_statuses, received_percentage__gte=100),
+        ),
+    )
+
+    ordered_line_value = ExpressionWrapper(
+        F("quantity") * F("unit_price"),
+        output_field=DecimalField(max_digits=30, decimal_places=2),
+    )
+    received_line_value = ExpressionWrapper(
+        F("received_quantity") * F("unit_price"),
+        output_field=DecimalField(max_digits=30, decimal_places=2),
+    )
+    line_summary = PurchaseOrderLine.objects.filter(order__in=active_orders).aggregate(
+        total_ordered_quantity=Sum("quantity"),
+        total_received_quantity=Sum("received_quantity"),
+        ordered_value=Sum(ordered_line_value),
+        received_value=Sum(received_line_value),
+    )
+    ordered_value = line_summary["ordered_value"] or Decimal("0")
+    received_value = line_summary["received_value"] or Decimal("0")
+    outstanding_value = max(ordered_value - received_value, Decimal("0"))
+    completion = min(
+        (received_value / ordered_value * Decimal("100")) if ordered_value else Decimal("0"),
+        Decimal("100"),
+    )
+
+    visible_receipts = _scoped(user, "goods-receipts", GoodsReceipt)
+    period_receipts = visible_receipts.filter(receipt_date__range=(start, end))
+    posted_receipts = period_receipts.filter(status=GoodsReceipt.Status.RECEIVED)
+    receipt_summary = posted_receipts.aggregate(
+        receipt_count=Count("pk"),
+        order_count=Count("order_id", distinct=True),
+        on_time_count=Count(
+            "pk",
+            filter=Q(
+                delivery_status__in=(
+                    GoodsReceipt.DeliveryStatus.EARLY,
+                    GoodsReceipt.DeliveryStatus.ON_TIME,
+                )
+            ),
+        ),
+    )
+    receipt_count = receipt_summary["receipt_count"] or 0
+    on_time_count = receipt_summary["on_time_count"] or 0
+    on_time_rate = (on_time_count / receipt_count * 100) if receipt_count else 0
+
+    quality_summary = GoodsReceiptLine.objects.filter(receipt__in=posted_receipts).aggregate(
+        total_accepted_quantity=Sum("accepted_quantity"),
+        total_rejected_quantity=Sum("rejected_quantity"),
+    )
+
+    document_value = order_summary["document_value"] or Decimal("0")
+    vendor_rows = list(
+        active_orders.values("vendor_id", "vendor__name")
+        .annotate(order_count=Count("pk"), value=Sum("total"))
+        .order_by("-value", "vendor_id")[:TOP_VENDOR_ROWS]
+    )
+    for row in vendor_rows:
+        row["value"] = row["value"] or Decimal("0")
+        row["value_label"] = _money(row["value"])
+        row["share"] = float(row["value"] / document_value * 100) if document_value else 0
+
+    order_status_labels = dict(PurchaseOrder.Status.choices)
+    recent_orders = list(
+        active_orders.annotate(
+            receipt_count=Count(
+                "goods_receipts",
+                filter=Q(goods_receipts__status=GoodsReceipt.Status.RECEIVED),
+                distinct=True,
+            )
+        )
+        .values(
+            "pk",
+            "number",
+            "vendor__name",
+            "order_date",
+            "status",
+            "total",
+            "received_percentage",
+            "receipt_count",
+        )
+        .order_by("-order_date", "-pk")[:RECENT_DASHBOARD_ROWS]
+    )
+    for row in recent_orders:
+        row["status_label"] = order_status_labels.get(row["status"], row["status"])
+        row["total_label"] = _money(row["total"])
+
+    recent_receipts = list(
+        period_receipts.select_related("order__vendor", "warehouse")
+        .order_by("-receipt_date", "-pk")[:RECENT_DASHBOARD_ROWS]
+    )
+    pipeline = [
+        {
+            "label": "Draft & Sent",
+            "value": order_summary["draft_sent"] or 0,
+            "detail": "PO preparation",
+            "tone": "slate",
+        },
+        {
+            "label": "Waiting Approval",
+            "value": order_summary["waiting_approval"] or 0,
+            "detail": "Manager action",
+            "tone": "amber",
+        },
+        {
+            "label": "Awaiting Receipt",
+            "value": order_summary["awaiting_receipt"] or 0,
+            "detail": "Approved, no receipt",
+            "tone": "blue",
+        },
+        {
+            "label": "Partially Received",
+            "value": order_summary["partially_received"] or 0,
+            "detail": "Outstanding quantity",
+            "tone": "violet",
+        },
+        {
+            "label": "Fully Received",
+            "value": order_summary["fully_received"] or 0,
+            "detail": "Receipt complete",
+            "tone": "green",
+        },
+    ]
+    return {
+        "view_type": "purchase_receiving",
+        "template_name": "purchase/dashboard.html",
+        "date_from": start,
+        "date_to": end,
+        "filter_error": filter_error,
+        "period_label": f"{start:%d/%m/%Y} – {end:%d/%m/%Y}",
+        "metrics": [
+            _metric(
+                "Purchase Order Value",
+                _money(document_value),
+                f"{order_summary['order_count'] or 0} active PO in period",
+                "blue",
+            ),
+            _metric(
+                "Received Line Value",
+                _money(received_value),
+                f"{_quantity(line_summary['total_received_quantity'])} units received",
+                "green",
+            ),
+            _metric(
+                "Outstanding Line Value",
+                _money(outstanding_value),
+                f"{_quantity(line_summary['total_ordered_quantity'])} units ordered",
+                "amber",
+            ),
+            _metric(
+                "Posted Goods Receipts",
+                receipt_count,
+                f"{on_time_rate:.1f}% early or on time",
+                "violet",
+            ),
+        ],
+        "pipeline": pipeline,
+        "completion_percent": float(completion),
+        "completion_label": f"{completion:.1f}%",
+        "completion_degrees": float(completion * Decimal("3.6")),
+        "ordered_quantity_label": _quantity(line_summary["total_ordered_quantity"]),
+        "received_quantity_label": _quantity(line_summary["total_received_quantity"]),
+        "accepted_quantity_label": _quantity(quality_summary["total_accepted_quantity"]),
+        "rejected_quantity_label": _quantity(quality_summary["total_rejected_quantity"]),
+        "receipt_order_count": receipt_summary["order_count"] or 0,
+        "order_statuses": _dashboard_status_rows(period_orders, PurchaseOrder.Status.choices),
+        "receipt_statuses": _dashboard_status_rows(period_receipts, GoodsReceipt.Status.choices),
+        "vendors": vendor_rows,
+        "recent_orders": recent_orders,
+        "recent_receipts": recent_receipts,
+        "can_add_order": can_purchase_entity_action(user, "purchases", "add"),
+    }
 
 
 def _status_rows(queryset, field="status"):
@@ -137,12 +407,12 @@ def _lifecycle_analytics(user):
     }
 
 
-def build_purchase_analytics(feature_slug, user):
+def build_purchase_analytics(feature_slug, user, params=None, *, today=None):
     """Return procurement analytics using a fixed number of aggregate queries."""
     if feature_slug not in ANALYTIC_FEATURES:
         return None
     if feature_slug == "overview":
-        return _lifecycle_analytics(user)
+        return _purchase_receiving_analytics(user, params or {}, today=today)
     if feature_slug in {"spend-analysis", "purchase-performance", "order-analysis"}:
         return _order_analytics(user)
     if feature_slug in {"demand-analysis", "request-analysis"}:

@@ -117,7 +117,7 @@ def complete_due_timeout(instance_id, now=None):
     action = instance.timeout_action_snapshot
     actor = _system_actor(instance)
     reason = "Automatic approval timeout elapsed."
-    apply_approval_result(target, action, actor)
+    apply_approval_result(target, action, actor, reason)
     ApprovalAction.objects.create(
         instance=instance,
         action=(ApprovalAction.Action.AUTO_APPROVE if action == "approve" else ApprovalAction.Action.AUTO_REJECT),

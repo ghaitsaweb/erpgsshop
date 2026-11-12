@@ -46,7 +46,12 @@ def process_mass_approval_item(instance_id, actor_id, action, reason=""):
             actor,
             action,
             reason=reason,
-            apply_result=lambda target, result_action: apply_approval_result(target, result_action, actor),
+            apply_result=lambda target, result_action: apply_approval_result(
+                target,
+                result_action,
+                actor,
+                reason,
+            ),
         )
     except (ApprovalInstance.DoesNotExist, get_user_model().DoesNotExist, ValidationError) as exc:
         messages = getattr(exc, "messages", None)

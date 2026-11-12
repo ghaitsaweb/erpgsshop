@@ -1553,12 +1553,20 @@ class VendorPricelistTier(TimeStampedModel):
 
 
 class VendorPricelistAmendment(TimeStampedModel):
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        SUBMITTED = "submitted", "Submitted"
+        WAITING_APPROVAL = "waiting_approval", "Waiting For Approval"
+        APPROVED = "approved", "Approved"
+        REJECTED = "rejected", "Rejected"
+        CANCELLED = "cancelled", "Cancelled"
+
     pricelist = models.ForeignKey(VendorPricelist, on_delete=models.PROTECT, related_name="amendments")
     effective_date = models.DateField(default=timezone.localdate)
     previous_price = models.DecimalField(max_digits=18, decimal_places=2, default=0, blank=True)
     new_price = models.DecimalField(max_digits=18, decimal_places=2, default=0, blank=True)
     reason = models.TextField()
-    status = models.CharField(max_length=16, choices=ApprovalStatus.choices, default=ApprovalStatus.DRAFT)
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.DRAFT)
     approver = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, blank=True, null=True, related_name="vendor_pricelist_approvals")
 
     class Meta:
@@ -2431,6 +2439,15 @@ class PurchaseKPITargetLine(TimeStampedModel):
     snapshot_direction = models.CharField(max_length=24, blank=True, editable=False)
     snapshot_calculation = models.TextField(blank=True, editable=False)
     calculation_snapshot = models.JSONField(default=dict, blank=True, editable=False)
+    activated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="activated_purchase_kpi_target_lines",
+        blank=True,
+        null=True,
+        editable=False,
+    )
+    activated_at = models.DateTimeField(blank=True, null=True, editable=False)
     last_calculated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,

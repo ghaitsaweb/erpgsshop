@@ -35,6 +35,13 @@ class ApprovalOutcome:
     audit_details: dict = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class ApprovalTransitionOutcome:
+    instance: ApprovalInstance
+    completed: bool = False
+    advanced: bool = False
+
+
 def _json_safe(value):
     return DjangoJSONEncoder().encode(value)
 
@@ -174,6 +181,11 @@ def _company_id_for(record):
     direct = getattr(record, "company_id", None)
     if direct:
         return direct
+    from .adapters import registered_approval_company_id
+
+    registered = registered_approval_company_id(record)
+    if registered:
+        return registered
     for path in ("employee.company_id", "request.employee.company_id", "contract.employee.company_id"):
         value = _resolve_path(record, path)
         if value:
@@ -538,6 +550,13 @@ def can_user_act(instance, user):
     )
 
 
+def can_user_view(instance, user):
+    """Allow submitters, active approvers, and recorded actors to inspect audit history."""
+    if user.is_superuser or instance.submitted_by_id == user.pk or can_user_act(instance, user):
+        return True
+    return instance.actions.filter(Q(performed_by=user) | Q(effective_approver=user)).exists()
+
+
 @transaction.atomic
 def perform_approval_action(instance, actor, action, *, reason="", apply_result):
     """Apply one locked approval action and call the domain only on completion."""
@@ -643,6 +662,56 @@ def perform_approval_action(instance, actor, action, *, reason="", apply_result)
         completed=completed,
         approved=completed and action == "approve",
         audit_details=audit_details,
+    )
+
+
+def pending_approval_for(record):
+    content_type = ContentType.objects.get_for_model(record, for_concrete_model=False)
+    return (
+        ApprovalInstance.objects.filter(
+            content_type=content_type,
+            object_id=record.pk,
+            status=ApprovalInstance.Status.PENDING,
+        )
+        .select_related("rule", "workflow", "content_type")
+        .first()
+    )
+
+
+def execute_registered_approval_action(record, actor, *, entity, action, reason=""):
+    """Run a document action through the adapter registered by its owning module."""
+    from .adapters import apply_approval_result, apply_approval_submit
+
+    if action == "submit":
+        instance = submit_for_approval(
+            record,
+            actor,
+            entity=entity,
+            apply_submit=lambda target: apply_approval_submit(target, actor),
+        )
+        return ApprovalTransitionOutcome(instance=instance)
+    if action not in {"approve", "reject"}:
+        raise ValidationError("Unsupported registered approval action.")
+
+    instance = pending_approval_for(record)
+    if instance is None:
+        instance = ensure_legacy_pending_approval(record, actor, entity=entity)
+    outcome = perform_approval_action(
+        instance,
+        actor,
+        action,
+        reason=reason,
+        apply_result=lambda target, result_action: apply_approval_result(
+            target,
+            result_action,
+            actor,
+            reason,
+        ),
+    )
+    return ApprovalTransitionOutcome(
+        instance=outcome.instance,
+        completed=outcome.completed,
+        advanced=not outcome.completed,
     )
 
 

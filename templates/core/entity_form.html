@@ -59,6 +59,13 @@
           {% endfor %}
         </section>
       {% endif %}
+      {% if record_approval_enabled and object %}
+        <section class="workflow-actions-panel">
+          <div><small>Approval workflow</small><strong>{% if record_approval %}{{ record_approval.rule }} · {{ record_approval.get_status_display }}{% else %}Not submitted{% endif %}</strong></div>
+          {% for item in record_approval_history %}<span>{{ item.performed_at|date:"Y-m-d H:i" }} · {{ item.get_action_display }} · {{ item.effective_approver|default:item.performed_by }}{% if item.reason %} · {{ item.reason }}{% endif %}</span>{% empty %}<span>No approval activity has been recorded.</span>{% endfor %}
+          {% if record_approval_can_open %}<a class="btn btn-secondary btn-block" href="{% url 'approval_detail' record_approval.pk %}">Open approval transaction</a>{% endif %}
+        </section>
+      {% endif %}
       {% if entity == 'employee-onboarding' and object %}
         <section class="workflow-actions-panel">
           <div><small>Checklist</small><strong>{{ object.progress }}% complete</strong></div>

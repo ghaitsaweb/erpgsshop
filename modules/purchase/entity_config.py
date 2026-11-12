@@ -121,8 +121,38 @@ VENDOR_PRICELIST_WORKFLOW = {
 }
 
 VENDOR_PRICELIST_AMENDMENT_WORKFLOW = {
-    key: {**definition, "service_controls_state": True}
-    for key, definition in APPROVAL_WORKFLOW.items()
+    "submit": {
+        "label": "Submit for Approval",
+        "from": ["draft", "submitted"],
+        "to": "waiting_approval",
+        "primary": True,
+        "service_controls_state": True,
+    },
+    "approve": {
+        "label": "Approve",
+        "from": ["waiting_approval"],
+        "to": "approved",
+        "primary": True,
+        "service_controls_state": True,
+    },
+    "reject": {
+        "label": "Reject",
+        "from": ["waiting_approval"],
+        "to": "rejected",
+        "service_controls_state": True,
+    },
+    "cancel": {
+        "label": "Cancel",
+        "from": ["draft", "submitted", "waiting_approval"],
+        "to": "cancelled",
+        "service_controls_state": True,
+    },
+    "reset": {
+        "label": "Reset to Draft",
+        "from": ["rejected", "cancelled"],
+        "to": "draft",
+        "service_controls_state": True,
+    },
 }
 
 VENDOR_PERFORMANCE_EVALUATION_WORKFLOW = {

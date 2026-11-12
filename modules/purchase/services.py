@@ -421,6 +421,15 @@ def transition_purchase_kpi_target(target, action, actor=None):
     elif action == "approve":
         update_fields.extend(["activated_by", "activated_at"])
     locked.save(update_fields=update_fields)
+    if action == "approve":
+        PurchaseKPITargetLine.objects.filter(
+            target_id=locked.pk,
+            activated_at__isnull=True,
+        ).update(
+            activated_by=actor,
+            activated_at=locked.activated_at,
+            updated_at=locked.activated_at,
+        )
     return locked
 
 
@@ -478,8 +487,27 @@ def purchase_request_before_workflow(*, instance, action, actor):
     """Mirror HMX line-level state changes around the generic PR approval shell."""
     del actor
     line_queryset = PurchaseRequestLine.objects.filter(request_id=instance.pk)
-    if not line_queryset.exists():
+    line_rows = _require_bounded(
+        list(
+            line_queryset.order_by("pk").values(
+                "pk",
+                "quantity",
+                "estimated_unit_price",
+            )[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="Purchase Request",
+    )
+    if not line_rows:
         raise ValidationError("Add at least one product line before continuing.")
+    if action == "submit":
+        total_amount = sum(
+            (row["quantity"] * row["estimated_unit_price"] for row in line_rows),
+            ZERO,
+        )
+        if total_amount < Decimal("1"):
+            raise ValidationError("Purchase Request total estimated cost must be at least 1 before approval.")
+    line_queryset = line_queryset.filter(pk__in=[row["pk"] for row in line_rows])
     now = timezone.now()
     if action == "submit":
         line_queryset.update(
@@ -569,8 +597,14 @@ def purchase_order_before_workflow(*, instance, action, actor=None):
 
 
 @transaction.atomic
-def approve_purchase_request_lines(purchase_request, *, decisions, actor=None):
-    del actor
+def approve_purchase_request_lines(purchase_request, *, decisions, actor=None, reason=""):
+    from modules.approval_workflow.adapters import apply_approval_result
+    from modules.approval_workflow.services import (
+        ensure_legacy_pending_approval,
+        pending_approval_for,
+        perform_approval_action,
+    )
+
     locked = PurchaseRequest.objects.select_for_update(of=("self",)).get(pk=_pk(purchase_request))
     if locked.status not in {PurchaseRequest.Status.PENDING, PurchaseRequest.Status.PARTIALLY_APPROVED}:
         raise ValidationError("Only a pending Purchase Request can be approved.")
@@ -617,6 +651,24 @@ def approve_purchase_request_lines(purchase_request, *, decisions, actor=None):
         else:
             raise ValidationError("Each Purchase Request line must be approved or rejected.")
         line.updated_at = now
+    approval = pending_approval_for(locked)
+    if approval is None:
+        approval = ensure_legacy_pending_approval(
+            locked,
+            actor,
+            entity="purchase-requests",
+        )
+    outcome = perform_approval_action(
+        approval,
+        actor,
+        "approve",
+        reason=reason,
+        apply_result=lambda target, result_action: apply_approval_result(
+            target,
+            result_action,
+            actor,
+        ),
+    )
     PurchaseRequestLine.objects.bulk_update(
         lines,
         [
@@ -629,8 +681,9 @@ def approve_purchase_request_lines(purchase_request, *, decisions, actor=None):
         ],
         batch_size=500,
     )
-    locked.status = PurchaseRequest.Status.APPROVED
-    locked.save(update_fields=["status", "updated_at"])
+    locked.refresh_from_db(fields=["status", "updated_at"])
+    locked._approval_advanced = not outcome.completed
+    locked._approval_instance_id = outcome.instance.pk
     return locked
 
 
@@ -2481,6 +2534,15 @@ def transition_vendor_pricelist(pricelist, action, actor=None):
         has_items = VendorPricelistItem.objects.filter(pricelist_id=locked.pk, active=True).exists()
         if not has_items and not locked.product_id:
             raise ValidationError("Add at least one Vendor Pricelist item before submitting.")
+        total_price = (
+            VendorPricelistItem.objects.filter(pricelist_id=locked.pk, active=True)
+            .aggregate(total=Sum("unit_price"))["total"]
+            or ZERO
+        )
+        if locked.product_id:
+            total_price += locked.unit_price
+        if total_price < Decimal("1"):
+            raise ValidationError("Vendor Pricelist total price must be at least 1 before approval.")
     locked.status = target
     locked.active = target not in {VendorPricelist.Status.INACTIVE, VendorPricelist.Status.EXPIRED}
     locked.save(update_fields=["status", "active", "updated_at"])
@@ -3153,11 +3215,33 @@ def transition_vendor_pricelist_amendment(amendment, action, actor=None):
         .get(pk=_pk(amendment))
     )
     transitions = {
-        "submit": ({ApprovalStatus.DRAFT}, ApprovalStatus.SUBMITTED),
-        "approve": ({ApprovalStatus.SUBMITTED}, ApprovalStatus.APPROVED),
-        "reject": ({ApprovalStatus.SUBMITTED}, ApprovalStatus.REJECTED),
-        "cancel": ({ApprovalStatus.DRAFT, ApprovalStatus.SUBMITTED}, ApprovalStatus.CANCELLED),
-        "reset": ({ApprovalStatus.REJECTED, ApprovalStatus.CANCELLED}, ApprovalStatus.DRAFT),
+        "submit": (
+            {VendorPricelistAmendment.Status.DRAFT, VendorPricelistAmendment.Status.SUBMITTED},
+            VendorPricelistAmendment.Status.WAITING_APPROVAL,
+        ),
+        "approve": (
+            {VendorPricelistAmendment.Status.WAITING_APPROVAL},
+            VendorPricelistAmendment.Status.APPROVED,
+        ),
+        "reject": (
+            {VendorPricelistAmendment.Status.WAITING_APPROVAL},
+            VendorPricelistAmendment.Status.REJECTED,
+        ),
+        "cancel": (
+            {
+                VendorPricelistAmendment.Status.DRAFT,
+                VendorPricelistAmendment.Status.SUBMITTED,
+                VendorPricelistAmendment.Status.WAITING_APPROVAL,
+            },
+            VendorPricelistAmendment.Status.CANCELLED,
+        ),
+        "reset": (
+            {
+                VendorPricelistAmendment.Status.REJECTED,
+                VendorPricelistAmendment.Status.CANCELLED,
+            },
+            VendorPricelistAmendment.Status.DRAFT,
+        ),
     }
     if action not in transitions:
         raise ValidationError("Unsupported Vendor Pricelist amendment action.")
@@ -3178,7 +3262,7 @@ def transition_vendor_pricelist_amendment(amendment, action, actor=None):
             raise ValidationError("Add at least one amendment line before submitting.")
         if VendorPricelistAmendment.objects.filter(
             pricelist_id=locked.pricelist_id,
-            status=ApprovalStatus.SUBMITTED,
+            status=VendorPricelistAmendment.Status.WAITING_APPROVAL,
         ).exclude(pk=locked.pk).exists():
             raise ValidationError("This Vendor Pricelist already has a pending amendment.")
     if action == "approve":
@@ -5553,18 +5637,7 @@ def create_goods_receipts(order, actor=None):
     return _create_goods_receipts_locked(locked, actor)
 
 
-@transaction.atomic
-def confirm_purchase_order(order, actor=None):
-    locked = (
-        PurchaseOrder.objects.select_for_update(of=("self",))
-        .select_related("company", "vendor", "warehouse")
-        .get(pk=_pk(order))
-    )
-    if locked.status not in {
-        PurchaseOrder.Status.DRAFT,
-        PurchaseOrder.Status.WAITING_APPROVAL,
-    }:
-        raise ValidationError("Only a draft or waiting-approval purchase order can be approved.")
+def _prepare_purchase_order_for_confirmation(locked):
     lines = _require_bounded(list(
         PurchaseOrderLine.objects.select_for_update(of=("self",))
         .filter(order_id=locked.pk)
@@ -5582,6 +5655,38 @@ def confirm_purchase_order(order, actor=None):
     order_total = sum((line.subtotal for line in lines), ZERO)
     purchase_limit = enforce_vendor_purchase_limit(order=locked, order_total=order_total)
     locked.total = order_total
+    return lines, purchase_limit
+
+
+@transaction.atomic
+def submit_purchase_order_for_approval(order, actor=None):
+    del actor
+    locked = (
+        PurchaseOrder.objects.select_for_update(of=("self",))
+        .select_related("company", "vendor", "warehouse")
+        .get(pk=_pk(order))
+    )
+    if locked.status not in {PurchaseOrder.Status.DRAFT, PurchaseOrder.Status.SENT}:
+        raise ValidationError("Only a draft or sent purchase order can be submitted for approval.")
+    _prepare_purchase_order_for_confirmation(locked)
+    locked.status = PurchaseOrder.Status.WAITING_APPROVAL
+    locked.save(update_fields=["total", "status", "updated_at"])
+    return locked
+
+
+@transaction.atomic
+def confirm_purchase_order(order, actor=None):
+    locked = (
+        PurchaseOrder.objects.select_for_update(of=("self",))
+        .select_related("company", "vendor", "warehouse")
+        .get(pk=_pk(order))
+    )
+    if locked.status not in {
+        PurchaseOrder.Status.DRAFT,
+        PurchaseOrder.Status.WAITING_APPROVAL,
+    }:
+        raise ValidationError("Only a draft or waiting-approval purchase order can be approved.")
+    lines, purchase_limit = _prepare_purchase_order_for_confirmation(locked)
     if purchase_limit.requires_approval and locked.status == PurchaseOrder.Status.DRAFT:
         locked.status = PurchaseOrder.Status.WAITING_APPROVAL
         locked.save(update_fields=["total", "status", "updated_at"])

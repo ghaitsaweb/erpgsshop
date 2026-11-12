@@ -1,4 +1,72 @@
-from django.core.exceptions import ValidationError
+from dataclasses import dataclass
+
+from django.core.exceptions import ImproperlyConfigured, ValidationError
+
+
+@dataclass(frozen=True)
+class ApprovalAdapter:
+    submit: object
+    lifecycle: object
+    result: object
+    company_id: object = None
+    decision_url: object = None
+    direct_decision: bool = True
+
+
+_REGISTERED_ADAPTERS = {}
+
+
+def register_approval_adapter(
+    model_label,
+    *,
+    submit,
+    lifecycle,
+    result,
+    company_id=None,
+    decision_url=None,
+    direct_decision=True,
+):
+    """Register one installed module's domain transitions with the shared engine."""
+    key = str(model_label).strip().lower()
+    if not key or "." not in key:
+        raise ImproperlyConfigured("Approval adapters require an app_label.model model label.")
+    adapter = ApprovalAdapter(
+        submit=submit,
+        lifecycle=lifecycle,
+        result=result,
+        company_id=company_id,
+        decision_url=decision_url,
+        direct_decision=direct_decision,
+    )
+    existing = _REGISTERED_ADAPTERS.get(key)
+    if existing is not None and existing != adapter:
+        raise ImproperlyConfigured(f"Approval adapter '{key}' is already registered.")
+    _REGISTERED_ADAPTERS[key] = adapter
+
+
+def _registered_adapter(target):
+    return _REGISTERED_ADAPTERS.get(target._meta.label_lower)
+
+
+def registered_approval_company_id(target):
+    """Resolve an indirect company through a module-owned adapter."""
+    adapter = _registered_adapter(target)
+    if adapter is None or adapter.company_id is None:
+        return None
+    return adapter.company_id(target)
+
+
+def registered_approval_decision_url(target):
+    """Return a domain decision workspace without coupling shared UI to a module."""
+    adapter = _registered_adapter(target)
+    if adapter is None or adapter.decision_url is None:
+        return ""
+    return adapter.decision_url(target)
+
+
+def registered_approval_allows_direct_decision(target):
+    adapter = _registered_adapter(target)
+    return adapter is None or adapter.direct_decision
 
 
 GENERIC_HR_TARGETS = {
@@ -11,7 +79,7 @@ GENERIC_HR_TARGETS = {
 
 
 def uses_approval_engine(target):
-    return target._meta.label_lower in {
+    return _registered_adapter(target) is not None or target._meta.label_lower in {
         "core.saleorder",
         "gsshop_hr.employeechangerequest",
         "gsshop_hr.attendancechangerequest",
@@ -47,6 +115,9 @@ def _generic_transition(target, action, actor):
 
 def apply_approval_submit(target, actor):
     """Move a target into Submitted only after an approval instance is created."""
+    adapter = _registered_adapter(target)
+    if adapter is not None:
+        return adapter.submit(target, actor)
     label = target._meta.label_lower
     if label == "core.saleorder":
         from core.sales import apply_sale_approval_submit
@@ -73,8 +144,11 @@ def apply_approval_submit(target, actor):
     raise ValidationError("This approval target has no registered submit adapter.")
 
 
-def apply_approval_lifecycle(target, action, actor):
+def apply_approval_lifecycle(target, action, actor, reason=""):
     """Apply a non-decision transition such as cancel or reset."""
+    adapter = _registered_adapter(target)
+    if adapter is not None:
+        return adapter.lifecycle(target, action, actor, reason)
     label = target._meta.label_lower
     if label == "core.saleorder":
         from core.sales import transition_sale_order
@@ -101,8 +175,11 @@ def apply_approval_lifecycle(target, action, actor):
     raise ValidationError("This approval target has no registered lifecycle adapter.")
 
 
-def apply_approval_result(target, action, actor):
+def apply_approval_result(target, action, actor, reason=""):
     """Apply a completed approval through the registered domain adapter."""
+    adapter = _registered_adapter(target)
+    if adapter is not None:
+        return adapter.result(target, action, actor, reason)
     label = target._meta.label_lower
     if label == "core.saleorder":
         from core.sales import apply_sale_approval_result

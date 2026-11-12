@@ -12,6 +12,7 @@ PURCHASE_MANAGER = "Purchase Manager"
 PURCHASE_USER = "Purchase User"
 VENDOR_RELATIONS_OFFICER = "Vendor Relations Officer"
 PURCHASE_BUDGET_MANAGER = "Purchase Budget Manager"
+PURCHASE_REQUESTOR_MANAGER = "Purchase Requestor Manager"
 
 PURCHASE_ENTITIES = {
     "purchases",
@@ -172,6 +173,11 @@ def can_purchase_entity_action(user, entity, action):
         )
     if PURCHASE_MANAGER in groups:
         return True
+    if PURCHASE_REQUESTOR_MANAGER in groups and entity in {
+        "purchase-requests",
+        "purchase-request-lines",
+    }:
+        return action in {"view", "add", "change"}
     if entity in READ_ONLY_PURCHASE_CONFIGURATION_ENTITIES:
         return action == "view" and bool(
             groups & {PURCHASE_USER, VENDOR_RELATIONS_OFFICER}

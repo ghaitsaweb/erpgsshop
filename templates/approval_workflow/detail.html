@@ -26,8 +26,11 @@
     <aside class="form-help">
       {% if can_act %}
         <section class="workflow-actions-panel">
-          <form method="post" action="{% url 'approval_action' approval.pk %}">{% csrf_token %}<input type="hidden" name="action" value="approve"><label>Approval reason{% if approval.rule.require_approve_reason %} *{% endif %}</label><textarea class="form-control" name="reason" rows="3"></textarea><button class="btn btn-primary btn-block" type="submit">Approve</button></form>
-          <form method="post" action="{% url 'approval_action' approval.pk %}">{% csrf_token %}<input type="hidden" name="action" value="reject"><label>Rejection reason *</label><textarea class="form-control" name="reason" rows="3" required></textarea><button class="btn btn-secondary btn-block" type="submit">Reject</button></form>
+          {% if decision_url %}<a class="btn btn-primary btn-block" href="{{ decision_url }}">Open approval workspace</a>{% endif %}
+          {% if allow_direct_decision %}
+            <form method="post" action="{% url 'approval_action' approval.pk %}">{% csrf_token %}<input type="hidden" name="action" value="approve"><label>Approval reason{% if approval.rule.require_approve_reason %} *{% endif %}</label><textarea class="form-control" name="reason" rows="3"></textarea><button class="btn btn-primary btn-block" type="submit">Approve</button></form>
+            <form method="post" action="{% url 'approval_action' approval.pk %}">{% csrf_token %}<input type="hidden" name="action" value="reject"><label>Rejection reason *</label><textarea class="form-control" name="reason" rows="3" required></textarea><button class="btn btn-secondary btn-block" type="submit">Reject</button></form>
+          {% endif %}
         </section>
       {% endif %}
       <a class="btn btn-secondary btn-block" href="{% url 'approval_inbox' %}">Back to My Approvals</a>

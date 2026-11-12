@@ -276,7 +276,7 @@ from modules.approval_workflow.access import (
     scope_approval_form,
     scope_approval_queryset,
 )
-from modules.approval_workflow.models import ApprovalInstance
+from modules.approval_workflow.models import ApprovalAction, ApprovalInstance
 from modules.approval_workflow.adapters import (
     apply_approval_lifecycle,
     apply_approval_result,
@@ -284,8 +284,12 @@ from modules.approval_workflow.adapters import (
     uses_approval_engine,
 )
 from modules.approval_workflow.services import (
+    can_user_act,
+    can_user_view,
     cancel_pending_approval,
     ensure_legacy_pending_approval,
+    execute_registered_approval_action,
+    pending_approval_for,
     perform_approval_action,
     submit_for_approval,
 )
@@ -2767,6 +2771,46 @@ def _can_workflow(user, entity, action, instance):
     )
 
 
+def _can_document_workflow(user, entity, action, definition, instance, approval=None):
+    approval_action = definition.get("approval_action")
+    if approval_action in {"approve", "reject"} and uses_approval_engine(instance):
+        if approval is not None:
+            return can_user_act(approval, user)
+        # Preserve access to pre-integration records already waiting for a
+        # decision; the first valid manager action creates a legacy snapshot.
+        return _can_workflow(user, entity, action, instance)
+    return _can_workflow(user, entity, action, instance)
+
+
+def _approval_transaction_context(instance, user, pending=None):
+    if not instance or not uses_approval_engine(instance):
+        return {}
+    approval = pending or (
+        ApprovalInstance.objects.filter(
+            workflow__content_type__app_label=instance._meta.app_label,
+            workflow__content_type__model=instance._meta.model_name,
+            object_id=instance.pk,
+        )
+        .select_related("rule", "submitted_by")
+        .order_by("-submitted_at", "-pk")
+        .first()
+    )
+    return {
+        "record_approval_enabled": True,
+        "record_approval": approval,
+        "record_approval_history": (
+            list(
+                ApprovalAction.objects.filter(instance_id=approval.pk)
+                .select_related("performed_by", "effective_approver")
+                .order_by("-performed_at", "-pk")[:50]
+            )
+            if approval
+            else []
+        ),
+        "record_approval_can_open": bool(approval and can_user_view(approval, user)),
+    }
+
+
 def _hr_audit_company_id(instance):
     """Resolve the company for one HR workflow record without recordset loops."""
     if getattr(instance, "company_id", None):
@@ -2985,12 +3029,25 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
                     field.disabled = True
 
     status_choices = list(model._meta.get_field(workflow_field).choices or ()) if hasattr(model, workflow_field) else []
+    document_approval = None
+    if instance and uses_approval_engine(instance) and any(
+        definition.get("approval_action")
+        for definition in document.get("actions", {}).values()
+    ):
+        document_approval = pending_approval_for(instance)
     available_actions = [
         {"key": key, **definition}
         for key, definition in document.get("actions", {}).items()
         if instance
         and current_status in definition["from"]
-        and _can_workflow(request.user, entity, key, instance)
+        and _can_document_workflow(
+            request.user,
+            entity,
+            key,
+            definition,
+            instance,
+            approval=document_approval,
+        )
         and (
             definition.get("is_available") is None
             or definition["is_available"](instance)
@@ -3033,6 +3090,7 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
         "totals": totals,
         "developer_meta": developer_metadata(model, entity=entity, instance=instance),
     }
+    context.update(_approval_transaction_context(instance, request.user, pending=document_approval))
     if entity == "invoices" and instance:
         context["invoice_payment_state"] = instance.payment_state
         context["invoice_payment_state_choices"] = list(Invoice.PaymentState.choices)
@@ -3806,10 +3864,16 @@ def entity_edit(request, entity, pk):
         form.save()
         messages.success(request, f"{config['singular']} updated successfully.")
         return redirect("entity_list", entity=entity)
+    record_pending_approval = pending_approval_for(instance) if uses_approval_engine(instance) else None
     workflow_actions = [
         {"key": key, **definition}
         for key, definition in config.get("workflow", {}).items()
-        if current_status in definition["from"] and _can_workflow(request.user, entity, key, instance)
+        if current_status in definition["from"]
+        and (
+            can_user_act(record_pending_approval, request.user)
+            if key in {"approve", "reject"} and record_pending_approval is not None
+            else _can_workflow(request.user, entity, key, instance)
+        )
     ]
     lifecycle_tasks_preview = None
     lifecycle_tasks_has_more = False
@@ -3819,6 +3883,11 @@ def entity_edit(request, entity, pk):
         )[:51])
         lifecycle_tasks_preview = preview_rows[:50]
         lifecycle_tasks_has_more = len(preview_rows) > 50
+    approval_context = _approval_transaction_context(
+        instance,
+        request.user,
+        pending=record_pending_approval,
+    )
     return render(
         request,
         "core/entity_form.html",
@@ -3838,6 +3907,7 @@ def entity_edit(request, entity, pk):
                 scoped_queryset, instance, entity, request.GET.urlencode()
             ),
             "developer_meta": developer_metadata(model, entity=entity, instance=instance),
+            **approval_context,
         },
     )
 
@@ -4525,7 +4595,10 @@ def document_action(request, entity, pk, action):
                                 action,
                                 reason=request.POST.get("reason", ""),
                                 apply_result=lambda target, result_action: apply_approval_result(
-                                    target, result_action, request.user
+                                    target,
+                                    result_action,
+                                    request.user,
+                                    request.POST.get("reason", ""),
                                 ),
                             )
                             workflow_audit_details = outcome.audit_details
@@ -4535,14 +4608,24 @@ def document_action(request, entity, pk, action):
                                     "approval_instance_id": approval_instance.pk,
                                     "approval_level_advanced": True,
                                 }
-                        elif action == "cancel" and locked.status == "submitted":
+                        elif action == "cancel" and pending_approval_for(locked) is not None:
                             cancel_pending_approval(
                                 locked,
                                 request.user,
-                                apply_cancel=lambda target: apply_approval_lifecycle(target, "cancel", request.user),
+                                apply_cancel=lambda target: apply_approval_lifecycle(
+                                    target,
+                                    "cancel",
+                                    request.user,
+                                    request.POST.get("reason", ""),
+                                ),
                             )
                         else:
-                            apply_approval_lifecycle(locked, action, request.user)
+                            apply_approval_lifecycle(
+                                locked,
+                                action,
+                                request.user,
+                                request.POST.get("reason", ""),
+                            )
                     except ValidationError as exc:
                         messages.error(request, "; ".join(exc.messages))
                         return redirect("entity_edit", entity=entity, pk=pk)
@@ -4670,7 +4753,11 @@ def document_action(request, entity, pk, action):
     if definition is None or current_status not in definition["from"]:
         messages.error(request, "That workflow action is not available for the current status.")
         return redirect("entity_edit", entity=entity, pk=pk)
-    if not _can_workflow(request.user, entity, action, instance):
+    approval_engine_decision = (
+        definition.get("approval_action") in {"approve", "reject"}
+        and uses_approval_engine(instance)
+    )
+    if not approval_engine_decision and not _can_workflow(request.user, entity, action, instance):
         messages.error(request, "Your role cannot perform that workflow approval action.")
         return redirect("entity_edit", entity=entity, pk=pk)
     if entity == "purchase-requests" and action in {
@@ -4728,6 +4815,51 @@ def document_action(request, entity, pk, action):
             return redirect("entity_edit", entity=entity, pk=pk)
         if definition.get("requires_balance") and not instance.balanced:
             messages.error(request, "Accounting lines changed and are no longer balanced. Please review them again.")
+            return redirect("entity_edit", entity=entity, pk=pk)
+        approval_action = definition.get("approval_action")
+        if action == "cancel" and uses_approval_engine(instance):
+            pending = pending_approval_for(instance)
+            if pending is not None:
+                try:
+                    cancel_pending_approval(
+                        instance,
+                        request.user,
+                        apply_cancel=lambda target: apply_approval_lifecycle(
+                            target,
+                            "cancel",
+                            request.user,
+                            request.POST.get("reason", ""),
+                        ),
+                    )
+                except ValidationError as exc:
+                    messages.error(request, "; ".join(exc.messages))
+                    return redirect("entity_edit", entity=entity, pk=pk)
+                instance.refresh_from_db(fields=[workflow_field, "updated_at"])
+                messages.success(request, f"{config['singular']} approval cancelled.")
+                return redirect("entity_edit", entity=entity, pk=pk)
+        if approval_action and uses_approval_engine(instance):
+            try:
+                outcome = execute_registered_approval_action(
+                    instance,
+                    request.user,
+                    entity=entity,
+                    action=approval_action,
+                    reason=request.POST.get("reason", ""),
+                )
+            except ValidationError as exc:
+                messages.error(request, "; ".join(exc.messages))
+                return redirect("entity_edit", entity=entity, pk=pk)
+            instance.refresh_from_db(fields=[workflow_field, "updated_at"])
+            if outcome.advanced:
+                messages.success(request, "Approval recorded and advanced to the next level.")
+            else:
+                display_method = getattr(instance, f"get_{workflow_field}_display", None)
+                display_status = (
+                    display_method()
+                    if display_method
+                    else str(getattr(instance, workflow_field)).replace("_", " ").title()
+                )
+                messages.success(request, f"{config['singular']} moved to {display_status}.")
             return redirect("entity_edit", entity=entity, pk=pk)
         if entity == "cash-advances" and action in {"submit", "approve"}:
             try:

@@ -9,8 +9,12 @@ from django.views.decorators.http import require_POST
 
 from .forms import ApprovalActionForm
 from .models import ApprovalDelegation, ApprovalInstance, ApprovalNotification
-from .adapters import apply_approval_result
-from .services import can_user_act, delegation_available, perform_approval_action
+from .adapters import (
+    apply_approval_result,
+    registered_approval_allows_direct_decision,
+    registered_approval_decision_url,
+)
+from .services import can_user_act, can_user_view, delegation_available, perform_approval_action
 
 
 INBOX_SCAN_LIMIT = 500
@@ -177,9 +181,11 @@ def approval_detail(request, pk):
         ).prefetch_related("actions__performed_by", "actions__effective_approver", "actions__delegated_from"),
         pk=pk,
     )
-    if not request.user.is_superuser and not can_user_act(instance, request.user) and instance.submitted_by_id != request.user.pk:
+    if not can_user_view(instance, request.user):
         messages.error(request, "You do not have access to this approval transaction.")
         return redirect("approval_inbox")
+    target = instance.target
+    decision_url = registered_approval_decision_url(target) if target is not None else ""
     return render(
         request,
         "approval_workflow/detail.html",
@@ -187,6 +193,12 @@ def approval_detail(request, pk):
             "approval": instance,
             "levels": _level_progress(instance),
             "can_act": can_user_act(instance, request.user),
+            "decision_url": decision_url,
+            "allow_direct_decision": (
+                registered_approval_allows_direct_decision(target)
+                if target is not None
+                else True
+            ),
             "approve_form": ApprovalActionForm(initial={"action": "approve"}, prefix="approve"),
             "reject_form": ApprovalActionForm(initial={"action": "reject"}, prefix="reject"),
         },
@@ -206,6 +218,10 @@ def approval_action(request, pk):
     if target is None:
         messages.error(request, "The approval target is no longer available.")
         return redirect("approval_detail", pk=pk)
+    if not registered_approval_allows_direct_decision(target):
+        messages.error(request, "Open the transaction approval workspace to complete its required decisions.")
+        decision_url = registered_approval_decision_url(target)
+        return redirect(decision_url) if decision_url else redirect("approval_detail", pk=pk)
 
     try:
         outcome = perform_approval_action(
@@ -213,7 +229,12 @@ def approval_action(request, pk):
             request.user,
             action,
             reason=form.cleaned_data["reason"],
-            apply_result=lambda target, result_action: apply_approval_result(target, result_action, request.user),
+            apply_result=lambda target, result_action: apply_approval_result(
+                target,
+                result_action,
+                request.user,
+                form.cleaned_data["reason"],
+            ),
         )
     except ValidationError as exc:
         messages.error(request, "; ".join(exc.messages))

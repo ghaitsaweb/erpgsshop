@@ -8,6 +8,8 @@ from django.core.exceptions import ValidationError
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
+from modules.approval_workflow.services import can_user_act, pending_approval_for
+
 from .access import can_purchase_entity_action, scope_purchase_queryset
 from .forms import (
     BlanketOrderRFQLineFormSet,
@@ -48,9 +50,6 @@ def _bounded_purchase_request_lines(purchase_request):
 
 @login_required
 def purchase_request_approve(request, pk):
-    if not can_purchase_entity_action(request.user, "purchase-requests", "change"):
-        messages.error(request, "You do not have permission to approve Purchase Requests.")
-        return redirect("entity_list", entity="purchase-requests")
     purchase_request = get_object_or_404(
         scope_purchase_queryset(
             request.user,
@@ -61,6 +60,10 @@ def purchase_request_approve(request, pk):
     )
     if purchase_request.status not in {PurchaseRequest.Status.PENDING, PurchaseRequest.Status.PARTIALLY_APPROVED}:
         messages.error(request, "Only a pending Purchase Request can be approved.")
+        return redirect("entity_edit", entity="purchase-requests", pk=pk)
+    approval = pending_approval_for(purchase_request)
+    if approval is None or not can_user_act(approval, request.user):
+        messages.error(request, "You are not an approver for the active Purchase Request approval level.")
         return redirect("entity_edit", entity="purchase-requests", pk=pk)
     try:
         lines = _bounded_purchase_request_lines(purchase_request)
@@ -99,11 +102,22 @@ def purchase_request_approve(request, pk):
             for line_form in line_formset
         ]
         try:
-            approve_purchase_request_lines(purchase_request, decisions=decisions, actor=request.user)
+            approved_request = approve_purchase_request_lines(
+                purchase_request,
+                decisions=decisions,
+                actor=request.user,
+                reason=request.POST.get("reason", ""),
+            )
         except ValidationError as exc:
             line_formset._non_form_errors = line_formset.error_class(exc.messages)
         else:
-            messages.success(request, f"Purchase Request {purchase_request.number} approved with line decisions.")
+            if getattr(approved_request, "_approval_advanced", False):
+                messages.success(request, "Approval recorded and advanced to the next level.")
+            else:
+                messages.success(
+                    request,
+                    f"Purchase Request {purchase_request.number} approved with line decisions.",
+                )
             return redirect("entity_edit", entity="purchase-requests", pk=pk)
     return render(
         request,

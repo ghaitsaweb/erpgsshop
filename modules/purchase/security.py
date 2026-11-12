@@ -5,6 +5,7 @@ from django.contrib.auth.models import Group, Permission
 from .access import (
     PURCHASE_BUDGET_MANAGER,
     PURCHASE_MANAGER,
+    PURCHASE_REQUESTOR_MANAGER,
     PURCHASE_USER,
     VENDOR_RELATIONS_OFFICER,
 )
@@ -121,6 +122,10 @@ def ensure_purchase_roles(**_kwargs):
         PURCHASE_USER: operational_permissions,
         VENDOR_RELATIONS_OFFICER: _permissions(VENDOR_MODELS, {"view", "add", "change"}),
         PURCHASE_BUDGET_MANAGER: _permissions(BUDGET_MODELS, {"view", "add", "change", "delete"}),
+        PURCHASE_REQUESTOR_MANAGER: _permissions(
+            {"purchaserequest", "purchaserequestline"},
+            {"view", "add", "change"},
+        ),
     }
     role_names = tuple(role_permissions)
     Group.objects.bulk_create(

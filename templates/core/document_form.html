@@ -154,6 +154,36 @@ Regards,
           </div>
         {% endif %}
 
+        {% if record_approval_enabled and object %}
+          <section class="sales-accounting-card" aria-labelledby="purchase-approval-title">
+            <div>
+              <p class="eyebrow">Approval workflow</p>
+              {% if record_approval %}
+                <h3 id="purchase-approval-title">{{ record_approval.rule }}</h3>
+                <p>
+                  Submitted by <strong>{{ record_approval.submitted_by }}</strong>
+                  · <strong class="status-{{ record_approval.status }}">{{ record_approval.get_status_display }}</strong>
+                  · level {{ record_approval.current_level|add:1 }}
+                </p>
+                {% for item in record_approval_history %}
+                  <p>
+                    {{ item.performed_at|date:"Y-m-d H:i" }} · {{ item.get_action_display }}
+                    · <strong>{{ item.effective_approver|default:item.performed_by }}</strong>
+                    {% if item.reason %}· {{ item.reason }}{% endif %}
+                  </p>
+                {% empty %}
+                  <p>No approval activity has been recorded.</p>
+                {% endfor %}
+              {% else %}
+                <h3 id="purchase-approval-title">Not submitted</h3>
+                <p>Submit this RFQ to freeze its approval rule and approver route.</p>
+              {% endif %}
+            </div>
+            {% if record_approval_can_open %}
+              <a class="btn btn-secondary" href="{% url 'approval_detail' record_approval.pk %}">Open Approval</a>
+            {% endif %}
+          </section>
+        {% endif %}
         {% if entity == 'purchases' and object %}
           <section class="sales-accounting-card" aria-labelledby="purchase-receiving-title">
             <div>

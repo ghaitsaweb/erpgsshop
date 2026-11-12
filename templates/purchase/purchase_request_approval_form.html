@@ -15,6 +15,12 @@
   {% csrf_token %}
   {{ line_formset.management_form }}
   {% if line_formset.non_form_errors %}<div class="alert alert-error">{{ line_formset.non_form_errors }}</div>{% endif %}
+  <div class="field">
+    <label for="purchase-request-approval-reason">Approval reason</label>
+    <textarea id="purchase-request-approval-reason" class="form-control" name="reason" rows="3">{{ request.POST.reason }}</textarea>
+    <small>Required for Master Approve. You can also copy this reason into blank line reasons.</small>
+    <button class="btn btn-secondary" id="apply-approval-reason" type="button">Apply reason to blank lines</button>
+  </div>
   <div class="table-wrap">
     <table>
       <thead><tr><th>Product</th><th>Description</th><th>Requested</th><th>Decision</th><th>Approved Qty</th><th>Reason</th></tr></thead>
@@ -38,4 +44,12 @@
     <button class="btn btn-primary" type="submit">Confirm Approval</button>
   </div>
 </form>
+<script>
+  document.getElementById("apply-approval-reason")?.addEventListener("click", function () {
+    const reason = document.getElementById("purchase-request-approval-reason").value;
+    document.querySelectorAll('textarea[name$="-reason"]').forEach(function (field) {
+      if (!field.value.trim()) field.value = reason;
+    });
+  });
+</script>
 {% endblock %}

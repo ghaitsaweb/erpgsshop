@@ -7,6 +7,10 @@ from .document_registry import apply_document_extensions
 class DocumentRegistryTests(SimpleTestCase):
     def test_installed_purchase_revision_overrides_legacy_action_and_option(self):
         config = {
+            "purchase-requests": {},
+            "purchase-quotations": {},
+            "purchase-tenders": {},
+            "blanket-orders": {},
             "purchases": {
                 "editable_statuses": ["draft", "revised"],
                 "actions": {"revise": {"label": "Legacy"}},

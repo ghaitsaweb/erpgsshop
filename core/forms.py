@@ -72,9 +72,22 @@ class StyledModelForm(forms.ModelForm):
 
 
 class CompanyForm(StyledModelForm):
+    MAX_LOGO_SIZE = 5 * 1024 * 1024
+
     class Meta:
         model = Company
-        fields = ["code", "name", "email", "phone", "address", "currency", "active"]
+        fields = ["code", "name", "logo", "email", "phone", "address", "currency", "active"]
+        widgets = {
+            "logo": forms.ClearableFileInput(
+                attrs={"accept": "image/png,image/jpeg,image/webp"}
+            )
+        }
+
+    def clean_logo(self):
+        logo = self.cleaned_data.get("logo")
+        if logo and getattr(logo, "size", 0) > self.MAX_LOGO_SIZE:
+            raise forms.ValidationError("Company logo must be 5 MB or smaller.")
+        return logo
 
 
 class ContactForm(StyledModelForm):

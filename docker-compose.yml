@@ -45,6 +45,7 @@ services:
     volumes:
       - ./addons:/app/addons:ro
       - gsshop_backups:/app/backups
+      - gsshop_media:/app/media
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/', timeout=3)"]
       interval: 10s
@@ -71,6 +72,7 @@ services:
     volumes:
       - ./addons:/app/addons:ro
       - gsshop_backups:/app/backups
+      - gsshop_media:/app/media
 
   beat:
     build: .
@@ -92,8 +94,10 @@ services:
     volumes:
       - ./addons:/app/addons:ro
       - gsshop_backups:/app/backups
+      - gsshop_media:/app/media
 
 volumes:
   gsshop_postgres_data:
   gsshop_redis_data:
   gsshop_backups:
+  gsshop_media:

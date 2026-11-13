@@ -1,6 +1,6 @@
 # ERP GSSHOP
 
-Modular ERP for GSSHOP. The application uses Django, PostgreSQL, Redis, Celery, environment-based configuration, and Docker Compose. HMX Human Resources features are being implemented in the native ERP modules. The HMX source reference stays local and is not committed or deployed; see `docs/hr-hmx-parity.md` for scope and progress.
+Modular ERP for GSSHOP. The application uses Django, PostgreSQL, Redis, Celery, environment-based configuration, and Docker Compose. Business capabilities are implemented as native, installable ERP modules with company and branch isolation, controlled workflows, and scalable data access.
 
 ## Application suite
 
@@ -57,7 +57,7 @@ For document line items and detailed configuration, use `/admin/`. The main work
 
 The Compose stack contains `web`, `db`, `redis`, and `worker` services. Database and Redis data use named volumes and are not removed by ordinary rebuilds.
 
-The ERP serves its native Django HR models and routes. The copied HMX code is a read-only implementation reference and is not an ERP runtime dependency.
+The ERP serves native Django models and routes. Applications integrate through documented registries and extension points so modules remain independently installable and maintainable.
 
 ## Add-on development
 

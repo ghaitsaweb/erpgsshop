@@ -19,6 +19,11 @@ class TimeStampedModel(models.Model):
 class Company(TimeStampedModel):
     code = models.CharField(max_length=20, unique=True)
     name = models.CharField(max_length=160)
+    logo = models.ImageField(
+        upload_to="company-logos/%Y/%m/",
+        blank=True,
+        help_text="PNG, JPEG, or WebP. Maximum file size 5 MB.",
+    )
     email = models.EmailField(blank=True)
     phone = models.CharField(max_length=40, blank=True)
     address = models.TextField(blank=True)

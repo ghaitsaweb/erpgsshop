@@ -20,9 +20,11 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.platypus import (
     HRFlowable,
+    Image as PlatypusImage,
     KeepTogether,
     Paragraph,
     SimpleDocTemplate,
@@ -668,7 +670,15 @@ def _partner_lines(partner):
 
 
 def _company_lines(company):
-    return list(PRINT_COMPANY)
+    if company is None:
+        return list(PRINT_COMPANY)
+    lines = [
+        getattr(company, "name", ""),
+        getattr(company, "address", ""),
+        getattr(company, "phone", ""),
+        getattr(company, "email", ""),
+    ]
+    return lines if any(lines) else list(PRINT_COMPANY)
 
 
 def _contact_paragraph(lines, styles):
@@ -739,11 +749,33 @@ def _document_title(entity, obj, config):
     return config["title"]
 
 
-def _header_story(entity, obj, config, styles):
-    company = _path_value(obj, config["company_path"])
-    partner = _path_value(obj, config.get("partner_path", "")) if config.get("partner_path") else None
-    reference = _display(obj, config["reference"])
-    brand = Table(
+def _company_logo_flowable(company):
+    logo = getattr(company, "logo", None)
+    if not logo or not getattr(logo, "name", ""):
+        return None
+    try:
+        logo.open("rb")
+        try:
+            payload = logo.read()
+        finally:
+            logo.close()
+        image_width, image_height = ImageReader(BytesIO(payload)).getSize()
+        if image_width <= 0 or image_height <= 0:
+            return None
+        scale = min((60 * mm) / image_width, (18 * mm) / image_height)
+        image = PlatypusImage(
+            BytesIO(payload),
+            width=image_width * scale,
+            height=image_height * scale,
+        )
+        image.hAlign = "LEFT"
+        return image
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def _fallback_brand(styles):
+    return Table(
         [[
             Table([[Paragraph("G", styles["title"])]], colWidths=[14 * mm], rowHeights=[14 * mm], style=TableStyle([
                 ("BACKGROUND", (0, 0), (-1, -1), ACCENT),
@@ -755,6 +787,13 @@ def _header_story(entity, obj, config, styles):
         colWidths=[17 * mm, 63 * mm],
         style=TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]),
     )
+
+
+def _header_story(entity, obj, config, styles, company_logo=None):
+    company = _path_value(obj, config["company_path"])
+    partner = _path_value(obj, config.get("partner_path", "")) if config.get("partner_path") else None
+    reference = _display(obj, config["reference"])
+    brand = company_logo or _fallback_brand(styles)
     title = Table(
         [[Paragraph(_safe(_document_title(entity, obj, config)), styles["title"])], [Paragraph(f"# {_safe(reference)}", styles["reference"])]],
         colWidths=[84 * mm],
@@ -969,7 +1008,8 @@ def _footer(canvas, doc):
     canvas.line(20 * mm, y + 5 * mm, width - 20 * mm, y + 5 * mm)
     canvas.setFillColor(MUTED)
     canvas.setFont("Helvetica", 7)
-    canvas.drawString(20 * mm, y, "Dibuat oleh ERP GSSHOP")
+    brand_name = getattr(doc, "brand_name", "ERP GSSHOP")
+    canvas.drawString(20 * mm, y, f"Dibuat oleh {brand_name}")
     page_text = f"Halaman {doc.page}"
     canvas.drawString(width - 20 * mm - stringWidth(page_text, "Helvetica", 7), y, page_text)
     canvas.restoreState()
@@ -978,6 +1018,13 @@ def _footer(canvas, doc):
 def render_document_pdf(entity, obj, lines, document_config):
     """Return a complete PDF as bytes without performing database queries."""
     config = REPORT_CONFIG[entity]
+    company = _path_value(obj, config["company_path"])
+    company_logo = _company_logo_flowable(company)
+    brand_name = (
+        getattr(company, "name", "") or "ERP GSSHOP"
+        if company_logo is not None
+        else "ERP GSSHOP"
+    )
     styles = _styles()
     buffer = BytesIO()
     document = SimpleDocTemplate(
@@ -988,13 +1035,14 @@ def render_document_pdf(entity, obj, lines, document_config):
         topMargin=17 * mm,
         bottomMargin=24 * mm,
         title=f"{config['title']} {_display(obj, config['reference'])}",
-        author="ERP GSSHOP",
+        author=brand_name,
         subject=config["title"],
     )
     document.show_paid_watermark = entity == "sales" and bool(
         getattr(obj, "_show_paid_watermark", False)
     )
-    story = _header_story(entity, obj, config, styles)
+    document.brand_name = brand_name
+    story = _header_story(entity, obj, config, styles, company_logo=company_logo)
     info = _info_table(entity, obj, document_config["header_fields"], styles)
     if info:
         story.extend([info, Spacer(1, 6 * mm)])

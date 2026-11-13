@@ -16,7 +16,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
-RUN mkdir -p /app/backups \
+RUN mkdir -p /app/backups /app/media \
     && chmod +x /app/entrypoint.sh \
     && chown -R erp:erp /app
 

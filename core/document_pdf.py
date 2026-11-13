@@ -177,7 +177,7 @@ REPORT_CONFIG = {
         "reference": "number",
         "company_path": "company",
         "partner_path": "vendor",
-        "select_related": ("company", "vendor"),
+        "select_related": ("company", "vendor", "warehouse", "purchase_control"),
         "line_select_related": ("product",),
         "columns": (
             ("product", "Produk", 2.2),
@@ -677,7 +677,21 @@ def _contact_paragraph(lines, styles):
 
 
 def _header_pairs(entity, obj, header_fields):
-    excluded = {"company", "customer", "vendor", "partner", "notes", "description"}
+    excluded = {
+        "company",
+        "customer",
+        "vendor",
+        "partner",
+        "notes",
+        "description",
+        "justification",
+        "contract_terms",
+        "payment_terms",
+        "delivery_terms",
+        "legal_terms",
+        "vendor_address",
+        "bill_address",
+    }
     if entity == "sales":
         fields = [
             "customer_reference", "order_date", "validity_date", "delivery_date",
@@ -691,7 +705,10 @@ def _header_pairs(entity, obj, header_fields):
             label = FIELD_LABELS.get(field_name, obj._meta.get_field(field_name).verbose_name.title())
         except Exception:
             label = FIELD_LABELS.get(field_name, field_name.replace("_", " ").title())
-        pairs.append((label, _display(obj, field_name)))
+        value_source = obj
+        if entity == "purchases" and not hasattr(obj, field_name):
+            value_source = getattr(obj, "purchase_control", obj)
+        pairs.append((label, _display(value_source, field_name)))
     return pairs
 
 
@@ -788,6 +805,42 @@ def _info_table(entity, obj, header_fields, styles):
         ("TOPPADDING", (0, 0), (-1, -1), 4),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
     ]))
+
+
+def _purchase_terms_story(entity, obj, styles):
+    sections = []
+    if entity == "purchases":
+        control = getattr(obj, "purchase_control", None)
+        if control is not None:
+            sections.extend(
+                (label, getattr(control, field_name, ""))
+                for label, field_name in (
+                    ("VENDOR ADDRESS", "vendor_address"),
+                    ("BILLING ADDRESS", "bill_address"),
+                    ("PAYMENT TERMS", "payment_terms"),
+                    ("DELIVERY TERMS", "delivery_terms"),
+                    ("LEGAL TERMS", "legal_terms"),
+                    ("CONTRACT TERMS", "contract_terms"),
+                )
+            )
+    elif entity == "blanket-orders":
+        sections.append(("AGREEMENT TERMS", getattr(obj, "terms", "")))
+    elif entity == "purchase-requests":
+        sections.append(("APPROVAL JUSTIFICATION", getattr(obj, "justification", "")))
+    story = []
+    for label, value in sections:
+        if not value:
+            continue
+        story.append(
+            KeepTogether(
+                [
+                    Paragraph(label, styles["label"]),
+                    Paragraph(_safe(value), styles["terms"]),
+                    Spacer(1, 3 * mm),
+                ]
+            )
+        )
+    return story
 
 
 def _is_numeric_field(field_name):
@@ -949,6 +1002,7 @@ def render_document_pdf(entity, obj, lines, document_config):
     totals = _totals_table(obj, document_config.get("total_fields", ()), styles)
     if totals:
         story.extend([totals, Spacer(1, 6 * mm)])
+    story.extend(_purchase_terms_story(entity, obj, styles))
     if entity == "sales":
         story.extend([_payment_table(styles), Spacer(1, 6 * mm)])
     notes = getattr(obj, "notes", "") or (getattr(obj, "description", "") if entity != "journal-entries" else "")

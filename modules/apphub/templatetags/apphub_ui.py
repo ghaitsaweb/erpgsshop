@@ -1,4 +1,8 @@
 from django import template
+from django.template.loader import get_template
+from django.utils.safestring import mark_safe
+
+from modules.apphub.global_ui import iter_global_ui_extensions
 
 
 register = template.Library()
@@ -77,3 +81,11 @@ def app_icon_key(app):
 @register.filter
 def app_category_key(app):
     return CATEGORY_KEYS.get(app.category, "custom")
+
+
+@register.simple_tag(takes_context=True)
+def render_global_ui(context):
+    """Render module-owned shell fragments without rerunning context processors."""
+    values = context.flatten()
+    fragments = [get_template(extension.template_name).render(values) for extension in iter_global_ui_extensions(context)]
+    return mark_safe("".join(fragments))

@@ -5,7 +5,13 @@ from django.db import models
 from core.models import PurchaseOrderLine
 
 from . import models as purchase_models
-from .forms import PurchaseLegalDocumentForm
+from .forms import (
+    BlanketOrderLineForm,
+    PurchaseLegalDocumentForm,
+    PurchaseTeamForm,
+    PurchaseTeamMemberForm,
+    VendorChangeProposalForm,
+)
 
 
 APPROVAL_WORKFLOW = {
@@ -409,6 +415,34 @@ WORKFLOW_OVERRIDES = {
     "service-work-orders": SERVICE_WORK_ORDER_WORKFLOW,
     "service-work-order-lines": SERVICE_WORK_ORDER_LINE_WORKFLOW,
     "vendor-profiles": VENDOR_PROFILE_WORKFLOW,
+    "vendor-change-proposals": {
+        "submit": {
+            "label": "Submit for Approval",
+            "from": ["draft"],
+            "to": "waiting_approval",
+            "primary": True,
+            "service_controls_state": True,
+        },
+        "approve": {
+            "label": "Approve Changes",
+            "from": ["waiting_approval"],
+            "to": "approved",
+            "primary": True,
+            "service_controls_state": True,
+        },
+        "reject": {
+            "label": "Reject",
+            "from": ["waiting_approval"],
+            "to": "rejected",
+            "service_controls_state": True,
+        },
+        "cancel": {
+            "label": "Cancel",
+            "from": ["draft"],
+            "to": "cancelled",
+            "service_controls_state": True,
+        },
+    },
     "vendor-legal-documents": VENDOR_LEGAL_DOCUMENT_WORKFLOW,
     "vendor-prequalifications": VENDOR_PREQUALIFICATION_WORKFLOW,
     "vendor-document-reviews": VENDOR_DOCUMENT_REVIEW_WORKFLOW,
@@ -476,6 +510,7 @@ ENTITY_MODELS = {
     "purchase-legal-documents": purchase_models.PurchaseLegalDocument,
     "purchase-legal-document-attachments": purchase_models.PurchaseLegalDocumentAttachment,
     "vendor-profiles": purchase_models.VendorProfile,
+    "vendor-change-proposals": purchase_models.VendorChangeProposal,
     "vendor-legal-documents": purchase_models.VendorLegalDocument,
     "vendor-prequalifications": purchase_models.VendorPrequalification,
     "vendor-document-reviews": purchase_models.VendorDocumentReview,
@@ -506,6 +541,7 @@ ENTITY_MODELS = {
     "purchase-milestone-template-lines": purchase_models.PurchaseMilestoneTemplateLine,
     "purchase-settings": purchase_models.PurchaseSetting,
     "purchase-order-controls": purchase_models.PurchaseOrderControl,
+    "purchase-product-rental-profiles": purchase_models.PurchaseProductRentalProfile,
     "purchase-three-way-matches": purchase_models.PurchaseThreeWayMatch,
     "purchase-order-lines": PurchaseOrderLine,
     "purchase-order-milestones": purchase_models.PurchaseOrderMilestone,
@@ -539,6 +575,8 @@ ENTITY_MODELS = {
     "vendor-communications": purchase_models.VendorCommunication,
     "vendor-transaction-history": purchase_models.VendorTransactionHistory,
     "purchase-order-communications": purchase_models.PurchaseOrderCommunication,
+    "purchase-mail-templates": purchase_models.PurchaseMailTemplate,
+    "purchase-quotation-communications": purchase_models.PurchaseQuotationCommunication,
     "product-budget-movements": purchase_models.ProductBudgetMovement,
     "purchase-accounting-documents": purchase_models.PurchaseAccountingDocument,
     "purchase-accounting-lines": purchase_models.PurchaseAccountingLine,
@@ -607,6 +645,49 @@ def _build_config(entity, model):
             for field in config["form_fields"]
             if field not in {"status", "review_status", "approver", "approved_by"}
         ]
+    if entity == "purchase-quotations":
+        config["collection_actions"] = [
+            {
+                "label": "Compare RFQs",
+                "url_name": "purchase_quotation_compare",
+                "icon": "⇄",
+                "requires_change": True,
+            }
+        ]
+    if entity == "purchase-order-templates":
+        config["collection_actions"] = [
+            {
+                "label": "Duplicate Template",
+                "url_name": "purchase_order_template_duplicate",
+                "icon": "⧉",
+                "requires_change": False,
+            }
+        ]
+    if entity == "purchase-mail-templates":
+        config["columns"] = [
+            ("company", "Company"),
+            ("name", "Template"),
+            ("code", "Type"),
+            ("active", "Active"),
+        ]
+        config["form_fields"] = [
+            "company",
+            "code",
+            "name",
+            "subject_template",
+            "body_html",
+            "active",
+        ]
+    if entity == "purchase-quotation-communications":
+        config["columns"] = [
+            ("quotation", "RFQ"),
+            ("subject", "Subject"),
+            ("email_to", "To"),
+            ("status", "Delivery Status"),
+            ("sent_at", "Sent At"),
+        ]
+        config["editable"] = False
+        config["readonly_detail"] = True
     if entity == "vendor-profiles":
         config["workflow_locked_statuses"] = {"confirmed", "blacklisted"}
         config["columns"] = [
@@ -617,6 +698,37 @@ def _build_config(entity, model):
             ("active", "Active"),
             ("status", "Status"),
         ]
+        config["form_fields"] = [
+            "company",
+            "partner",
+            "parent_vendor",
+            "category",
+            "registration_number",
+            "tax_number",
+            "mobile_number",
+            "bank_account",
+            "payment_terms",
+            "purchase_credit_limit",
+            "rating",
+            "notes",
+            "active",
+        ]
+    if entity == "vendor-change-proposals":
+        config["form"] = VendorChangeProposalForm
+        config["workflow_locked_statuses"] = {
+            "waiting_approval",
+            "approved",
+            "rejected",
+            "cancelled",
+        }
+        config["columns"] = [
+            ("vendor", "Vendor"),
+            ("requested_by", "Requested By"),
+            ("status", "Status"),
+            ("created_at", "Requested At"),
+            ("reviewed_by", "Reviewed By"),
+        ]
+        config["form_fields"] = ["vendor", "proposed_values", "requested_by"]
     if entity == "purchase-legal-documents":
         config["form"] = PurchaseLegalDocumentForm
         config["columns"] = [
@@ -795,6 +907,7 @@ def _build_config(entity, model):
             }
         )
     if entity == "purchase-teams":
+        config["form"] = PurchaseTeamForm
         config["columns"] = [
             ("code", "Team Code"),
             ("name", "Team Name"),
@@ -814,6 +927,7 @@ def _build_config(entity, model):
             "active",
         ]
     if entity == "purchase-team-members":
+        config["form"] = PurchaseTeamMemberForm
         config["columns"] = [
             ("team", "Purchase Team"),
             ("user", "Member"),
@@ -822,6 +936,9 @@ def _build_config(entity, model):
             ("active", "Active"),
         ]
         config["form_fields"] = ["team", "user", "role", "categories", "is_primary", "active"]
+    if entity == "blanket-order-lines":
+        config["form"] = BlanketOrderLineForm
+        config["form_fields"] = list(BlanketOrderLineForm.Meta.fields)
     if entity == "purchase-kpi-templates":
         config["columns"] = [
             ("code", "Code"),

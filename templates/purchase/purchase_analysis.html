@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>{{ title }}</h1>
+    <p class="text-muted">Approved/confirmed Purchase activity grouped by product and expected month.</p>
+  </div>
+  <form method="get" class="d-flex gap-2 align-items-end">
+    <label>From <input class="form-control" type="date" name="date_from" value="{{ analysis.date_from|date:'Y-m-d' }}"></label>
+    <label>To <input class="form-control" type="date" name="date_to" value="{{ analysis.date_to|date:'Y-m-d' }}"></label>
+    <button class="btn btn-primary" type="submit">Apply</button>
+  </form>
+</div>
+
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead>
+        <tr>
+          <th>Product</th>
+          <th>Expected Month</th>
+          {% for header in measure_headers %}<th class="text-end">{{ header }}</th>{% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in table_rows %}
+        <tr>
+          <td>{% if row.sku %}<span class="text-muted">{{ row.sku }}</span> — {% endif %}{{ row.product }}</td>
+          <td>{{ row.month|date:"M Y" }}</td>
+          {% for value in row.values %}<td class="text-end">{{ value }}</td>{% endfor %}
+        </tr>
+        {% empty %}
+        <tr><td colspan="12" class="text-center text-muted py-4">No approved Purchase data in this period.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

@@ -184,6 +184,10 @@ Regards,
             {% endif %}
           </section>
         {% endif %}
+        {% if document.summary_template and object %}
+          {% include document.summary_template %}
+        {% endif %}
+
         {% if entity == 'purchases' and object %}
           <section class="sales-accounting-card" aria-labelledby="purchase-receiving-title">
             <div>

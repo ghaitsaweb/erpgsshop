@@ -1,4 +1,4 @@
-"""Provider runtime for the Hashy Assistant.
+"""Provider runtime for the GashyAI assistant.
 
 The runtime intentionally supports a small OpenAI-compatible HTTPS surface.
 It makes external calls only from Celery, never from a browser request, and
@@ -86,7 +86,7 @@ def _request_messages(session, *, knowledge_query="", include_knowledge_sources=
     configuration = session.configuration
     messages = []
     system_prompt = configuration.system_prompt.strip() or (
-        "You are Hashy AI Assistant inside ERP GSSHOP. Be precise, state assumptions, "
+        "You are GashyAI inside ERP GSSHOP. Be precise, state assumptions, "
         "and never claim that you changed ERP records unless a governed tool confirms it."
     )
     messages.append({"role": "system", "content": system_prompt})
@@ -618,7 +618,7 @@ def execute_message(message_id):
     except (AssistantProviderError, URLError, TimeoutError, ValueError, OSError) as exc:
         response.state = AssistantMessage.State.FAILED
         response.error_message = str(exc)[:500]
-        response.content = "Hashy belum dapat menjawab. Detail aman tersedia untuk administrator pada status pesan."
+        response.content = "GashyAI belum dapat menjawab. Detail aman tersedia untuk administrator pada status pesan."
     if not response.latency_ms:
         response.latency_ms = max(0, int((time.monotonic() - started) * 1000))
     response.save()

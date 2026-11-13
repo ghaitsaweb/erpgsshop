@@ -11,6 +11,7 @@ from core.models import PurchaseOrder, PurchaseOrderLine
 from .models import (
     GoodsReceipt,
     PurchaseOrderControl,
+    PurchaseOrderLinePricingProvenance,
     PurchaseOrderRevision,
     PurchaseSetting,
     VendorPricelist,
@@ -93,6 +94,16 @@ def revise_purchase_order(order, actor=None, *, reason=""):
     )
     if len(lines) > MAX_REVISION_LINES:
         raise ValidationError(f"Purchase Order revision exceeds the operational limit of {MAX_REVISION_LINES} lines.")
+    source_provenance = {
+        row.order_line_id: row
+        for row in PurchaseOrderLinePricingProvenance.objects.select_for_update(of=("self",))
+        .filter(order_line_id__in=[line.pk for line in lines])
+        .order_by("order_line_id")[: MAX_REVISION_LINES + 1]
+    }
+    if len(source_provenance) > MAX_REVISION_LINES:
+        raise ValidationError(
+            f"Purchase Order revision provenance exceeds the operational limit of {MAX_REVISION_LINES} lines."
+        )
     number = _revision_number(source, source_control)
     if setting.order_revision_sequence_mode == PurchaseSetting.RevisionSequenceMode.FOLLOW_SEQUENCE:
         if source_control is None or source_control.order_type_id is None:
@@ -118,7 +129,7 @@ def revise_purchase_order(order, actor=None, *, reason=""):
         total=source.total,
         notes=source.notes,
     )
-    PurchaseOrderLine.objects.bulk_create(
+    revised_lines = PurchaseOrderLine.objects.bulk_create(
         [
             PurchaseOrderLine(
                 order=revised,
@@ -129,8 +140,59 @@ def revise_purchase_order(order, actor=None, *, reason=""):
                 unit_price=line.unit_price,
             )
             for line in lines
-        ]
+        ],
+        batch_size=500,
     )
+    revised_line_by_source_id = {
+        source_line.pk: revised_line
+        for source_line, revised_line in zip(lines, revised_lines)
+    }
+    provenance_creates = []
+    for source_line in lines:
+        provenance = source_provenance.get(source_line.pk)
+        if provenance is None:
+            continue
+        provenance_creates.append(
+            PurchaseOrderLinePricingProvenance(
+                order_line=revised_line_by_source_id[source_line.pk],
+                quotation_line=None,
+                blanket_order_line_id=provenance.blanket_order_line_id,
+                free_product=provenance.free_product,
+                free_product_source_order_line=(
+                    revised_line_by_source_id.get(provenance.free_product_source_order_line_id)
+                    if provenance.free_product_source_order_line_id
+                    else None
+                ),
+                price_source=provenance.price_source,
+                applied_pricelist_id=provenance.applied_pricelist_id,
+                applied_pricelist_tier_id=provenance.applied_pricelist_tier_id,
+                price_source_note=provenance.price_source_note,
+                discount_formula=provenance.discount_formula,
+                applicable_vendor_moq=provenance.applicable_vendor_moq,
+                is_below_vendor_moq=provenance.is_below_vendor_moq,
+                moq_warning_message=provenance.moq_warning_message,
+                is_rental=provenance.is_rental,
+                rent_duration=provenance.rent_duration,
+                rental_period=provenance.rental_period,
+                expected_date=provenance.expected_date,
+                expiry_date=provenance.expiry_date,
+                rental_end_date=provenance.rental_end_date,
+                total_rental_duration=provenance.total_rental_duration,
+                cost_center=provenance.cost_center,
+                cost_center_mode=provenance.cost_center_mode,
+                cost_center_distribution_ids=provenance.cost_center_distribution_ids,
+                cost_center_distribution_data=provenance.cost_center_distribution_data,
+                cost_center_analytic_tag_ids=provenance.cost_center_analytic_tag_ids,
+                tax_percent=provenance.tax_percent,
+                discount_percent=provenance.discount_percent,
+                tax_snapshot={},
+            )
+        )
+    if provenance_creates:
+        PurchaseOrderLinePricingProvenance.objects.bulk_create(
+            provenance_creates,
+            batch_size=500,
+        )
     control_values = {"revision_number": number}
     if source_control:
         for field_name in (
@@ -147,7 +209,26 @@ def revise_purchase_order(order, actor=None, *, reason=""):
             "tax_percent",
             "discount_percent",
             "cost_center",
+            "cost_center_mode",
+            "cost_center_distribution_ids",
+            "cost_center_distribution_data",
+            "cost_center_analytic_tag_ids",
             "contract_terms",
+            "payment_terms",
+            "delivery_terms",
+            "legal_terms",
+            "vendor_address",
+            "bill_address",
+            "remark_template_id",
+            "remark_template_code",
+            "remark_template_name",
+            "expected_date",
+            "rental_duration",
+            "duration_unit",
+            "is_multiple_expected_date",
+            "is_multiple_rental_duration",
+            "expected_return_date",
+            "total_rental_duration",
             "communication_history",
         ):
             control_values[field_name] = getattr(source_control, field_name)

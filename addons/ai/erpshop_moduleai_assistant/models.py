@@ -43,7 +43,7 @@ class AssistantConfiguration(TimeStampedModel):
         ANTHROPIC = "anthropic", "Anthropic Messages API"
 
     company = models.OneToOneField(Company, on_delete=models.PROTECT, related_name="hashy_assistant_configuration")
-    display_name = models.CharField(max_length=120, default="Hashy AI Assistant")
+    display_name = models.CharField(max_length=120, default="GashyAI")
     provider = models.CharField(max_length=32, choices=Provider.choices, default=Provider.DISABLED)
     api_base_url = models.URLField(blank=True, help_text="HTTPS base URL, for example https://provider.example/v1")
     credential_env_var = models.CharField(

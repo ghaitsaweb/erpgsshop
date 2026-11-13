@@ -1,0 +1,21 @@
+<section class="sales-accounting-card" aria-labelledby="purchase-routing-title">
+  <div>
+    <p class="eyebrow">Purchase routing</p>
+    <h3 id="purchase-routing-title">
+      {% if entity == 'purchase-requests' %}
+        {% if object.team %}{{ object.team }}{% else %}Not assigned{% endif %}
+      {% elif purchase_control and purchase_control.team %}
+        {{ purchase_control.team }}
+      {% else %}
+        Not assigned
+      {% endif %}
+    </h3>
+    <p>Use <strong>Auto Route to Purchase Team</strong> to match the document against the active routing parameters.</p>
+    {% if entity == 'purchases' and purchase_control.vendor_moq_warning_message %}
+      <div class="alert warning" role="alert">
+        <strong>Vendor minimum order quantity</strong>
+        <p>{{ purchase_control.vendor_moq_warning_message|linebreaksbr }}</p>
+      </div>
+    {% endif %}
+  </div>
+</section>

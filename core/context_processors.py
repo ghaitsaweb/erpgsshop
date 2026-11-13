@@ -339,5 +339,6 @@ def navigation(request):
         "switcher_app_groups": switcher_groups.items(),
         "switcher_recent_apps": recent_apps,
         "global_menu_items": global_menu_items,
+        "installed_app_slugs": tuple(apps_by_slug),
         "breadcrumbs": breadcrumbs,
     }

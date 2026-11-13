@@ -2,7 +2,8 @@
 
 import csv
 import io
-from collections import defaultdict
+import calendar
+from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from functools import reduce
@@ -10,12 +11,16 @@ from itertools import chain
 from operator import or_
 from uuid import uuid4
 
+from django.core.mail import EmailMultiAlternatives
 from django.core.exceptions import ValidationError
+from django.core.validators import validate_email
 from django.db import models, transaction
 from django.db.models import Avg, Case, Count, DecimalField, DurationField, ExpressionWrapper, F, Max, Prefetch, Q, Sum, Value, When
+from django.template import Context, Template, TemplateSyntaxError
+from django.utils.html import strip_tags
 from django.utils import timezone
 
-from core.models import Contact, Invoice, InvoiceLine, Product, PurchaseOrder, PurchaseOrderLine, StockMove
+from core.models import Contact, Invoice, InvoiceLine, Product, PurchaseOrder, PurchaseOrderLine, StockMove, Warehouse
 
 from .access import PURCHASE_MANAGER
 from .models import (
@@ -29,6 +34,8 @@ from .models import (
     GoodsReceiptLine,
     ProductBudget,
     ProductBudgetMovement,
+    PurchaseProductRentalProfile,
+    PurchaseAccountingSetting,
     PurchaseAccountingDocument,
     PurchaseBillLineProvenance,
     PurchaseInventoryTransfer,
@@ -41,17 +48,22 @@ from .models import (
     PurchaseMilestoneTemplate,
     PurchaseOrderControl,
     PurchaseOrderInvoiceAccounting,
+    PurchaseOrderLinePricingProvenance,
     PurchaseOrderMilestone,
     PurchaseOrderTemplate,
     PurchaseOrderTemplateLine,
     PurchaseOrderType,
     PurchaseOrderTypeSequenceLine,
+    PurchaseMailTemplate,
     PurchaseQuotation,
+    PurchaseQuotationCommunication,
     PurchaseQuotationLine,
     PurchaseRequest,
     PurchaseRequestLine,
+    PurchaseRemarkTemplate,
     PurchaseReturnRequest,
     PurchaseSetting,
+    PurchaseTeam,
     PurchaseTender,
     PurchaseTenderLine,
     ServiceWorkOrder,
@@ -63,6 +75,7 @@ from .models import (
     TenderDocumentCompletionLine,
     TenderDocumentCompletionMatrix,
     VendorDocumentReview,
+    VendorChangeProposal,
     VendorLegalDocument,
     VendorPricelist,
     VendorPricelistAmendment,
@@ -78,6 +91,10 @@ from .models import (
     VendorPerformanceTemplateLine,
     VendorPrequalification,
     VendorProfile,
+)
+from .purchase_cost_center import (
+    assignment_kwargs,
+    validate_purchase_cost_center_batch,
 )
 from .three_way_match import sync_purchase_three_way_match
 from .vendor_credit import enforce_vendor_purchase_limit
@@ -95,6 +112,7 @@ MAX_TENDER_AWARD_ALLOCATIONS = 5000
 MAX_PURCHASE_DOWNPAYMENT_INVOICES = 100
 MAX_PURCHASE_DOWNPAYMENT_LINES = 5000
 MAX_VENDOR_PRICELIST_MATCHES = 5000
+MAX_VENDOR_PRICELIST_BATCH_MATCHES = MAX_RFQ_VENDORS * MAX_PURCHASE_DOCUMENT_LINES
 MAX_VENDOR_PRICELIST_EXPIRY_BATCH = 500
 MAX_VENDOR_PERFORMANCE_LINES = 500
 MAX_VENDOR_PERFORMANCE_EVIDENCE_LINES = 5000
@@ -108,6 +126,254 @@ MAX_TENDER_COMPLETION_CELLS = 10000
 MAX_VENDOR_PRICELIST_IMPORT_ROWS = 5000
 MAX_VENDOR_PRICELIST_PREVIEW_ROWS = 500
 MAX_PURCHASE_KPI_LINES = 100
+MAX_PURCHASE_ROUTING_BATCH = 500
+MAX_PURCHASE_ROUTING_TEAMS = 500
+MAX_PURCHASE_MAIL_RECIPIENTS = 50
+
+
+PURCHASE_MAIL_TEMPLATE_DEFAULTS = {
+    PurchaseMailTemplate.TemplateType.STANDARD: {
+        "name": "Standard RFQ Request",
+        "subject_template": "{{ record.number }}",
+        "body_html": """<p>Dear {{ record.vendor.name }},</p>
+<p>We would like to request a quotation for the following items:</p>
+<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%">
+<thead><tr><th>No</th><th>Description</th><th>Quantity</th><th>Unit Price</th></tr></thead>
+<tbody>{% for line in lines %}<tr><td>{{ forloop.counter }}</td><td>{{ line.product.name|default:line.description }}</td><td>{{ line.quantity }}</td><td>{{ line.unit_price }}</td></tr>{% endfor %}</tbody>
+</table>
+{% if record.response_deadline %}<p>Please provide your best pricing and delivery terms by {{ record.response_deadline }}.</p>{% endif %}
+<p>The attached PDF contains the full RFQ details.</p>
+<p>Best regards,<br>{{ company.name }}</p>""",
+    },
+    PurchaseMailTemplate.TemplateType.URGENT: {
+        "name": "Urgent RFQ Request",
+        "subject_template": "Urgent {{ record.number }}",
+        "body_html": """<p>Dear {{ record.vendor.name }},</p>
+<p>This is an urgent request for quotation. We need pricing for the following items as soon as possible:</p>
+<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%">
+<thead><tr><th>No</th><th>Description</th><th>Quantity</th><th>Unit Price</th></tr></thead>
+<tbody>{% for line in lines %}<tr><td>{{ forloop.counter }}</td><td>{{ line.product.name|default:line.description }}</td><td>{{ line.quantity }}</td><td>{{ line.unit_price }}</td></tr>{% endfor %}</tbody>
+</table>
+{% if record.response_deadline %}<p>Deadline: {{ record.response_deadline }}</p>{% endif %}
+<p>Please review the attached PDF and respond at your earliest convenience.</p>
+<p>Best regards,<br>{{ company.name }}</p>""",
+    },
+    PurchaseMailTemplate.TemplateType.FOLLOW_UP: {
+        "name": "Follow-up RFQ",
+        "subject_template": "Follow-up {{ record.number }}",
+        "body_html": """<p>Dear {{ record.vendor.name }},</p>
+<p>This is a follow-up to our previous RFQ request for:</p>
+<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%">
+<thead><tr><th>No</th><th>Description</th><th>Quantity</th><th>Unit Price</th></tr></thead>
+<tbody>{% for line in lines %}<tr><td>{{ forloop.counter }}</td><td>{{ line.product.name|default:line.description }}</td><td>{{ line.quantity }}</td><td>{{ line.unit_price }}</td></tr>{% endfor %}</tbody>
+</table>
+<p>We have not received your quotation yet. Please confirm whether you can provide pricing for these items.</p>
+{% if record.response_deadline %}<p>Deadline: {{ record.response_deadline }}</p>{% endif %}
+<p>Best regards,<br>{{ company.name }}</p>""",
+    },
+}
+
+
+def ensure_purchase_mail_templates(company):
+    """Create missing HMX-shaped defaults without overwriting customer edits."""
+    company_id = _pk(company)
+    if not company_id:
+        raise ValidationError("Company is required to initialize Purchase Mail Templates.")
+    for code, defaults in PURCHASE_MAIL_TEMPLATE_DEFAULTS.items():
+        # scale-guard: allow SG003 — exactly three fixed HMX template identities are provisioned per company.
+        PurchaseMailTemplate.objects.get_or_create(
+            company_id=company_id,
+            code=code,
+            defaults=defaults,
+        )
+    return PurchaseMailTemplate.objects.filter(company_id=company_id).order_by("code")
+
+
+def parse_purchase_email_recipients(value, *, required=False):
+    """Normalize a comma-separated recipient field with a bounded address count."""
+    raw_values = [item.strip() for item in (value or "").replace(";", ",").split(",")]
+    recipients = []
+    seen = set()
+    for address in raw_values:
+        if not address:
+            continue
+        normalized = address.casefold()
+        if normalized in seen:
+            continue
+        try:
+            validate_email(address)
+        except ValidationError as exc:
+            raise ValidationError(f"Invalid email address: {address}.") from exc
+        recipients.append(address)
+        seen.add(normalized)
+    if required and not recipients:
+        raise ValidationError("At least one recipient email address is required.")
+    if len(recipients) > MAX_PURCHASE_MAIL_RECIPIENTS:
+        raise ValidationError(
+            f"Purchase email supports at most {MAX_PURCHASE_MAIL_RECIPIENTS} recipients per field."
+        )
+    return recipients
+
+
+def render_purchase_mail_template(template, quotation, lines=None):
+    """Render an editable RFQ template against one bounded, preloaded RFQ."""
+    if template.company_id != quotation.company_id:
+        raise ValidationError("Mail Template must belong to the RFQ company.")
+    if not template.active:
+        raise ValidationError("Only an active Purchase Mail Template can be used.")
+    if lines is None:
+        lines = _require_bounded(
+            list(
+                PurchaseQuotationLine.objects.filter(quotation_id=quotation.pk)
+                .select_related("product")
+                .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+            ),
+            limit=MAX_PURCHASE_DOCUMENT_LINES,
+            label="RFQ mail",
+        )
+    context = Context(
+        {
+            "record": quotation,
+            "lines": lines,
+            "company": quotation.company,
+        },
+        autoescape=True,
+    )
+    try:
+        subject = Template(template.subject_template).render(context).strip()
+        body_html = Template(template.body_html).render(context).strip()
+    except TemplateSyntaxError as exc:
+        raise ValidationError(f"Purchase Mail Template syntax is invalid: {exc}.") from exc
+    if not subject:
+        raise ValidationError("Rendered Purchase email subject cannot be empty.")
+    if not body_html:
+        raise ValidationError("Rendered Purchase email body cannot be empty.")
+    return subject[:255], body_html
+
+
+def _purchase_quotation_pdf(quotation, lines):
+    from core.document_pdf import render_document_pdf
+
+    return render_document_pdf(
+        "purchase-quotations",
+        quotation,
+        lines,
+        {
+            "header_fields": [
+                "company",
+                "number",
+                "vendor",
+                "warehouse",
+                "issue_date",
+                "response_deadline",
+                "expected_date",
+                "currency",
+                "notes",
+            ],
+            "total_fields": [("Quoted Amount", "quoted_amount")],
+        },
+    )
+
+
+def send_purchase_quotation_email(
+    quotation,
+    *,
+    template,
+    email_to,
+    email_cc="",
+    subject="",
+    body_html="",
+    actor,
+):
+    """Send an RFQ plus PDF and persist delivery evidence for success or failure."""
+    quotation = (
+        PurchaseQuotation.objects.select_related("company", "vendor", "warehouse")
+        .get(pk=_pk(quotation))
+    )
+    if quotation.status not in {
+        PurchaseQuotation.Status.DRAFT,
+        PurchaseQuotation.Status.SENT,
+        PurchaseQuotation.Status.RECEIVED,
+    }:
+        raise ValidationError("Only an active Draft, Sent, or Received RFQ can be emailed.")
+    if template.company_id != quotation.company_id or not template.active:
+        raise ValidationError("Select an active Mail Template from the RFQ company.")
+    if not quotation.company.email:
+        raise ValidationError(
+            f"Set an email address on company {quotation.company.name} before sending RFQs."
+        )
+    _validate_rfq_vendors(quotation.company_id, [quotation.vendor_id])
+    lines = _require_bounded(
+        list(
+            PurchaseQuotationLine.objects.filter(quotation_id=quotation.pk)
+            .select_related("product")
+            .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="RFQ mail",
+    )
+    if not lines:
+        raise ValidationError("Add at least one RFQ line before sending email.")
+    to_list = parse_purchase_email_recipients(email_to, required=True)
+    cc_list = parse_purchase_email_recipients(email_cc)
+    if len({item.casefold() for item in [*to_list, *cc_list]}) > MAX_PURCHASE_MAIL_RECIPIENTS:
+        raise ValidationError(
+            f"Purchase email supports at most {MAX_PURCHASE_MAIL_RECIPIENTS} distinct recipients."
+        )
+    rendered_subject, rendered_body = render_purchase_mail_template(
+        template,
+        quotation,
+        lines,
+    )
+    subject = (subject or rendered_subject).strip()[:255]
+    body_html = (body_html or rendered_body).strip()
+    if not subject or not body_html:
+        raise ValidationError("Purchase email subject and body are required.")
+
+    communication = PurchaseQuotationCommunication.objects.create(
+        quotation=quotation,
+        template=template,
+        subject=subject,
+        email_from=quotation.company.email,
+        email_to=", ".join(to_list),
+        email_cc=", ".join(cc_list),
+        body_html=body_html,
+        sent_by=actor,
+    )
+    message = EmailMultiAlternatives(
+        subject=subject,
+        body=strip_tags(body_html),
+        from_email=quotation.company.email,
+        to=to_list,
+        cc=cc_list,
+    )
+    message.attach_alternative(body_html, "text/html")
+    reference = quotation.number.replace("/", "-").replace("\\", "-")
+    message.attach(
+        f"rfq-{reference}.pdf",
+        _purchase_quotation_pdf(quotation, lines),
+        "application/pdf",
+    )
+    try:
+        sent_count = message.send(fail_silently=False)
+        if sent_count != 1:
+            raise RuntimeError("The email backend did not confirm one delivered message.")
+    except Exception as exc:
+        communication.status = PurchaseQuotationCommunication.Status.FAILED
+        communication.failure_reason = str(exc)[:2000]
+        communication.save(update_fields=["status", "failure_reason", "updated_at"])
+        raise ValidationError(f"Failed to send RFQ email: {exc}.") from exc
+
+    communication.status = PurchaseQuotationCommunication.Status.SENT
+    communication.sent_at = timezone.now()
+    communication.save(update_fields=["status", "sent_at", "updated_at"])
+    if quotation.status == PurchaseQuotation.Status.DRAFT:
+        PurchaseQuotation.objects.filter(
+            pk=quotation.pk,
+            status=PurchaseQuotation.Status.DRAFT,
+        ).update(status=PurchaseQuotation.Status.SENT, updated_at=timezone.now())
+        quotation.status = PurchaseQuotation.Status.SENT
+    return communication
 
 
 _PR_LINE_STATUS_RANK = {
@@ -128,6 +394,208 @@ _PR_LINE_STATUS_RANK = {
 
 def _pk(record_or_pk):
     return getattr(record_or_pk, "pk", record_or_pk)
+
+
+def _bounded_routing_ids(documents, *, label):
+    if isinstance(documents, models.Model) or isinstance(documents, int):
+        candidates = [_pk(documents)]
+    elif hasattr(documents, "values_list"):
+        candidates = list(
+            documents.order_by("pk").values_list("pk", flat=True)[: MAX_PURCHASE_ROUTING_BATCH + 1]
+        )
+    else:
+        candidates = [_pk(document) for document in documents]
+    ids = []
+    seen = set()
+    for document_id in candidates:
+        if not document_id:
+            raise ValidationError(f"{label} routing requires saved records.")
+        if document_id not in seen:
+            ids.append(document_id)
+            seen.add(document_id)
+    if len(ids) > MAX_PURCHASE_ROUTING_BATCH:
+        raise ValidationError(
+            f"{label} auto-routing supports at most {MAX_PURCHASE_ROUTING_BATCH} records per batch."
+        )
+    return ids
+
+
+def _routing_teams(company_ids):
+    teams = list(
+        PurchaseTeam.objects.filter(company_id__in=company_ids, active=True)
+        .prefetch_related(
+            Prefetch("product_categories", to_attr="_routing_product_categories"),
+            Prefetch("order_types", to_attr="_routing_order_types"),
+            Prefetch("vendor_categories", to_attr="_routing_vendor_categories"),
+        )
+        .order_by("-pk")[: MAX_PURCHASE_ROUTING_TEAMS + 1]
+    )
+    if len(teams) > MAX_PURCHASE_ROUTING_TEAMS:
+        raise ValidationError(
+            "Purchase Team auto-routing exceeds the operational limit of "
+            f"{MAX_PURCHASE_ROUTING_TEAMS} active teams."
+        )
+    return {
+        team.pk: {
+            "team": team,
+            "product_categories": {category.pk for category in team._routing_product_categories},
+            "order_types": {order_type.pk for order_type in team._routing_order_types},
+            "vendor_categories": {category.pk for category in team._routing_vendor_categories},
+        }
+        for team in teams
+    }
+
+
+def _routing_team_matches(config, *, order_type=None, vendor_category_id=None):
+    team = config["team"]
+    if team.parameter == PurchaseTeam.RoutingParameter.PRODUCT_CATEGORY:
+        if order_type is None:
+            return False
+        order_type_categories = {
+            category.pk for category in getattr(order_type, "_routing_product_categories", ())
+        }
+        return bool(order_type_categories & config["product_categories"])
+    if team.parameter == PurchaseTeam.RoutingParameter.ORDER_TYPE:
+        return bool(order_type and order_type.pk in config["order_types"])
+    if team.parameter == PurchaseTeam.RoutingParameter.VENDOR_CATEGORY:
+        return bool(vendor_category_id and vendor_category_id in config["vendor_categories"])
+    return False
+
+
+def _next_routing_team(team_configs, *, company_id, assigned_team_ids, order_type=None, vendor_category_id=None):
+    for config in team_configs.values():
+        team = config["team"]
+        if team.company_id != company_id or team.pk in assigned_team_ids:
+            continue
+        if _routing_team_matches(
+            config,
+            order_type=order_type,
+            vendor_category_id=vendor_category_id,
+        ):
+            return team
+    return None
+
+
+@transaction.atomic
+def auto_route_purchase_requests(documents, actor=None):
+    """Assign active Purchase Teams newest-first without reusing a team in one batch."""
+    del actor
+    ids = _bounded_routing_ids(documents, label="Purchase Request")
+    if not ids:
+        return False
+    requests = list(
+        PurchaseRequest.objects.select_for_update(of=("self",))
+        .select_related("order_type", "team")
+        .prefetch_related(
+            Prefetch("order_type__product_categories", to_attr="_routing_product_categories")
+        )
+        .filter(pk__in=ids)
+    )
+    if len(requests) != len(ids):
+        raise ValidationError("One or more Purchase Requests no longer exist.")
+    request_by_id = {record.pk: record for record in requests}
+    ordered_requests = [request_by_id[document_id] for document_id in ids]
+    team_configs = _routing_teams({record.company_id for record in ordered_requests})
+    assigned_team_ids = {record.team_id for record in ordered_requests if record.team_id}
+    routed = []
+    for record in ordered_requests:
+        if record.team_id:
+            continue
+        team = _next_routing_team(
+            team_configs,
+            company_id=record.company_id,
+            assigned_team_ids=assigned_team_ids,
+            order_type=record.order_type,
+        )
+        if team is None:
+            continue
+        record.team_id = team.pk
+        record.updated_at = timezone.now()
+        assigned_team_ids.add(team.pk)
+        routed.append(record)
+    if routed:
+        PurchaseRequest.objects.bulk_update(routed, ["team", "updated_at"], batch_size=500)
+    return bool(routed)
+
+
+@transaction.atomic
+def auto_route_purchase_orders(documents, actor=None):
+    """Route Purchase Orders through module-owned controls using bounded bulk writes."""
+    del actor
+    ids = _bounded_routing_ids(documents, label="Purchase Order")
+    if not ids:
+        return False
+    orders = list(
+        PurchaseOrder.objects.select_for_update(of=("self",))
+        .select_related(
+            "vendor__purchase_vendor_profile__category",
+            "purchase_control__order_type",
+            "purchase_control__team",
+        )
+        .prefetch_related(
+            Prefetch(
+                "purchase_control__order_type__product_categories",
+                to_attr="_routing_product_categories",
+            )
+        )
+        .filter(pk__in=ids)
+    )
+    if len(orders) != len(ids):
+        raise ValidationError("One or more Purchase Orders no longer exist.")
+    order_by_id = {record.pk: record for record in orders}
+    ordered_orders = [order_by_id[document_id] for document_id in ids]
+    team_configs = _routing_teams({record.company_id for record in ordered_orders})
+    assigned_team_ids = set()
+    for record in ordered_orders:
+        control = getattr(record, "purchase_control", None)
+        if control and control.team_id:
+            assigned_team_ids.add(control.team_id)
+
+    updated_controls = []
+    new_controls = []
+    now = timezone.now()
+    for record in ordered_orders:
+        control = getattr(record, "purchase_control", None)
+        if control and control.team_id:
+            continue
+        vendor_profile = getattr(record.vendor, "purchase_vendor_profile", None)
+        team = _next_routing_team(
+            team_configs,
+            company_id=record.company_id,
+            assigned_team_ids=assigned_team_ids,
+            order_type=control.order_type if control else None,
+            vendor_category_id=vendor_profile.category_id if vendor_profile else None,
+        )
+        if team is None:
+            continue
+        assigned_team_ids.add(team.pk)
+        if control is None:
+            new_controls.append(PurchaseOrderControl(order_id=record.pk, team_id=team.pk))
+        else:
+            control.team_id = team.pk
+            control.updated_at = now
+            updated_controls.append(control)
+    if new_controls:
+        PurchaseOrderControl.objects.bulk_create(new_controls, batch_size=500)
+    if updated_controls:
+        PurchaseOrderControl.objects.bulk_update(
+            updated_controls,
+            ["team", "updated_at"],
+            batch_size=500,
+        )
+    return bool(new_controls or updated_controls)
+
+
+def auto_route_purchase_request_action(instance, actor):
+    instance._auto_routed = auto_route_purchase_requests(instance, actor)
+    instance.refresh_from_db()
+    return instance
+
+
+def auto_route_purchase_order_action(instance, actor):
+    instance._auto_routed = auto_route_purchase_orders(instance, actor)
+    instance.refresh_from_db()
+    return instance
 
 
 def _purchase_kpi_order_queryset(target):
@@ -201,6 +669,183 @@ def allocate_purchase_document_number(order_type_id, company_id, document_kind):
 
 
 @transaction.atomic
+def duplicate_purchase_order_template(template, actor=None):
+    """Duplicate one bounded PO template and its lines with a unique name."""
+    del actor
+    source = (
+        PurchaseOrderTemplate.objects.select_for_update(of=("self",))
+        .select_related("company", "vendor", "order_type")
+        .get(pk=_pk(template))
+    )
+    lines = _require_bounded(
+        list(
+            PurchaseOrderTemplateLine.objects.select_for_update(of=("self",))
+            .filter(order_template_id=source.pk)
+            .order_by("sequence", "pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="Purchase Order Template",
+    )
+    base_name = f"{source.name} (Copy)"
+    existing_names = set(
+        PurchaseOrderTemplate.objects.filter(
+            company_id=source.company_id,
+            name__startswith=base_name,
+        ).values_list("name", flat=True)[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+    )
+    if len(existing_names) > MAX_PURCHASE_DOCUMENT_LINES:
+        raise ValidationError("Purchase Order Template copy-name allocation exceeds the operational limit.")
+    copy_name = base_name
+    sequence = 2
+    while copy_name in existing_names:
+        copy_name = f"{base_name} {sequence}"
+        sequence += 1
+
+    duplicate = PurchaseOrderTemplate.objects.create(
+        company_id=source.company_id,
+        vendor_id=source.vendor_id,
+        order_type_id=source.order_type_id,
+        name=copy_name,
+        payment_terms=source.payment_terms,
+        delivery_terms=source.delivery_terms,
+        legal_terms=source.legal_terms,
+        active=source.active,
+    )
+    PurchaseOrderTemplateLine.objects.bulk_create(
+        [
+            PurchaseOrderTemplateLine(
+                order_template=duplicate,
+                sequence=line.sequence,
+                product_id=line.product_id,
+                description=line.description,
+                quantity=line.quantity,
+                uom=line.uom,
+                price=line.price,
+            )
+            for line in lines
+        ],
+        batch_size=500,
+    )
+    duplicate._source_template_id = source.pk
+    return duplicate
+
+
+@transaction.atomic
+def snapshot_purchase_order_commercial_defaults(orders, *, template_override=False):
+    """Snapshot vendor/template commercial defaults with a fixed query shape."""
+    if isinstance(orders, (PurchaseOrder, int)):
+        order_ids = [_pk(orders)]
+    else:
+        order_ids = list(dict.fromkeys(_pk(order) for order in orders))
+    if not order_ids:
+        return {}
+    if len(order_ids) > MAX_PURCHASE_DOCUMENT_LINES:
+        raise ValidationError(
+            f"Commercial-default snapshot exceeds the operational limit of {MAX_PURCHASE_DOCUMENT_LINES} orders."
+        )
+
+    order_rows = list(
+        PurchaseOrder.objects.select_for_update(of=("self",))
+        .select_related("vendor")
+        .filter(pk__in=order_ids)
+        .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+    )
+    if len(order_rows) != len(order_ids):
+        raise ValidationError("One or more Purchase Orders no longer exist.")
+
+    controls_by_order_id = {
+        control.order_id: control
+        for control in PurchaseOrderControl.objects.select_for_update(of=("self",))
+        .filter(order_id__in=order_ids)
+        .order_by("order_id")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+    }
+    missing_controls = [
+        PurchaseOrderControl(order_id=order.pk)
+        for order in order_rows
+        if order.pk not in controls_by_order_id
+    ]
+    if missing_controls:
+        PurchaseOrderControl.objects.bulk_create(missing_controls, batch_size=500)
+        controls_by_order_id.update(
+            {control.order_id: control for control in missing_controls}
+        )
+
+    company_ids = {order.company_id for order in order_rows}
+    vendor_ids = {order.vendor_id for order in order_rows}
+    use_vendor_terms_by_company = dict(
+        PurchaseSetting.objects.filter(company_id__in=company_ids).values_list(
+            "company_id",
+            "is_use_vendor_payment_terms",
+        )
+    )
+    vendor_payment_terms = dict(
+        VendorProfile.objects.filter(
+            company_id__in=company_ids,
+            partner_id__in=vendor_ids,
+        ).values_list("partner_id", "payment_terms")
+    )
+    template_ids = {
+        control.order_template_id
+        for control in controls_by_order_id.values()
+        if control.order_template_id
+    }
+    templates_by_id = (
+        PurchaseOrderTemplate.objects.in_bulk(template_ids)
+        if template_override and template_ids
+        else {}
+    )
+
+    now = timezone.now()
+    changed_controls = []
+    for order in order_rows:
+        control = controls_by_order_id[order.pk]
+        changed = False
+        template = templates_by_id.get(control.order_template_id)
+        if template is not None:
+            for field_name in ("payment_terms", "delivery_terms", "legal_terms"):
+                value = getattr(template, field_name)
+                if getattr(control, field_name) != value:
+                    setattr(control, field_name, value)
+                    changed = True
+        elif (
+            not control.payment_terms
+            and use_vendor_terms_by_company.get(order.company_id, True)
+        ):
+            payment_terms = vendor_payment_terms.get(order.vendor_id, "")
+            if payment_terms:
+                control.payment_terms = payment_terms
+                changed = True
+
+        vendor_address = order.vendor.address or ""
+        if vendor_address and (template_override or not control.vendor_address):
+            if control.vendor_address != vendor_address:
+                control.vendor_address = vendor_address
+                changed = True
+        if vendor_address and (template_override or not control.bill_address):
+            if control.bill_address != vendor_address:
+                control.bill_address = vendor_address
+                changed = True
+        if changed:
+            control.updated_at = now
+            changed_controls.append(control)
+
+    if changed_controls:
+        PurchaseOrderControl.objects.bulk_update(
+            changed_controls,
+            [
+                "payment_terms",
+                "delivery_terms",
+                "legal_terms",
+                "vendor_address",
+                "bill_address",
+                "updated_at",
+            ],
+            batch_size=500,
+        )
+    return controls_by_order_id
+
+
+@transaction.atomic
 def apply_purchase_order_template(order, template, actor=None):
     del actor
     locked = PurchaseOrder.objects.select_for_update(of=("self",)).get(pk=_pk(order))
@@ -244,6 +889,7 @@ def apply_purchase_order_template(order, template, actor=None):
     if template.order_type_id:
         control.order_type_id = template.order_type_id
     control.save(update_fields=["order_template", "order_type", "updated_at"])
+    snapshot_purchase_order_commercial_defaults(locked, template_override=True)
     return locked
 
 
@@ -832,6 +1478,214 @@ def _validate_rfq_vendors(company_id, vendor_ids):
     return [vendors[vendor_id] for vendor_id in vendor_ids]
 
 
+@transaction.atomic
+def sync_purchase_request_line_timeline(purchase_request, line_values=None):
+    """Synchronize bounded PR line timeline defaults while preserving overrides."""
+    timeline_sentinel = object()
+    previous_expected_date = getattr(
+        purchase_request,
+        "_purchase_previous_expected_date",
+        timeline_sentinel,
+    )
+    previous_expiry_date = getattr(
+        purchase_request,
+        "_purchase_previous_expiry_date",
+        timeline_sentinel,
+    )
+    previous_warehouse_id = getattr(
+        purchase_request,
+        "_purchase_previous_destination_warehouse_id",
+        timeline_sentinel,
+    )
+    locked = PurchaseRequest.objects.select_for_update(of=("self",)).get(
+        pk=_pk(purchase_request)
+    )
+    if locked.status not in {PurchaseRequest.Status.DRAFT, PurchaseRequest.Status.REJECTED}:
+        raise ValidationError(
+            "Purchase Request line timeline can only be synchronized while the request is editable."
+        )
+    lines = _require_bounded(
+        list(
+            PurchaseRequestLine.objects.select_for_update(of=("self",))
+            .filter(request_id=locked.pk)
+            .select_related("destination_warehouse")
+            .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="Purchase Request timeline",
+    )
+    line_ids = {line.pk for line in lines}
+    normalized_values = {
+        int(line_id): dict(values)
+        for line_id, values in (line_values or {}).items()
+        if int(line_id) in line_ids
+    }
+
+    if locked.required_date is None:
+        locked.required_date = next(
+            (
+                values.get("expected_date") or line.expected_date
+                for line in lines
+                if (values := normalized_values.get(line.pk, {})).get("expected_date")
+                or line.expected_date
+            ),
+            None,
+        )
+    if locked.expiry_date is None:
+        locked.expiry_date = next(
+            (
+                values.get("expiry_date") or line.expiry_date
+                for line in lines
+                if (values := normalized_values.get(line.pk, {})).get("expiry_date")
+                or line.expiry_date
+            ),
+            None,
+        )
+    if locked.destination_warehouse_id is None:
+        locked.destination_warehouse_id = next(
+            (
+                _pk(values.get("destination_warehouse"))
+                or line.destination_warehouse_id
+                for line in lines
+                if _pk((values := normalized_values.get(line.pk, {})).get("destination_warehouse"))
+                or line.destination_warehouse_id
+            ),
+            None,
+        )
+
+    now = timezone.now()
+    for line in lines:
+        values = normalized_values.get(line.pk, {})
+        if "expected_date" in values:
+            line.expected_date = values["expected_date"]
+        elif (
+            previous_expected_date is not timeline_sentinel
+            and previous_expected_date != locked.required_date
+            and line.expected_date in {None, previous_expected_date}
+        ):
+            line.expected_date = locked.required_date
+        elif line.expected_date is None:
+            line.expected_date = locked.required_date
+
+        if "expiry_date" in values:
+            line.expiry_date = values["expiry_date"]
+        elif (
+            previous_expiry_date is not timeline_sentinel
+            and previous_expiry_date != locked.expiry_date
+            and line.expiry_date in {None, previous_expiry_date}
+        ):
+            line.expiry_date = locked.expiry_date
+        elif line.expiry_date is None:
+            line.expiry_date = locked.expiry_date
+
+        if "destination_warehouse" in values:
+            line.destination_warehouse_id = _pk(values["destination_warehouse"])
+        elif (
+            previous_warehouse_id is not timeline_sentinel
+            and previous_warehouse_id != locked.destination_warehouse_id
+            and line.destination_warehouse_id in {None, previous_warehouse_id}
+        ):
+            line.destination_warehouse_id = locked.destination_warehouse_id
+        elif line.destination_warehouse_id is None:
+            line.destination_warehouse_id = locked.destination_warehouse_id
+        line.updated_at = now
+
+    warehouse_ids = {
+        line.destination_warehouse_id
+        for line in lines
+        if line.destination_warehouse_id
+    }
+    valid_warehouse_ids = set(
+        Warehouse.objects.filter(
+            pk__in=warehouse_ids,
+            company_id=locked.company_id,
+        ).values_list("pk", flat=True)
+    )
+    if warehouse_ids != valid_warehouse_ids:
+        raise ValidationError("Purchase Request line warehouse must belong to the request company.")
+    if lines:
+        PurchaseRequestLine.objects.bulk_update(
+            lines,
+            ["expected_date", "expiry_date", "destination_warehouse", "updated_at"],
+            batch_size=500,
+        )
+    locked.updated_at = now
+    locked.save(
+        update_fields=[
+            "required_date",
+            "expiry_date",
+            "destination_warehouse",
+            "updated_at",
+        ]
+    )
+    return locked
+
+
+@transaction.atomic
+def apply_purchase_remark_template(document, template):
+    """Apply one active remark template as an immutable transaction snapshot."""
+    template = PurchaseRemarkTemplate.objects.select_for_update(of=("self",)).get(
+        pk=_pk(template)
+    )
+    if not template.active:
+        raise ValidationError("Only an active Purchase Remark Template can be applied.")
+
+    if isinstance(document, PurchaseRequest):
+        locked = PurchaseRequest.objects.select_for_update(of=("self",)).get(
+            pk=_pk(document)
+        )
+        if locked.status != PurchaseRequest.Status.DRAFT:
+            raise ValidationError("A Purchase Remark Template can only be applied to a Draft Purchase Request.")
+        if template.applicable_document not in {
+            PurchaseRemarkTemplate.ApplicableDocument.PURCHASE_REQUEST,
+            PurchaseRemarkTemplate.ApplicableDocument.ALL,
+        }:
+            raise ValidationError("This Purchase Remark Template is not applicable to Purchase Requests.")
+        if template.company_id != locked.company_id:
+            raise ValidationError("Purchase Remark Template and Purchase Request must belong to the same company.")
+        locked.remark_template = template
+        locked.remark_template_code = template.code
+        locked.remark_template_name = template.name
+        locked.notes = template.content
+        locked.save(
+            update_fields=[
+                "remark_template",
+                "remark_template_code",
+                "remark_template_name",
+                "notes",
+                "updated_at",
+            ]
+        )
+        return locked
+
+    if isinstance(document, PurchaseOrder):
+        locked = PurchaseOrder.objects.select_for_update(of=("self",)).get(
+            pk=_pk(document)
+        )
+        if locked.status not in {PurchaseOrder.Status.DRAFT, PurchaseOrder.Status.REVISED}:
+            raise ValidationError("A Purchase Remark Template can only be applied to an editable Purchase Order.")
+        if template.applicable_document not in {
+            PurchaseRemarkTemplate.ApplicableDocument.PURCHASE_ORDER,
+            PurchaseRemarkTemplate.ApplicableDocument.ALL,
+        }:
+            raise ValidationError("This Purchase Remark Template is not applicable to Purchase Orders.")
+        if template.company_id != locked.company_id:
+            raise ValidationError("Purchase Remark Template and Purchase Order must belong to the same company.")
+        locked.notes = template.content
+        locked.save(update_fields=["notes", "updated_at"])
+        PurchaseOrderControl.objects.update_or_create(
+            order=locked,
+            defaults={
+                "remark_template": template,
+                "remark_template_code": template.code,
+                "remark_template_name": template.name,
+            },
+        )
+        return locked
+
+    raise ValidationError("Purchase Remark Templates only support Purchase Requests and Purchase Orders.")
+
+
 def _validate_purchase_vendor_eligibility(company_id, vendor_id):
     """Require a confirmed, active profile at commitment time when a profile exists."""
     profile = (
@@ -1034,6 +1888,210 @@ def _validate_vendor_blocking_legal_documents(profile_id, *, lock=False):
             + ", ".join(sorted(set(invalid)))
             + "."
         )
+
+
+VENDOR_CHANGE_PARTNER_FIELDS = frozenset({"name", "email", "phone", "address", "tax_id"})
+VENDOR_CHANGE_PROFILE_FIELDS = frozenset(
+    {"tax_number", "mobile_number", "bank_account", "payment_terms", "notes"}
+)
+MAX_SIMILAR_VENDOR_RESULTS = 50
+
+
+def find_similar_vendor_profiles(profile):
+    source = VendorProfile.objects.select_related("partner").get(pk=_pk(profile))
+    partner = source.partner
+    criteria = Q()
+    matched_values = {}
+    for key, value, lookup in (
+        ("email", partner.email, "partner__email__iexact"),
+        ("phone", partner.phone, "partner__phone__iexact"),
+        ("tax_id", partner.tax_id, "partner__tax_id__iexact"),
+        ("tax_number", source.tax_number, "tax_number__iexact"),
+        ("mobile_number", source.mobile_number, "mobile_number__iexact"),
+        ("bank_account", source.bank_account, "bank_account__iexact"),
+    ):
+        normalized = str(value or "").strip()
+        if normalized:
+            criteria |= Q(**{lookup: normalized})
+            matched_values[key] = normalized.casefold()
+    if not matched_values:
+        return []
+    candidates = list(
+        VendorProfile.objects.filter(company_id=source.company_id)
+        .exclude(pk=source.pk)
+        .filter(criteria)
+        .select_related("partner")
+        .order_by("partner__name", "pk")[: MAX_SIMILAR_VENDOR_RESULTS + 1]
+    )
+    if len(candidates) > MAX_SIMILAR_VENDOR_RESULTS:
+        raise ValidationError(
+            f"Similar Vendor search exceeds {MAX_SIMILAR_VENDOR_RESULTS} matches; narrow the source data."
+        )
+    results = []
+    for candidate in candidates:
+        candidate_values = {
+            "email": candidate.partner.email,
+            "phone": candidate.partner.phone,
+            "tax_id": candidate.partner.tax_id,
+            "tax_number": candidate.tax_number,
+            "mobile_number": candidate.mobile_number,
+            "bank_account": candidate.bank_account,
+        }
+        reasons = [
+            field_name
+            for field_name, expected in matched_values.items()
+            if str(candidate_values[field_name] or "").strip().casefold() == expected
+        ]
+        results.append({"vendor": candidate, "reasons": reasons})
+    return results
+
+
+@transaction.atomic
+def create_vendor_change_proposal(profile, proposed_values, actor):
+    if actor is None:
+        raise ValidationError("A requesting user is required for a Vendor change proposal.")
+    locked = (
+        VendorProfile.objects.select_for_update(of=("self",))
+        .select_related("partner")
+        .get(pk=_pk(profile))
+    )
+    if locked.status != VendorProfile.Status.ACTIVE or not locked.active:
+        raise ValidationError("Only an active Confirmed Vendor can request data changes.")
+    if VendorChangeProposal.objects.filter(
+        vendor_id=locked.pk,
+        status__in=[
+            VendorChangeProposal.Status.DRAFT,
+            VendorChangeProposal.Status.WAITING_APPROVAL,
+        ],
+    ).exists():
+        raise ValidationError("This Vendor already has an open data-change proposal.")
+    allowed_fields = VENDOR_CHANGE_PARTNER_FIELDS | VENDOR_CHANGE_PROFILE_FIELDS
+    unknown_fields = set(proposed_values) - allowed_fields
+    if unknown_fields:
+        raise ValidationError(
+            "Unsupported Vendor change fields: " + ", ".join(sorted(unknown_fields)) + "."
+        )
+    normalized = {
+        field_name: str(value or "").strip()
+        for field_name, value in proposed_values.items()
+    }
+    if not normalized:
+        raise ValidationError("Enter at least one Vendor field to change.")
+    if "name" in normalized and not normalized["name"]:
+        raise ValidationError("Vendor name cannot be empty.")
+    current_values = {
+        **{
+            field_name: str(getattr(locked.partner, field_name) or "")
+            for field_name in VENDOR_CHANGE_PARTNER_FIELDS
+        },
+        **{
+            field_name: str(getattr(locked, field_name) or "")
+            for field_name in VENDOR_CHANGE_PROFILE_FIELDS
+        },
+    }
+    changed_values = {
+        field_name: value
+        for field_name, value in normalized.items()
+        if value != current_values[field_name]
+    }
+    if not changed_values:
+        raise ValidationError("The Vendor change proposal does not change any live value.")
+    return VendorChangeProposal.objects.create(
+        vendor=locked,
+        proposed_values=changed_values,
+        original_snapshot={
+            field_name: current_values[field_name]
+            for field_name in changed_values
+        },
+        requested_by=actor,
+    )
+
+
+@transaction.atomic
+def transition_vendor_change_proposal(proposal, action, actor=None, *, reason=""):
+    locked = (
+        VendorChangeProposal.objects.select_for_update(of=("self",))
+        .select_related("vendor")
+        .get(pk=_pk(proposal))
+    )
+    reason = str(reason or "").strip()
+    if action == "submit":
+        if locked.status != VendorChangeProposal.Status.DRAFT:
+            raise ValidationError("Only a Draft Vendor change proposal can be submitted.")
+        locked.status = VendorChangeProposal.Status.WAITING_APPROVAL
+        locked.save(update_fields=["status", "updated_at"])
+        return locked
+    if action == "cancel":
+        if locked.status != VendorChangeProposal.Status.DRAFT:
+            raise ValidationError("Only a Draft Vendor change proposal can be cancelled.")
+        locked.status = VendorChangeProposal.Status.CANCELLED
+        locked.save(update_fields=["status", "updated_at"])
+        return locked
+    if locked.status != VendorChangeProposal.Status.WAITING_APPROVAL:
+        raise ValidationError("Only a Vendor change proposal Waiting Approval can be reviewed.")
+    if actor is None:
+        raise ValidationError("A reviewing user is required for this Vendor change proposal.")
+    if action == "reject":
+        if not reason:
+            raise ValidationError("A rejection reason is required.")
+        locked.status = VendorChangeProposal.Status.REJECTED
+        locked.reviewed_by = actor
+        locked.reviewed_at = timezone.now()
+        locked.review_reason = reason
+        locked.save(
+            update_fields=[
+                "status",
+                "reviewed_by",
+                "reviewed_at",
+                "review_reason",
+                "updated_at",
+            ]
+        )
+        return locked
+    if action != "approve":
+        raise ValidationError("Unsupported Vendor change proposal action.")
+
+    vendor = (
+        VendorProfile.objects.select_for_update(of=("self",))
+        .select_related("partner")
+        .get(pk=locked.vendor_id)
+    )
+    partner = Contact.objects.select_for_update(of=("self",)).get(pk=vendor.partner_id)
+    if vendor.status != VendorProfile.Status.ACTIVE or not vendor.active:
+        raise ValidationError("Only an active Confirmed Vendor can approve data changes.")
+    for field_name, original_value in locked.original_snapshot.items():
+        live_record = partner if field_name in VENDOR_CHANGE_PARTNER_FIELDS else vendor
+        if str(getattr(live_record, field_name) or "") != str(original_value or ""):
+            raise ValidationError(
+                f"Vendor field '{field_name}' changed after this proposal was created; create a new proposal."
+            )
+    partner_update_fields = []
+    vendor_update_fields = []
+    for field_name, value in locked.proposed_values.items():
+        if field_name in VENDOR_CHANGE_PARTNER_FIELDS:
+            setattr(partner, field_name, value)
+            partner_update_fields.append(field_name)
+        else:
+            setattr(vendor, field_name, value)
+            vendor_update_fields.append(field_name)
+    if partner_update_fields:
+        partner.save(update_fields=[*partner_update_fields, "updated_at"])
+    if vendor_update_fields:
+        vendor.save(update_fields=[*vendor_update_fields, "updated_at"])
+    locked.status = VendorChangeProposal.Status.APPROVED
+    locked.reviewed_by = actor
+    locked.reviewed_at = timezone.now()
+    locked.review_reason = reason
+    locked.save(
+        update_fields=[
+            "status",
+            "reviewed_by",
+            "reviewed_at",
+            "review_reason",
+            "updated_at",
+        ]
+    )
+    return locked
 
 
 @transaction.atomic
@@ -1812,11 +2870,47 @@ def create_purchase_request_rfqs(
     PurchaseQuotation.objects.bulk_create(quotations, batch_size=100)
 
     quotation_by_vendor = {quotation.vendor_id: quotation for quotation in quotations}
+    matches_by_vendor = _vendor_pricelist_matches_many(
+        locked.company_id,
+        {
+            vendor_id: {line: quantity for line, quantity in planned_lines}
+            for vendor_id, planned_lines in quote_lines_by_vendor.items()
+        },
+    )
     quotation_lines = []
-    totals = defaultdict(lambda: ZERO)
+    benefit_specs = []
     for vendor_id, planned_lines in quote_lines_by_vendor.items():
         quotation = quotation_by_vendor[vendor_id]
         for line, quantity in planned_lines:
+            match = matches_by_vendor[vendor_id].get(line.product_id)
+            if line.estimated_unit_price > 0:
+                unit_price = line.estimated_unit_price
+                price_values = {
+                    "price_source": PurchaseQuotationLine.PriceSource.PURCHASE_REQUEST,
+                    "applied_pricelist_id": None,
+                    "applied_pricelist_tier_id": None,
+                    "price_source_note": "Estimated Cost from Purchase Request",
+                    "discount_formula": "",
+                }
+                match = None
+            elif match is not None:
+                unit_price = match["unit_price"]
+                price_values = {
+                    "price_source": match["price_source"],
+                    "applied_pricelist_id": match["applied_pricelist_id"],
+                    "applied_pricelist_tier_id": match["applied_pricelist_tier_id"],
+                    "price_source_note": match["price_source_note"],
+                    "discount_formula": match["discount_formula"],
+                }
+            else:
+                unit_price = ZERO
+                price_values = {
+                    "price_source": PurchaseQuotationLine.PriceSource.NO_MATCH,
+                    "applied_pricelist_id": None,
+                    "applied_pricelist_tier_id": None,
+                    "price_source_note": "No matching vendor pricelist found.",
+                    "discount_formula": "",
+                }
             quotation_lines.append(
                 PurchaseQuotationLine(
                     quotation=quotation,
@@ -1825,13 +2919,64 @@ def create_purchase_request_rfqs(
                     description=line.description,
                     specification=line.specification,
                     quantity=quantity,
-                    unit_price=line.estimated_unit_price,
-                    promised_date=locked.required_date,
-                    expiry_date=response_deadline,
+                    unit_price=unit_price,
+                    promised_date=line.expected_date or locked.required_date,
+                    expiry_date=line.expiry_date or response_deadline,
+                    **price_values,
                 )
             )
-            totals[quotation.pk] += quantity * line.estimated_unit_price
+            if match is not None and match["free_product_id"]:
+                benefit_specs.append((quotation.pk, line.pk, match))
+
+    benefit_count_by_quotation = Counter(spec[0] for spec in benefit_specs)
+    paid_count_by_quotation = Counter(line.quotation_id for line in quotation_lines)
+    if any(
+        paid_count_by_quotation[quotation.pk] + benefit_count_by_quotation[quotation.pk]
+        > MAX_PURCHASE_DOCUMENT_LINES
+        for quotation in quotations
+    ):
+        raise ValidationError(
+            f"RFQ including free-product benefits exceeds the operational limit of "
+            f"{MAX_PURCHASE_DOCUMENT_LINES} lines."
+        )
     PurchaseQuotationLine.objects.bulk_create(quotation_lines, batch_size=500)
+    paid_by_quotation_request = {
+        (line.quotation_id, line.request_line_id): line for line in quotation_lines
+    }
+    if any(line.pk is None for line in quotation_lines):
+        paid_by_quotation_request = {
+            (line.quotation_id, line.request_line_id): line
+            for line in PurchaseQuotationLine.objects.filter(
+                quotation_id__in=[quotation.pk for quotation in quotations],
+                request_line_id__in=[line.pk for line in lines],
+                free_product=False,
+            )
+        }
+    benefit_lines = [
+        PurchaseQuotationLine(
+            quotation_id=quotation_id,
+            product_id=match["free_product_id"],
+            description=match["free_product_name"] or f"Free product {match['free_product_id']}",
+            quantity=match["free_quantity"],
+            unit_price=ZERO,
+            promised_date=paid_by_quotation_request[(quotation_id, request_line_id)].promised_date,
+            expiry_date=paid_by_quotation_request[(quotation_id, request_line_id)].expiry_date,
+            free_product=True,
+            free_product_source_line=paid_by_quotation_request[(quotation_id, request_line_id)],
+            price_source=PurchaseQuotationLine.PriceSource.PRICELIST,
+            applied_pricelist_id=match["applied_pricelist_id"],
+            applied_pricelist_tier_id=match["applied_pricelist_tier_id"],
+            price_source_note="Free product from vendor pricelist tier",
+            discount_formula=match["discount_formula"],
+        )
+        for quotation_id, request_line_id, match in benefit_specs
+    ]
+    if benefit_lines:
+        PurchaseQuotationLine.objects.bulk_create(benefit_lines, batch_size=500)
+
+    totals = defaultdict(lambda: ZERO)
+    for line in quotation_lines:
+        totals[line.quotation_id] += line.total_amount
     for quotation in quotations:
         quotation.quoted_amount = totals[quotation.pk]
         quotation.updated_at = timezone.now()
@@ -1910,7 +3055,8 @@ def _lock_request_conversion(purchase_request, allocations, *, quantity_label):
     return locked, lines, quantities
 
 
-def _vendor_pricelist_prices(company_id, vendor_id, line_quantities):
+def _vendor_pricelist_matches(company_id, vendor_id, line_quantities):
+    """Resolve bounded vendor-price matches with HMX-compatible traceability metadata."""
     profile = VendorProfile.objects.filter(company_id=company_id, partner_id=vendor_id).only("pk").first()
     if profile is None:
         return {}
@@ -1932,7 +3078,16 @@ def _vendor_pricelist_prices(company_id, vendor_id, line_quantities):
             )
             .filter(models.Q(pricelist__date_end__isnull=True) | models.Q(pricelist__date_end__gte=today))
             .order_by("product_id", "-pricelist__date_start", "-pricelist_id", "-pk")
-            .values("pk", "product_id", "unit_price")[: MAX_VENDOR_PRICELIST_MATCHES + 1]
+            .values(
+                "pk",
+                "product_id",
+                "product__name",
+                "unit_price",
+                "enforce_moq",
+                "pricelist_id",
+                "pricelist__name",
+                "pricelist__code",
+            )[: MAX_VENDOR_PRICELIST_MATCHES + 1]
         ),
         limit=MAX_VENDOR_PRICELIST_MATCHES,
         label="Vendor pricelist item matches",
@@ -1946,18 +3101,28 @@ def _vendor_pricelist_prices(company_id, vendor_id, line_quantities):
             .order_by("item__product_id", "-minimum_quantity", "-sequence", "-pk")
             .values(
                 "pk",
+                "item_id",
                 "item__product_id",
                 "minimum_quantity",
                 "maximum_quantity",
                 "tier_price",
+                "sequence",
                 "discount_formula",
                 "discount_from_tier_id",
+                "free_product_id",
+                "free_product__name",
+                "free_quantity",
+                "free_uom",
             )[: MAX_VENDOR_PRICELIST_MATCHES + 1]
         ),
         limit=MAX_VENDOR_PRICELIST_MATCHES,
         label="Vendor pricelist tier matches",
     )
     tier_by_id = {row["pk"]: row for row in tier_rows}
+    item_ids_with_tiers = {row["item_id"] for row in tier_rows}
+    first_tier_by_item = {}
+    for row in sorted(tier_rows, key=lambda value: (value["sequence"], value["pk"])):
+        first_tier_by_item.setdefault(row["item_id"], row)
     effective_price_cache = {}
 
     def effective_tier_price(row, trail=None):
@@ -1974,42 +3139,1517 @@ def _vendor_pricelist_prices(company_id, vendor_id, line_quantities):
         effective_price_cache[row["pk"]] = value
         return value
 
-    prices = {}
+    def discount_formula_chain(row, trail=None):
+        trail = set(trail or ())
+        if row["pk"] in trail:
+            raise ValidationError("Vendor pricelist tier discount sources cannot be recursive.")
+        trail.add(row["pk"])
+        source = tier_by_id.get(row["discount_from_tier_id"])
+        formulas = []
+        if source:
+            source_formula = discount_formula_chain(source, trail)
+            if source_formula:
+                formulas.append(source_formula)
+        if row["discount_formula"]:
+            formulas.append(row["discount_formula"].replace(" ", ""))
+        return "+".join(formulas)
+
+    def pricelist_label(row):
+        return row["pricelist__name"] or row["pricelist__code"] or str(row["pricelist_id"])
+
+    def tier_source_note(item, tier, discount_formula):
+        maximum = tier["maximum_quantity"] or "No limit"
+        note = (
+            f"Pricelist: {pricelist_label(item)}; Tier {tier['sequence']} "
+            f"({tier['minimum_quantity']} - {maximum})"
+        )
+        if discount_formula:
+            note += f"; Discount: {discount_formula}"
+        if tier["free_product_id"]:
+            free_quantity = tier["free_quantity"] if tier["free_quantity"] > 0 else Decimal("1")
+            free_uom = f" {tier['free_uom']}" if tier["free_uom"] else ""
+            note += f"; Free Product: {free_quantity}{free_uom} {tier['free_product__name']}"
+        return note[:255]
+
+    matches = {}
     for row in tier_rows:
         product_id = row["item__product_id"]
-        if product_id in prices:
+        if product_id in matches:
             continue
         quantity = quantity_by_product[product_id]
         if row["minimum_quantity"] > quantity:
             continue
         if row["maximum_quantity"] and row["maximum_quantity"] < quantity:
             continue
-        prices[product_id] = effective_tier_price(row)
+        item = item_by_product[product_id]
+        discount_formula = discount_formula_chain(row)
+        first_tier = first_tier_by_item.get(item["pk"])
+        applicable_moq = (
+            first_tier["minimum_quantity"]
+            if item["enforce_moq"] and first_tier
+            else ZERO
+        )
+        is_below_moq = bool(applicable_moq > 0 and quantity < applicable_moq)
+        moq_warning = (
+            f"The purchase quantity for {item['product__name']} is {quantity}, which is below "
+            f"the vendor minimum order quantity of {applicable_moq}. Increase the quantity to continue."
+            if is_below_moq
+            else ""
+        )
+        matches[product_id] = {
+            "unit_price": effective_tier_price(row),
+            "price_source": BlanketOrderLine.PriceSource.PRICELIST,
+            "applied_pricelist_id": item["pricelist_id"],
+            "applied_pricelist_tier_id": row["pk"],
+            "price_source_note": tier_source_note(item, row, discount_formula),
+            "discount_formula": discount_formula,
+            "free_product_id": row["free_product_id"],
+            "free_product_name": row["free_product__name"] or "",
+            "free_quantity": row["free_quantity"] if row["free_quantity"] > 0 else Decimal("1"),
+            "free_uom": row["free_uom"],
+            "applicable_vendor_moq": applicable_moq,
+            "is_below_vendor_moq": is_below_moq,
+            "moq_warning_message": moq_warning,
+        }
     for product_id, row in item_by_product.items():
-        prices.setdefault(product_id, row["unit_price"])
+        if row["pk"] in item_ids_with_tiers:
+            continue
+        matches.setdefault(
+            product_id,
+            {
+                "unit_price": row["unit_price"],
+                "price_source": BlanketOrderLine.PriceSource.PRICELIST,
+                "applied_pricelist_id": row["pricelist_id"],
+                "applied_pricelist_tier_id": None,
+                "price_source_note": f"Pricelist: {pricelist_label(row)}; Base item price"[:255],
+                "discount_formula": "",
+                "free_product_id": None,
+                "free_product_name": "",
+                "free_quantity": ZERO,
+                "free_uom": "",
+                "applicable_vendor_moq": ZERO,
+                "is_below_vendor_moq": False,
+                "moq_warning_message": "",
+            },
+        )
+    for product_id, row in item_by_product.items():
+        first_tier = first_tier_by_item.get(row["pk"])
+        if (
+            product_id in matches
+            or not row["enforce_moq"]
+            or first_tier is None
+            or quantity_by_product[product_id] >= first_tier["minimum_quantity"]
+        ):
+            continue
+        minimum = first_tier["minimum_quantity"]
+        quantity = quantity_by_product[product_id]
+        warning = (
+            f"The purchase quantity for {row['product__name']} is {quantity}, which is below "
+            f"the vendor minimum order quantity of {minimum}. Increase the quantity to continue."
+        )
+        matches[product_id] = {
+            "unit_price": ZERO,
+            "price_source": PurchaseQuotationLine.PriceSource.NO_MATCH,
+            "applied_pricelist_id": None,
+            "applied_pricelist_tier_id": None,
+            "price_source_note": warning[:255],
+            "discount_formula": "",
+            "free_product_id": None,
+            "free_product_name": "",
+            "free_quantity": ZERO,
+            "free_uom": "",
+            "applicable_vendor_moq": minimum,
+            "is_below_vendor_moq": True,
+            "moq_warning_message": warning,
+        }
     rows = _require_bounded(
         list(
             VendorPricelist.objects.filter(
                 company_id=company_id,
                 vendor_id=profile.pk,
-                product_id__in=product_ids - set(prices),
+                product_id__in=product_ids - set(matches),
                 active=True,
                 date_start__lte=today,
             )
             .filter(models.Q(date_end__isnull=True) | models.Q(date_end__gte=today))
             .order_by("product_id", "-minimum_quantity", "-date_start", "-pk")
-            .values("product_id", "minimum_quantity", "unit_price")[: MAX_VENDOR_PRICELIST_MATCHES + 1]
+            .values("pk", "name", "code", "product_id", "minimum_quantity", "unit_price")[
+                : MAX_VENDOR_PRICELIST_MATCHES + 1
+            ]
         ),
         limit=MAX_VENDOR_PRICELIST_MATCHES,
         label="Legacy vendor pricelist matches",
     )
     for row in rows:
         product_id = row["product_id"]
-        if product_id in prices:
+        if product_id in matches:
             continue
         if row["minimum_quantity"] <= quantity_by_product[product_id]:
-            prices[product_id] = row["unit_price"]
-    return prices
+            label = row["name"] or row["code"] or str(row["pk"])
+            matches[product_id] = {
+                "unit_price": row["unit_price"],
+                "price_source": BlanketOrderLine.PriceSource.PRICELIST,
+                "applied_pricelist_id": row["pk"],
+                "applied_pricelist_tier_id": None,
+                "price_source_note": (
+                    f"Pricelist: {label}; Minimum quantity {row['minimum_quantity']}"
+                )[:255],
+                "discount_formula": "",
+                "free_product_id": None,
+                "free_product_name": "",
+                "free_quantity": ZERO,
+                "free_uom": "",
+            }
+    return matches
+
+
+def _vendor_pricelist_prices(company_id, vendor_id, line_quantities):
+    return {
+        product_id: match["unit_price"]
+        for product_id, match in _vendor_pricelist_matches(company_id, vendor_id, line_quantities).items()
+    }
+
+
+def _vendor_pricelist_matches_many(company_id, vendor_line_quantities):
+    """Resolve many vendors' prices with fixed-query batch reads."""
+    vendor_ids = set(vendor_line_quantities)
+    if not vendor_ids:
+        return {}
+    profile_rows = list(
+        VendorProfile.objects.filter(
+            company_id=company_id,
+            partner_id__in=vendor_ids,
+        ).values("pk", "partner_id")
+    )
+    partner_by_profile_id = {row["pk"]: row["partner_id"] for row in profile_rows}
+    profile_ids = set(partner_by_profile_id)
+    matches_by_vendor = {vendor_id: {} for vendor_id in vendor_ids}
+    if not profile_ids:
+        return matches_by_vendor
+
+    quantity_by_vendor_product = defaultdict(lambda: ZERO)
+    product_ids = set()
+    for vendor_id, line_quantities in vendor_line_quantities.items():
+        for line, quantity in line_quantities.items():
+            product_ids.add(line.product_id)
+            quantity_by_vendor_product[(vendor_id, line.product_id)] += quantity
+
+    today = timezone.localdate()
+    item_rows = _require_bounded(
+        list(
+            VendorPricelistItem.objects.filter(
+                pricelist__company_id=company_id,
+                pricelist__vendor_id__in=profile_ids,
+                pricelist__active=True,
+                pricelist__status=VendorPricelist.Status.ACTIVE,
+                pricelist__date_start__lte=today,
+                product_id__in=product_ids,
+                active=True,
+            )
+            .filter(models.Q(pricelist__date_end__isnull=True) | models.Q(pricelist__date_end__gte=today))
+            .order_by(
+                "pricelist__vendor_id",
+                "product_id",
+                "-pricelist__date_start",
+                "-pricelist_id",
+                "-pk",
+            )
+            .values(
+                "pk",
+                "product_id",
+                "product__name",
+                "unit_price",
+                "enforce_moq",
+                "pricelist_id",
+                "pricelist__vendor_id",
+                "pricelist__name",
+                "pricelist__code",
+            )[: MAX_VENDOR_PRICELIST_BATCH_MATCHES + 1]
+        ),
+        limit=MAX_VENDOR_PRICELIST_BATCH_MATCHES,
+        label="Multi-vendor pricelist item matches",
+    )
+    item_by_vendor_product = {}
+    item_identity = {}
+    for row in item_rows:
+        vendor_id = partner_by_profile_id[row["pricelist__vendor_id"]]
+        key = (vendor_id, row["product_id"])
+        if key not in quantity_by_vendor_product:
+            continue
+        item_by_vendor_product.setdefault(key, row)
+        if item_by_vendor_product[key]["pk"] == row["pk"]:
+            item_identity[row["pk"]] = key
+
+    tier_rows = _require_bounded(
+        list(
+            VendorPricelistTier.objects.filter(item_id__in=item_identity)
+            .order_by("item_id", "-minimum_quantity", "-sequence", "-pk")
+            .values(
+                "pk",
+                "item_id",
+                "minimum_quantity",
+                "maximum_quantity",
+                "tier_price",
+                "sequence",
+                "discount_formula",
+                "discount_from_tier_id",
+                "free_product_id",
+                "free_product__name",
+                "free_quantity",
+                "free_uom",
+            )[: MAX_VENDOR_PRICELIST_BATCH_MATCHES + 1]
+        ),
+        limit=MAX_VENDOR_PRICELIST_BATCH_MATCHES,
+        label="Multi-vendor pricelist tier matches",
+    )
+    tier_by_id = {row["pk"]: row for row in tier_rows}
+    item_ids_with_tiers = {row["item_id"] for row in tier_rows}
+    first_tier_by_item = {}
+    for row in sorted(tier_rows, key=lambda value: (value["sequence"], value["pk"])):
+        first_tier_by_item.setdefault(row["item_id"], row)
+    effective_price_cache = {}
+
+    def effective_tier_price(row, trail=None):
+        cached = effective_price_cache.get(row["pk"])
+        if cached is not None:
+            return cached
+        trail = set(trail or ())
+        if row["pk"] in trail:
+            raise ValidationError("Vendor pricelist tier discount sources cannot be recursive.")
+        trail.add(row["pk"])
+        source = tier_by_id.get(row["discount_from_tier_id"])
+        base_price = effective_tier_price(source, trail) if source else row["tier_price"]
+        value = VendorPricelistTier.apply_discount_formula(base_price, row["discount_formula"])
+        effective_price_cache[row["pk"]] = value
+        return value
+
+    def discount_formula_chain(row, trail=None):
+        trail = set(trail or ())
+        if row["pk"] in trail:
+            raise ValidationError("Vendor pricelist tier discount sources cannot be recursive.")
+        trail.add(row["pk"])
+        source = tier_by_id.get(row["discount_from_tier_id"])
+        formulas = []
+        if source:
+            source_formula = discount_formula_chain(source, trail)
+            if source_formula:
+                formulas.append(source_formula)
+        if row["discount_formula"]:
+            formulas.append(row["discount_formula"].replace(" ", ""))
+        return "+".join(formulas)
+
+    def pricelist_label(row):
+        return row["pricelist__name"] or row["pricelist__code"] or str(row["pricelist_id"])
+
+    for row in tier_rows:
+        key = item_identity[row["item_id"]]
+        vendor_id, product_id = key
+        if product_id in matches_by_vendor[vendor_id]:
+            continue
+        quantity = quantity_by_vendor_product[key]
+        if row["minimum_quantity"] > quantity:
+            continue
+        if row["maximum_quantity"] and row["maximum_quantity"] < quantity:
+            continue
+        item = item_by_vendor_product[key]
+        discount_formula = discount_formula_chain(row)
+        first_tier = first_tier_by_item.get(item["pk"])
+        applicable_moq = (
+            first_tier["minimum_quantity"]
+            if item["enforce_moq"] and first_tier
+            else ZERO
+        )
+        is_below_moq = bool(applicable_moq > 0 and quantity < applicable_moq)
+        moq_warning = (
+            f"The purchase quantity for {item['product__name']} is {quantity}, which is below "
+            f"the vendor minimum order quantity of {applicable_moq}. Increase the quantity to continue."
+            if is_below_moq
+            else ""
+        )
+        maximum = row["maximum_quantity"] or "No limit"
+        note = (
+            f"Pricelist: {pricelist_label(item)}; Tier {row['sequence']} "
+            f"({row['minimum_quantity']} - {maximum})"
+        )
+        if discount_formula:
+            note += f"; Discount: {discount_formula}"
+        if row["free_product_id"]:
+            free_quantity = row["free_quantity"] if row["free_quantity"] > 0 else Decimal("1")
+            free_uom = f" {row['free_uom']}" if row["free_uom"] else ""
+            note += f"; Free Product: {free_quantity}{free_uom} {row['free_product__name']}"
+        matches_by_vendor[vendor_id][product_id] = {
+            "unit_price": effective_tier_price(row),
+            "price_source": PurchaseQuotationLine.PriceSource.PRICELIST,
+            "applied_pricelist_id": item["pricelist_id"],
+            "applied_pricelist_tier_id": row["pk"],
+            "price_source_note": note[:255],
+            "discount_formula": discount_formula,
+            "free_product_id": row["free_product_id"],
+            "free_product_name": row["free_product__name"] or "",
+            "free_quantity": row["free_quantity"] if row["free_quantity"] > 0 else Decimal("1"),
+            "free_uom": row["free_uom"],
+            "applicable_vendor_moq": applicable_moq,
+            "is_below_vendor_moq": is_below_moq,
+            "moq_warning_message": moq_warning,
+        }
+
+    for key, row in item_by_vendor_product.items():
+        vendor_id, product_id = key
+        if row["pk"] in item_ids_with_tiers:
+            continue
+        matches_by_vendor[vendor_id].setdefault(
+            product_id,
+            {
+                "unit_price": row["unit_price"],
+                "price_source": PurchaseQuotationLine.PriceSource.PRICELIST,
+                "applied_pricelist_id": row["pricelist_id"],
+                "applied_pricelist_tier_id": None,
+                "price_source_note": f"Pricelist: {pricelist_label(row)}; Base item price"[:255],
+                "discount_formula": "",
+                "free_product_id": None,
+                "free_product_name": "",
+                "free_quantity": ZERO,
+                "free_uom": "",
+                "applicable_vendor_moq": ZERO,
+                "is_below_vendor_moq": False,
+                "moq_warning_message": "",
+            },
+        )
+
+    for key, row in item_by_vendor_product.items():
+        vendor_id, product_id = key
+        first_tier = first_tier_by_item.get(row["pk"])
+        quantity = quantity_by_vendor_product[key]
+        if (
+            product_id in matches_by_vendor[vendor_id]
+            or not row["enforce_moq"]
+            or first_tier is None
+            or quantity >= first_tier["minimum_quantity"]
+        ):
+            continue
+        minimum = first_tier["minimum_quantity"]
+        warning = (
+            f"The purchase quantity for {row['product__name']} is {quantity}, which is below "
+            f"the vendor minimum order quantity of {minimum}. Increase the quantity to continue."
+        )
+        matches_by_vendor[vendor_id][product_id] = {
+            "unit_price": ZERO,
+            "price_source": PurchaseQuotationLine.PriceSource.NO_MATCH,
+            "applied_pricelist_id": None,
+            "applied_pricelist_tier_id": None,
+            "price_source_note": warning[:255],
+            "discount_formula": "",
+            "free_product_id": None,
+            "free_product_name": "",
+            "free_quantity": ZERO,
+            "free_uom": "",
+            "applicable_vendor_moq": minimum,
+            "is_below_vendor_moq": True,
+            "moq_warning_message": warning,
+        }
+
+    legacy_rows = _require_bounded(
+        list(
+            VendorPricelist.objects.filter(
+                company_id=company_id,
+                vendor_id__in=profile_ids,
+                product_id__in=product_ids,
+                active=True,
+                date_start__lte=today,
+            )
+            .filter(models.Q(date_end__isnull=True) | models.Q(date_end__gte=today))
+            .order_by("vendor_id", "product_id", "-minimum_quantity", "-date_start", "-pk")
+            .values(
+                "pk",
+                "name",
+                "code",
+                "vendor_id",
+                "product_id",
+                "minimum_quantity",
+                "unit_price",
+            )[: MAX_VENDOR_PRICELIST_BATCH_MATCHES + 1]
+        ),
+        limit=MAX_VENDOR_PRICELIST_BATCH_MATCHES,
+        label="Multi-vendor legacy pricelist matches",
+    )
+    for row in legacy_rows:
+        vendor_id = partner_by_profile_id[row["vendor_id"]]
+        product_id = row["product_id"]
+        key = (vendor_id, product_id)
+        if key not in quantity_by_vendor_product or product_id in matches_by_vendor[vendor_id]:
+            continue
+        if row["minimum_quantity"] <= quantity_by_vendor_product[key]:
+            label = row["name"] or row["code"] or str(row["pk"])
+            matches_by_vendor[vendor_id][product_id] = {
+                "unit_price": row["unit_price"],
+                "price_source": PurchaseQuotationLine.PriceSource.PRICELIST,
+                "applied_pricelist_id": row["pk"],
+                "applied_pricelist_tier_id": None,
+                "price_source_note": f"Pricelist: {label}; Minimum quantity {row['minimum_quantity']}"[:255],
+                "discount_formula": "",
+                "free_product_id": None,
+                "free_product_name": "",
+                "free_quantity": ZERO,
+                "free_uom": "",
+            }
+    return matches_by_vendor
+
+
+@transaction.atomic
+def update_purchase_quotation_prices(
+    purchase_quotation,
+    actor=None,
+    *,
+    line_ids=None,
+    manual_price_line_ids=(),
+    reset_manual_line_ids=(),
+    force=False,
+):
+    """Refresh editable RFQ prices and free benefits with bounded batch writes."""
+    del actor
+    locked = (
+        PurchaseQuotation.objects.select_for_update(of=("self",))
+        .select_related("vendor")
+        .get(pk=_pk(purchase_quotation))
+    )
+    if locked.status not in {
+        PurchaseQuotation.Status.DRAFT,
+        PurchaseQuotation.Status.RECEIVED,
+    }:
+        raise ValidationError("RFQ prices can only be updated while the quotation is Draft or Received.")
+
+    lines = _require_bounded(
+        list(
+            PurchaseQuotationLine.objects.select_for_update(of=("self",))
+            .filter(quotation_id=locked.pk)
+            .select_related("product", "request_line")
+            .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="RFQ",
+    )
+    paid_lines = [line for line in lines if not line.free_product]
+    paid_by_id = {line.pk: line for line in paid_lines}
+    benefits_by_source_id = defaultdict(list)
+    orphan_benefits = []
+    for line in lines:
+        if not line.free_product:
+            continue
+        if line.free_product_source_line_id:
+            benefits_by_source_id[line.free_product_source_line_id].append(line)
+        else:
+            orphan_benefits.append(line)
+
+    selected_ids = set(paid_by_id) if line_ids is None else {int(value) for value in line_ids}
+    selected_ids &= set(paid_by_id)
+    selected_product_ids = {
+        paid_by_id[line_id].product_id
+        for line_id in selected_ids
+        if paid_by_id[line_id].product_id
+    }
+    selected_ids.update(
+        line.pk for line in paid_lines if line.product_id in selected_product_ids
+    )
+    manual_price_line_ids = {int(value) for value in manual_price_line_ids} & selected_ids
+    reset_manual_line_ids = {int(value) for value in reset_manual_line_ids} & selected_ids
+
+    if not selected_ids:
+        return recalculate_purchase_quotation_total(locked)
+
+    matches = _vendor_pricelist_matches_many(
+        locked.company_id,
+        {
+            locked.vendor_id: {
+                line: line.quantity
+                for line in paid_lines
+                if line.product_id
+            }
+        },
+    ).get(locked.vendor_id, {})
+    now = timezone.now()
+    updated_paid_lines = []
+    expected_benefits = {}
+    for line in paid_lines:
+        if line.pk not in selected_ids:
+            continue
+        match = matches.get(line.product_id)
+        request_price = (
+            line.request_line.estimated_unit_price
+            if line.request_line_id and line.request_line
+            else ZERO
+        )
+        if request_price > 0:
+            line.unit_price = request_price
+            line.price_source = PurchaseQuotationLine.PriceSource.PURCHASE_REQUEST
+            line.applied_pricelist_id = None
+            line.applied_pricelist_tier_id = None
+            line.price_source_note = "Estimated Cost from Purchase Request"
+            line.discount_formula = ""
+        elif line.pk in manual_price_line_ids:
+            if match is not None and line.unit_price == match["unit_price"]:
+                line.unit_price = match["unit_price"]
+                line.price_source = match["price_source"]
+                line.applied_pricelist_id = match["applied_pricelist_id"]
+                line.applied_pricelist_tier_id = match["applied_pricelist_tier_id"]
+                line.price_source_note = match["price_source_note"]
+                line.discount_formula = match["discount_formula"]
+                if match["free_product_id"]:
+                    expected_benefits[line.pk] = match
+            else:
+                line.price_source = PurchaseQuotationLine.PriceSource.MANUAL
+                line.applied_pricelist_id = None
+                line.applied_pricelist_tier_id = None
+                line.price_source_note = "Manual price"
+                line.discount_formula = ""
+        elif (
+            line.price_source == PurchaseQuotationLine.PriceSource.MANUAL
+            and line.pk not in reset_manual_line_ids
+            and not force
+        ):
+            continue
+        elif match is None:
+            line.unit_price = ZERO
+            line.price_source = PurchaseQuotationLine.PriceSource.NO_MATCH
+            line.applied_pricelist_id = None
+            line.applied_pricelist_tier_id = None
+            line.price_source_note = "No matching vendor pricelist found."
+            line.discount_formula = ""
+        else:
+            line.unit_price = match["unit_price"]
+            line.price_source = match["price_source"]
+            line.applied_pricelist_id = match["applied_pricelist_id"]
+            line.applied_pricelist_tier_id = match["applied_pricelist_tier_id"]
+            line.price_source_note = match["price_source_note"]
+            line.discount_formula = match["discount_formula"]
+            if match["free_product_id"]:
+                expected_benefits[line.pk] = match
+        line.tax_snapshot = {}
+        line.updated_at = now
+        updated_paid_lines.append(line)
+
+    retained_benefit_count = len(orphan_benefits) + sum(
+        len(benefits)
+        for source_id, benefits in benefits_by_source_id.items()
+        if source_id not in selected_ids
+    )
+    if len(paid_lines) + retained_benefit_count + len(expected_benefits) > MAX_PURCHASE_DOCUMENT_LINES:
+        raise ValidationError(
+            f"RFQ including free-product benefits exceeds the operational limit of "
+            f"{MAX_PURCHASE_DOCUMENT_LINES} lines."
+        )
+
+    stale_benefit_ids = []
+    benefit_updates = []
+    benefit_creates = []
+    for source_id in selected_ids:
+        existing = benefits_by_source_id.get(source_id, [])
+        match = expected_benefits.get(source_id)
+        if match is None:
+            stale_benefit_ids.extend(line.pk for line in existing)
+            continue
+        source = paid_by_id[source_id]
+        benefit = existing[0] if existing else None
+        stale_benefit_ids.extend(line.pk for line in existing[1:])
+        values = {
+            "product_id": match["free_product_id"],
+            "description": match["free_product_name"] or f"Free product {match['free_product_id']}",
+            "specification": "",
+            "quantity": match["free_quantity"],
+            "unit_price": ZERO,
+            "tax_percent": ZERO,
+            "discount_percent": ZERO,
+            "tax_snapshot": {},
+            "promised_date": source.promised_date,
+            "expiry_date": source.expiry_date,
+            "request_line_id": None,
+            "blanket_order_line_id": None,
+            "free_product": True,
+            "price_source": PurchaseQuotationLine.PriceSource.PRICELIST,
+            "applied_pricelist_id": match["applied_pricelist_id"],
+            "applied_pricelist_tier_id": match["applied_pricelist_tier_id"],
+            "price_source_note": "Free product from vendor pricelist tier",
+            "discount_formula": match["discount_formula"],
+            "updated_at": now,
+        }
+        if benefit is None:
+            benefit_creates.append(
+                PurchaseQuotationLine(
+                    quotation=locked,
+                    free_product_source_line_id=source_id,
+                    **values,
+                )
+            )
+            continue
+        for field, value in values.items():
+            setattr(benefit, field, value)
+        benefit_updates.append(benefit)
+
+    if stale_benefit_ids:
+        PurchaseQuotationLine.objects.filter(pk__in=stale_benefit_ids).delete()
+    if updated_paid_lines:
+        PurchaseQuotationLine.objects.bulk_update(
+            updated_paid_lines,
+            [
+                "unit_price",
+                "price_source",
+                "applied_pricelist",
+                "applied_pricelist_tier",
+                "price_source_note",
+                "discount_formula",
+                "tax_snapshot",
+                "updated_at",
+            ],
+            batch_size=500,
+        )
+    if benefit_updates:
+        PurchaseQuotationLine.objects.bulk_update(
+            benefit_updates,
+            [
+                "product",
+                "description",
+                "specification",
+                "quantity",
+                "unit_price",
+                "tax_percent",
+                "discount_percent",
+                "tax_snapshot",
+                "promised_date",
+                "expiry_date",
+                "request_line",
+                "blanket_order_line",
+                "free_product",
+                "price_source",
+                "applied_pricelist",
+                "applied_pricelist_tier",
+                "price_source_note",
+                "discount_formula",
+                "updated_at",
+            ],
+            batch_size=500,
+        )
+    if benefit_creates:
+        PurchaseQuotationLine.objects.bulk_create(benefit_creates, batch_size=500)
+
+    refreshed = recalculate_purchase_quotation_total(locked)
+    refreshed._updated_price_line_count = len(updated_paid_lines)
+    return refreshed
+
+
+@transaction.atomic
+def update_purchase_order_prices(
+    purchase_order,
+    actor=None,
+    *,
+    line_ids=None,
+    manual_price_line_ids=(),
+    reset_manual_line_ids=(),
+    force=False,
+):
+    """Refresh editable PO prices through Purchase-owned provenance records."""
+    del actor
+    locked = (
+        PurchaseOrder.objects.select_for_update(of=("self",))
+        .select_related("vendor", "warehouse")
+        .get(pk=_pk(purchase_order))
+    )
+    if locked.status not in {PurchaseOrder.Status.DRAFT, PurchaseOrder.Status.REVISED}:
+        raise ValidationError("Purchase Order prices can only be updated while the order is Draft or Revised.")
+
+    lines = _require_bounded(
+        list(
+            PurchaseOrderLine.objects.select_for_update(of=("self",))
+            .filter(order_id=locked.pk)
+            .select_related("product", "warehouse")
+            .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="Purchase Order",
+    )
+    provenance_rows = _require_bounded(
+        list(
+            PurchaseOrderLinePricingProvenance.objects.select_for_update(of=("self",))
+            .filter(order_line_id__in=[line.pk for line in lines])
+            .select_related("order_line", "quotation_line__request_line")
+            .order_by("order_line_id")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="Purchase Order pricing provenance",
+    )
+    provenance_by_line_id = {row.order_line_id: row for row in provenance_rows}
+    paid_lines = [
+        line
+        for line in lines
+        if not (
+            line.pk in provenance_by_line_id
+            and provenance_by_line_id[line.pk].free_product
+        )
+    ]
+    paid_by_id = {line.pk: line for line in paid_lines}
+    benefits_by_source_id = defaultdict(list)
+    orphan_benefits = []
+    for row in provenance_rows:
+        if not row.free_product:
+            continue
+        if row.free_product_source_order_line_id:
+            benefits_by_source_id[row.free_product_source_order_line_id].append(row)
+        else:
+            orphan_benefits.append(row)
+
+    selected_ids = set(paid_by_id) if line_ids is None else {int(value) for value in line_ids}
+    selected_ids &= set(paid_by_id)
+    selected_product_ids = {
+        paid_by_id[line_id].product_id
+        for line_id in selected_ids
+    }
+    selected_ids.update(
+        line.pk for line in paid_lines if line.product_id in selected_product_ids
+    )
+    manual_price_line_ids = {int(value) for value in manual_price_line_ids} & selected_ids
+    reset_manual_line_ids = {int(value) for value in reset_manual_line_ids} & selected_ids
+    if not selected_ids:
+        return recalculate_purchase_order_total(locked)
+
+    matches = _vendor_pricelist_matches_many(
+        locked.company_id,
+        {
+            locked.vendor_id: {
+                line: line.quantity
+                for line in paid_lines
+            }
+        },
+    ).get(locked.vendor_id, {})
+    now = timezone.now()
+    updated_paid_lines = []
+    provenance_updates = []
+    provenance_creates = []
+    expected_benefits = {}
+    for line in paid_lines:
+        if line.pk not in selected_ids:
+            continue
+        provenance = provenance_by_line_id.get(line.pk)
+        quotation_line = provenance.quotation_line if provenance and provenance.quotation_line_id else None
+        request_line = quotation_line.request_line if quotation_line and quotation_line.request_line_id else None
+        request_price = request_line.estimated_unit_price if request_line else ZERO
+        match = matches.get(line.product_id)
+        price_values = None
+        if request_price > 0:
+            line.unit_price = request_price
+            price_values = {
+                "price_source": PurchaseQuotationLine.PriceSource.PURCHASE_REQUEST,
+                "applied_pricelist_id": None,
+                "applied_pricelist_tier_id": None,
+                "price_source_note": "Estimated Cost from Purchase Request",
+                "discount_formula": "",
+            }
+        elif line.pk in manual_price_line_ids:
+            if match is not None and line.unit_price == match["unit_price"]:
+                line.unit_price = match["unit_price"]
+                price_values = {
+                    "price_source": match["price_source"],
+                    "applied_pricelist_id": match["applied_pricelist_id"],
+                    "applied_pricelist_tier_id": match["applied_pricelist_tier_id"],
+                    "price_source_note": match["price_source_note"],
+                    "discount_formula": match["discount_formula"],
+                }
+                if match["free_product_id"]:
+                    expected_benefits[line.pk] = match
+            else:
+                price_values = {
+                    "price_source": PurchaseQuotationLine.PriceSource.MANUAL,
+                    "applied_pricelist_id": None,
+                    "applied_pricelist_tier_id": None,
+                    "price_source_note": "Manual price",
+                    "discount_formula": "",
+                }
+        elif (
+            provenance
+            and provenance.price_source == PurchaseQuotationLine.PriceSource.MANUAL
+            and line.pk not in reset_manual_line_ids
+            and not force
+        ):
+            price_values = {
+                "price_source": provenance.price_source,
+                "applied_pricelist_id": provenance.applied_pricelist_id,
+                "applied_pricelist_tier_id": provenance.applied_pricelist_tier_id,
+                "price_source_note": provenance.price_source_note,
+                "discount_formula": provenance.discount_formula,
+            }
+        elif match is None:
+            line.unit_price = ZERO
+            price_values = {
+                "price_source": PurchaseQuotationLine.PriceSource.NO_MATCH,
+                "applied_pricelist_id": None,
+                "applied_pricelist_tier_id": None,
+                "price_source_note": "No matching vendor pricelist found.",
+                "discount_formula": "",
+            }
+        else:
+            line.unit_price = match["unit_price"]
+            price_values = {
+                "price_source": match["price_source"],
+                "applied_pricelist_id": match["applied_pricelist_id"],
+                "applied_pricelist_tier_id": match["applied_pricelist_tier_id"],
+                "price_source_note": match["price_source_note"],
+                "discount_formula": match["discount_formula"],
+            }
+            if match["free_product_id"]:
+                expected_benefits[line.pk] = match
+
+        line.updated_at = now
+        updated_paid_lines.append(line)
+        if provenance is None:
+            provenance = PurchaseOrderLinePricingProvenance(
+                order_line=line,
+                tax_percent=ZERO,
+                discount_percent=ZERO,
+            )
+            provenance_by_line_id[line.pk] = provenance
+            provenance_creates.append(provenance)
+        else:
+            provenance_updates.append(provenance)
+        for field, value in price_values.items():
+            setattr(provenance, field, value)
+        provenance.applicable_vendor_moq = (
+            match.get("applicable_vendor_moq", ZERO)
+            if match is not None
+            else ZERO
+        )
+        provenance.is_below_vendor_moq = bool(
+            match and match.get("is_below_vendor_moq", False)
+        )
+        provenance.moq_warning_message = (
+            match.get("moq_warning_message", "")
+            if match is not None
+            else ""
+        )
+        provenance.tax_snapshot = {}
+        provenance.updated_at = now
+
+    retained_benefit_count = len(orphan_benefits) + sum(
+        len(rows)
+        for source_id, rows in benefits_by_source_id.items()
+        if source_id not in selected_ids
+    )
+    if len(paid_lines) + retained_benefit_count + len(expected_benefits) > MAX_PURCHASE_DOCUMENT_LINES:
+        raise ValidationError(
+            f"Purchase Order including free-product benefits exceeds the operational limit of "
+            f"{MAX_PURCHASE_DOCUMENT_LINES} lines."
+        )
+
+    stale_benefit_line_ids = []
+    benefit_line_updates = []
+    benefit_line_creates = []
+    benefit_provenance_updates = []
+    benefit_match_by_line = {}
+    for source_id in selected_ids:
+        existing = benefits_by_source_id.get(source_id, [])
+        match = expected_benefits.get(source_id)
+        if match is None:
+            stale_benefit_line_ids.extend(row.order_line_id for row in existing)
+            continue
+        source = paid_by_id[source_id]
+        benefit_provenance = existing[0] if existing else None
+        stale_benefit_line_ids.extend(row.order_line_id for row in existing[1:])
+        benefit_line = benefit_provenance.order_line if benefit_provenance else None
+        values = {
+            "product_id": match["free_product_id"],
+            "description": match["free_product_name"] or f"Free product {match['free_product_id']}",
+            "warehouse_id": source.warehouse_id or locked.warehouse_id,
+            "quantity": match["free_quantity"],
+            "unit_price": ZERO,
+            "updated_at": now,
+        }
+        if benefit_line is None:
+            benefit_line = PurchaseOrderLine(order=locked, **values)
+            benefit_line_creates.append(benefit_line)
+        else:
+            for field, value in values.items():
+                setattr(benefit_line, field, value)
+            benefit_line_updates.append(benefit_line)
+            benefit_provenance.free_product_source_order_line_id = source_id
+            benefit_provenance.price_source = PurchaseQuotationLine.PriceSource.PRICELIST
+            benefit_provenance.applied_pricelist_id = match["applied_pricelist_id"]
+            benefit_provenance.applied_pricelist_tier_id = match["applied_pricelist_tier_id"]
+            benefit_provenance.price_source_note = "Free product from vendor pricelist tier"
+            benefit_provenance.discount_formula = match["discount_formula"]
+            benefit_provenance.tax_percent = ZERO
+            benefit_provenance.discount_percent = ZERO
+            benefit_provenance.tax_snapshot = {}
+            benefit_provenance.updated_at = now
+            benefit_provenance_updates.append(benefit_provenance)
+        benefit_match_by_line[id(benefit_line)] = (source_id, match)
+
+    if stale_benefit_line_ids:
+        PurchaseOrderLine.objects.filter(pk__in=stale_benefit_line_ids).delete()
+    if updated_paid_lines:
+        PurchaseOrderLine.objects.bulk_update(
+            updated_paid_lines,
+            ["unit_price", "updated_at"],
+            batch_size=500,
+        )
+    if provenance_updates:
+        PurchaseOrderLinePricingProvenance.objects.bulk_update(
+            provenance_updates,
+            [
+                "price_source",
+                "applied_pricelist",
+                "applied_pricelist_tier",
+                "price_source_note",
+                "discount_formula",
+                "applicable_vendor_moq",
+                "is_below_vendor_moq",
+                "moq_warning_message",
+                "tax_snapshot",
+                "updated_at",
+            ],
+            batch_size=500,
+        )
+    if provenance_creates:
+        PurchaseOrderLinePricingProvenance.objects.bulk_create(provenance_creates, batch_size=500)
+    if benefit_line_updates:
+        PurchaseOrderLine.objects.bulk_update(
+            benefit_line_updates,
+            ["product", "description", "warehouse", "quantity", "unit_price", "updated_at"],
+            batch_size=500,
+        )
+    if benefit_line_creates:
+        PurchaseOrderLine.objects.bulk_create(benefit_line_creates, batch_size=500)
+        if any(line.pk is None for line in benefit_line_creates):
+            raise ValidationError("Created Purchase Order free-product provenance is incomplete.")
+        PurchaseOrderLinePricingProvenance.objects.bulk_create(
+            [
+                PurchaseOrderLinePricingProvenance(
+                    order_line=line,
+                    free_product=True,
+                    free_product_source_order_line_id=benefit_match_by_line[id(line)][0],
+                    price_source=PurchaseQuotationLine.PriceSource.PRICELIST,
+                    applied_pricelist_id=benefit_match_by_line[id(line)][1]["applied_pricelist_id"],
+                    applied_pricelist_tier_id=benefit_match_by_line[id(line)][1]["applied_pricelist_tier_id"],
+                    price_source_note="Free product from vendor pricelist tier",
+                    discount_formula=benefit_match_by_line[id(line)][1]["discount_formula"],
+                    tax_percent=ZERO,
+                    discount_percent=ZERO,
+                )
+                for line in benefit_line_creates
+            ],
+            batch_size=500,
+        )
+    if benefit_provenance_updates:
+        PurchaseOrderLinePricingProvenance.objects.bulk_update(
+            benefit_provenance_updates,
+            [
+                "free_product_source_order_line",
+                "price_source",
+                "applied_pricelist",
+                "applied_pricelist_tier",
+                "price_source_note",
+                "discount_formula",
+                "tax_percent",
+                "discount_percent",
+                "tax_snapshot",
+                "updated_at",
+            ],
+            batch_size=500,
+        )
+
+    vendor_moq_warning_message = "\n".join(
+        provenance_by_line_id[line.pk].moq_warning_message
+        for line in paid_lines
+        if line.pk in provenance_by_line_id
+        and provenance_by_line_id[line.pk].is_below_vendor_moq
+        and provenance_by_line_id[line.pk].moq_warning_message
+    )
+    control, _created = PurchaseOrderControl.objects.get_or_create(order=locked)
+    if control.vendor_moq_warning_message != vendor_moq_warning_message:
+        control.vendor_moq_warning_message = vendor_moq_warning_message
+        control.save(update_fields=["vendor_moq_warning_message", "updated_at"])
+
+    refreshed = recalculate_purchase_order_total(locked)
+    refreshed._updated_price_line_count = len(updated_paid_lines)
+    return refreshed
+
+
+def _add_purchase_rental_duration(expected_date, duration, unit):
+    duration = int(duration or 0)
+    if not expected_date or duration <= 0:
+        return None
+    unit = (unit or PurchaseOrderControl.DurationUnit.DAY).strip().lower()
+    if unit == PurchaseOrderControl.DurationUnit.DAY:
+        return expected_date + timedelta(days=duration)
+    if unit == PurchaseOrderControl.DurationUnit.WEEK:
+        return expected_date + timedelta(weeks=duration)
+    if unit == PurchaseOrderControl.DurationUnit.MONTH:
+        month_index = expected_date.month - 1 + duration
+        year = expected_date.year + month_index // 12
+        month = month_index % 12 + 1
+        day = min(expected_date.day, calendar.monthrange(year, month)[1])
+        return expected_date.replace(year=year, month=month, day=day)
+    if unit == PurchaseOrderControl.DurationUnit.YEAR:
+        year = expected_date.year + duration
+        day = min(expected_date.day, calendar.monthrange(year, expected_date.month)[1])
+        return expected_date.replace(year=year, day=day)
+    return expected_date
+
+
+def _is_rental_purchase_order(control):
+    return bool(
+        control.order_type_id
+        and (control.order_type.name or "").strip().lower() == "rental"
+    )
+
+
+@transaction.atomic
+def sync_purchase_order_rental_controls(purchase_order, line_values=None):
+    """Synchronize bounded Purchase-owned rental snapshots and calendar totals."""
+    timeline_sentinel = object()
+    previous_expected_date = getattr(
+        purchase_order,
+        "_purchase_previous_expected_date",
+        timeline_sentinel,
+    )
+    previous_expiry_date = getattr(
+        purchase_order,
+        "_purchase_previous_expiry_date",
+        timeline_sentinel,
+    )
+    locked = PurchaseOrder.objects.select_for_update(of=("self",)).get(
+        pk=_pk(purchase_order)
+    )
+    if locked.status not in {PurchaseOrder.Status.DRAFT, PurchaseOrder.Status.REVISED}:
+        raise ValidationError(
+            "Purchase Order line controls can only be synchronized while the order is Draft or Revised."
+        )
+    control, _created = (
+        PurchaseOrderControl.objects.select_for_update(of=("self",))
+        .select_related("order_type")
+        .get_or_create(order=locked)
+    )
+    lines = _require_bounded(
+        list(
+            PurchaseOrderLine.objects.select_for_update(of=("self",))
+            .filter(order_id=locked.pk)
+            .select_related("product")
+            .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="Purchase Order rental",
+    )
+    provenance_rows = _require_bounded(
+        list(
+            PurchaseOrderLinePricingProvenance.objects.select_for_update(of=("self",))
+            .filter(order_line_id__in=[line.pk for line in lines])
+            .select_related("order_line")
+            .order_by("order_line_id")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="Purchase Order rental provenance",
+    )
+    provenance_by_line_id = {row.order_line_id: row for row in provenance_rows}
+    free_line_ids = {
+        row.order_line_id for row in provenance_rows if row.free_product
+    }
+    paid_lines = [line for line in lines if line.pk not in free_line_ids]
+    paid_line_ids = {line.pk for line in paid_lines}
+    rental_product_ids = set(
+        PurchaseProductRentalProfile.objects.filter(
+            product_id__in={line.product_id for line in paid_lines},
+            is_rental=True,
+        ).values_list("product_id", flat=True)
+    )
+    normalized_values = {
+        int(line_id): dict(values)
+        for line_id, values in (line_values or {}).items()
+        if int(line_id) in paid_line_ids
+    }
+    is_rental_order = _is_rental_purchase_order(control)
+    if is_rental_order:
+        invalid_products = [
+            line.product.name
+            for line in paid_lines
+            if line.product_id not in rental_product_ids
+        ]
+        if invalid_products:
+            raise ValidationError(
+                "Rental Purchase Orders only accept rental products: "
+                + ", ".join(invalid_products)
+            )
+
+    if is_rental_order and not control.rental_duration:
+        for line in paid_lines:
+            values = normalized_values.get(line.pk, {})
+            existing = provenance_by_line_id.get(line.pk)
+            candidate_duration = values.get(
+                "rent_duration",
+                existing.rent_duration if existing else 0,
+            )
+            if candidate_duration:
+                control.rental_duration = int(candidate_duration)
+                control.duration_unit = (
+                    values.get("rental_period")
+                    or (existing.rental_period if existing else "")
+                    or PurchaseOrderControl.DurationUnit.DAY
+                )
+                break
+    if control.expected_date is None:
+        for line in paid_lines:
+            values = normalized_values.get(line.pk, {})
+            existing = provenance_by_line_id.get(line.pk)
+            candidate = values.get(
+                "expected_date",
+                existing.expected_date if existing else None,
+            )
+            if candidate:
+                control.expected_date = candidate
+                break
+    if control.expiry_date is None:
+        for line in paid_lines:
+            values = normalized_values.get(line.pk, {})
+            existing = provenance_by_line_id.get(line.pk)
+            candidate = values.get(
+                "expiry_date",
+                existing.expiry_date if existing else None,
+            )
+            if candidate:
+                control.expiry_date = candidate
+                break
+
+    now = timezone.now()
+    provenance_updates = []
+    provenance_creates = []
+    rental_total = 0
+    for line in lines:
+        provenance = provenance_by_line_id.get(line.pk)
+        if provenance is None:
+            provenance = PurchaseOrderLinePricingProvenance(
+                order_line=line,
+                tax_percent=ZERO,
+                discount_percent=ZERO,
+            )
+            provenance_by_line_id[line.pk] = provenance
+            provenance_creates.append(provenance)
+        else:
+            provenance_updates.append(provenance)
+
+        if line.pk in free_line_ids:
+            provenance.is_rental = False
+            provenance.rent_duration = 0
+            provenance.rental_end_date = None
+            provenance.total_rental_duration = 0
+            provenance.tax_snapshot = {}
+            provenance.updated_at = now
+            continue
+
+        values = normalized_values.get(line.pk, {})
+        inherited_header_duration = False
+        if "rent_duration" in values:
+            provenance.rent_duration = int(values["rent_duration"] or 0)
+        elif not provenance.rent_duration and is_rental_order:
+            provenance.rent_duration = control.rental_duration
+            inherited_header_duration = True
+        if "rental_period" in values:
+            provenance.rental_period = (
+                values["rental_period"] or PurchaseOrderControl.DurationUnit.DAY
+            )
+        elif inherited_header_duration or not provenance.rental_period:
+            provenance.rental_period = control.duration_unit
+        if "expected_date" in values:
+            provenance.expected_date = values["expected_date"]
+        elif (
+            previous_expected_date is not timeline_sentinel
+            and previous_expected_date != control.expected_date
+            and provenance.expected_date in {None, previous_expected_date}
+        ):
+            provenance.expected_date = control.expected_date
+        elif provenance.expected_date is None:
+            provenance.expected_date = control.expected_date
+        if "expiry_date" in values:
+            provenance.expiry_date = values["expiry_date"]
+        elif (
+            previous_expiry_date is not timeline_sentinel
+            and previous_expiry_date != control.expiry_date
+            and provenance.expiry_date in {None, previous_expiry_date}
+        ):
+            provenance.expiry_date = control.expiry_date
+        elif provenance.expiry_date is None:
+            provenance.expiry_date = control.expiry_date
+        if "cost_center" in values:
+            provenance.cost_center = values["cost_center"] or ""
+        for field_name, default_value in (
+            ("cost_center_mode", "single"),
+            ("cost_center_distribution_ids", []),
+            ("cost_center_distribution_data", []),
+            ("cost_center_analytic_tag_ids", []),
+        ):
+            if field_name in values:
+                setattr(provenance, field_name, values[field_name] or default_value)
+
+        provenance.is_rental = line.product_id in rental_product_ids
+        if not is_rental_order or not provenance.is_rental:
+            provenance.rental_end_date = None
+            provenance.total_rental_duration = 0
+        else:
+            duration = provenance.rent_duration or control.rental_duration
+            duration_unit = (
+                provenance.rental_period
+                if provenance.rent_duration
+                else control.duration_unit
+            )
+            base_expected_date = (
+                (provenance.expected_date or control.expected_date)
+                if control.is_multiple_expected_date
+                else control.expected_date
+            )
+            provenance.total_rental_duration = int(duration or 0)
+            provenance.rental_end_date = _add_purchase_rental_duration(
+                base_expected_date,
+                duration,
+                duration_unit,
+            )
+            if control.is_multiple_rental_duration:
+                rental_total += provenance.total_rental_duration
+        provenance.tax_snapshot = {}
+        provenance.tax_snapshot = provenance.build_tax_snapshot()
+        provenance.updated_at = now
+
+    update_fields = [
+        "is_rental",
+        "rent_duration",
+        "rental_period",
+        "expected_date",
+        "expiry_date",
+        "rental_end_date",
+        "total_rental_duration",
+        "cost_center",
+        "cost_center_mode",
+        "cost_center_distribution_ids",
+        "cost_center_distribution_data",
+        "cost_center_analytic_tag_ids",
+        "tax_snapshot",
+        "updated_at",
+    ]
+    if provenance_updates:
+        PurchaseOrderLinePricingProvenance.objects.bulk_update(
+            provenance_updates,
+            update_fields,
+            batch_size=500,
+        )
+    if provenance_creates:
+        PurchaseOrderLinePricingProvenance.objects.bulk_create(
+            provenance_creates,
+            batch_size=500,
+        )
+
+    control.total_rental_duration = (
+        rental_total
+        if is_rental_order and control.is_multiple_rental_duration
+        else control.rental_duration if is_rental_order else 0
+    )
+    control.expected_return_date = (
+        _add_purchase_rental_duration(
+            control.expected_date,
+            control.rental_duration,
+            control.duration_unit,
+        )
+        if is_rental_order and not control.is_multiple_rental_duration
+        else None
+    )
+    control.updated_at = now
+    control.save(
+        update_fields=[
+            "rental_duration",
+            "duration_unit",
+            "expected_date",
+            "expiry_date",
+            "total_rental_duration",
+            "expected_return_date",
+            "updated_at",
+        ]
+    )
+    refreshed = recalculate_purchase_order_total(locked)
+    refreshed._is_rental_order_type = is_rental_order
+    return refreshed
+
+
+def _apply_blanket_totals(blanket, lines, *, save=True):
+    """Apply HMX-style untaxed/tax/total amounts from an already bounded line set."""
+    untaxed = sum((line.untaxed_amount for line in lines), ZERO)
+    tax = sum((line.tax_amount for line in lines), ZERO)
+    blanket.agreement_value = untaxed
+    blanket.untaxed_amount = untaxed
+    blanket.tax_amount = tax
+    blanket.total_amount = untaxed + tax
+    if save:
+        blanket.save(
+            update_fields=[
+                "agreement_value",
+                "untaxed_amount",
+                "tax_amount",
+                "total_amount",
+                "updated_at",
+            ]
+        )
+    return blanket
+
+
+@transaction.atomic
+def recalculate_blanket_order_totals(blanket_order):
+    locked = BlanketOrder.objects.select_for_update(of=("self",)).get(pk=_pk(blanket_order))
+    lines = _require_bounded(
+        list(
+            BlanketOrderLine.objects.filter(blanket_order_id=locked.pk)
+            .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="Blanket Order",
+    )
+    return _apply_blanket_totals(locked, lines)
+
+
+@transaction.atomic
+def update_blanket_order_prices(blanket_order, actor=None, *, force=False):
+    """Refresh draft Blanket pricing and tier benefits with bounded batch writes."""
+    del actor
+    locked = (
+        BlanketOrder.objects.select_for_update(of=("self",))
+        .select_related("vendor")
+        .get(pk=_pk(blanket_order))
+    )
+    if locked.status != BlanketOrder.Status.DRAFT:
+        raise ValidationError("Blanket Order prices can only be updated while the agreement is in Draft.")
+    lines = _require_bounded(
+        list(
+            BlanketOrderLine.objects.select_for_update(of=("self",))
+            .filter(blanket_order_id=locked.pk)
+            .select_related("product")
+            .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="Blanket Order",
+    )
+    paid_lines = [line for line in lines if not line.free_product]
+    benefits_by_source_id = {
+        line.free_product_source_line_id: line
+        for line in lines
+        if line.free_product and line.free_product_source_line_id
+    }
+    matches = _vendor_pricelist_matches(
+        locked.company_id,
+        locked.vendor_id,
+        {line: line.agreed_quantity for line in paid_lines},
+    )
+    now = timezone.now()
+    updated_paid_lines = []
+    expected_benefits = {}
+    for line in paid_lines:
+        if line.price_source == BlanketOrderLine.PriceSource.MANUAL and not force:
+            continue
+        match = matches.get(line.product_id)
+        if match is None:
+            line.unit_price = ZERO
+            line.price_source = BlanketOrderLine.PriceSource.NO_MATCH
+            line.applied_pricelist_id = None
+            line.applied_pricelist_tier_id = None
+            line.price_source_note = "No matching vendor pricelist found."
+            line.discount_formula = ""
+        else:
+            line.unit_price = match["unit_price"]
+            line.price_source = match["price_source"]
+            line.applied_pricelist_id = match["applied_pricelist_id"]
+            line.applied_pricelist_tier_id = match["applied_pricelist_tier_id"]
+            line.price_source_note = match["price_source_note"]
+            line.discount_formula = match["discount_formula"]
+            if match["free_product_id"]:
+                expected_benefits[line.pk] = match
+        line.updated_at = now
+        updated_paid_lines.append(line)
+
+    if len(paid_lines) + len(expected_benefits) > MAX_PURCHASE_DOCUMENT_LINES:
+        raise ValidationError(
+            f"Blanket Order including free-product benefits exceeds the operational limit of "
+            f"{MAX_PURCHASE_DOCUMENT_LINES} lines."
+        )
+    stale_benefit_ids = [
+        benefit.pk
+        for source_id, benefit in benefits_by_source_id.items()
+        if source_id not in expected_benefits
+    ]
+    benefit_updates = []
+    benefit_creates = []
+    for source_id, match in expected_benefits.items():
+        benefit = benefits_by_source_id.get(source_id)
+        values = {
+            "product_id": match["free_product_id"],
+            "description": match["free_product_name"] or f"Free product {match['free_product_id']}",
+            "agreed_quantity": match["free_quantity"],
+            "released_quantity": ZERO,
+            "unit_price": ZERO,
+            "request_line_id": None,
+            "free_product": True,
+            "price_source": BlanketOrderLine.PriceSource.MANUAL,
+            "applied_pricelist_id": None,
+            "applied_pricelist_tier_id": None,
+            "price_source_note": "Free product from vendor pricelist tier",
+            "discount_formula": "",
+            "updated_at": now,
+        }
+        if benefit is None:
+            benefit_creates.append(
+                BlanketOrderLine(
+                    blanket_order=locked,
+                    free_product_source_line_id=source_id,
+                    **values,
+                )
+            )
+            continue
+        for field, value in values.items():
+            setattr(benefit, field, value)
+        benefit_updates.append(benefit)
+
+    if stale_benefit_ids:
+        BlanketOrderLine.objects.filter(pk__in=stale_benefit_ids).delete()
+    if updated_paid_lines:
+        BlanketOrderLine.objects.bulk_update(
+            updated_paid_lines,
+            [
+                "unit_price",
+                "price_source",
+                "applied_pricelist",
+                "applied_pricelist_tier",
+                "price_source_note",
+                "discount_formula",
+                "updated_at",
+            ],
+            batch_size=500,
+        )
+    if benefit_updates:
+        BlanketOrderLine.objects.bulk_update(
+            benefit_updates,
+            [
+                "product",
+                "description",
+                "agreed_quantity",
+                "released_quantity",
+                "unit_price",
+                "request_line",
+                "free_product",
+                "price_source",
+                "applied_pricelist",
+                "applied_pricelist_tier",
+                "price_source_note",
+                "discount_formula",
+                "updated_at",
+            ],
+            batch_size=500,
+        )
+    if benefit_creates:
+        BlanketOrderLine.objects.bulk_create(benefit_creates, batch_size=500)
+    _apply_blanket_totals(locked, paid_lines)
+    locked._updated_price_line_count = len(updated_paid_lines)
+    return locked
+
+
+def update_blanket_order_prices_action(instance, actor):
+    return update_blanket_order_prices(instance, actor)
 
 
 @transaction.atomic
@@ -2047,9 +4687,9 @@ def create_purchase_request_blanket_order(
         quantity_label="Blanket Order",
     )
     vendor = _validate_rfq_vendors(locked.company_id, [vendor_id])[0]
-    if date_end < timezone.localdate():
-        raise ValidationError("Blanket Order end date cannot be in the past.")
-    prices = _vendor_pricelist_prices(
+    if date_end <= timezone.localdate():
+        raise ValidationError("Blanket Order end date must be later than today.")
+    price_matches = _vendor_pricelist_matches(
         locked.company_id,
         vendor.pk,
         {line: quantities[line.pk] for line in lines},
@@ -2069,12 +4709,18 @@ def create_purchase_request_blanket_order(
         date_start=timezone.localdate(),
         date_end=date_end,
         status=BlanketOrder.Status.DRAFT,
+        **assignment_kwargs(locked),
     )
     blanket_lines = []
-    total = ZERO
+    benefit_specs = []
     for line in lines:
         quantity = quantities[line.pk]
-        unit_price = prices.get(line.product_id) or line.estimated_unit_price or Decimal("1")
+        match = price_matches.get(line.product_id)
+        unit_price = (
+            match["unit_price"]
+            if match is not None
+            else line.estimated_unit_price or Decimal("1")
+        )
         blanket_lines.append(
             BlanketOrderLine(
                 blanket_order=blanket,
@@ -2083,12 +4729,69 @@ def create_purchase_request_blanket_order(
                 description=line.description,
                 agreed_quantity=quantity,
                 unit_price=unit_price,
+                price_source=(
+                    match["price_source"]
+                    if match is not None
+                    else BlanketOrderLine.PriceSource.MANUAL
+                ),
+                applied_pricelist_id=match["applied_pricelist_id"] if match is not None else None,
+                applied_pricelist_tier_id=(
+                    match["applied_pricelist_tier_id"] if match is not None else None
+                ),
+                price_source_note=(
+                    match["price_source_note"]
+                    if match is not None
+                    else "Estimated cost from Purchase Request"
+                ),
+                discount_formula=match["discount_formula"] if match is not None else "",
+                **assignment_kwargs(line, parent=locked),
             )
         )
-        total += quantity * unit_price
+        if match is not None and match["free_product_id"]:
+            benefit_specs.append((line.pk, match))
+    if len(blanket_lines) + len(benefit_specs) > MAX_PURCHASE_DOCUMENT_LINES:
+        raise ValidationError(
+            f"Blanket Order including free-product benefits exceeds the operational limit of "
+            f"{MAX_PURCHASE_DOCUMENT_LINES} lines."
+        )
     BlanketOrderLine.objects.bulk_create(blanket_lines, batch_size=500)
-    blanket.agreement_value = total
-    blanket.save(update_fields=["agreement_value", "updated_at"])
+    paid_by_request_line_id = {line.request_line_id: line for line in blanket_lines}
+    if any(line.pk is None for line in blanket_lines):
+        paid_by_request_line_id = {
+            line.request_line_id: line
+            for line in _require_bounded(
+                list(
+                    BlanketOrderLine.objects.filter(
+                        blanket_order=blanket,
+                        request_line_id__in=paid_by_request_line_id,
+                        free_product=False,
+                    ).order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+                ),
+                limit=MAX_PURCHASE_DOCUMENT_LINES,
+                label="Created Blanket Order",
+            )
+        }
+    if len(paid_by_request_line_id) != len(blanket_lines):
+        raise ValidationError("Created Blanket Order line provenance is incomplete.")
+    free_lines = []
+    for request_line_id, match in benefit_specs:
+        source_line = paid_by_request_line_id[request_line_id]
+        free_lines.append(
+            BlanketOrderLine(
+                blanket_order=blanket,
+                product_id=match["free_product_id"],
+                description=match["free_product_name"] or f"Free product {match['free_product_id']}",
+                agreed_quantity=match["free_quantity"],
+                unit_price=ZERO,
+                free_product=True,
+                free_product_source_line=source_line,
+                price_source=BlanketOrderLine.PriceSource.MANUAL,
+                price_source_note="Free product from vendor pricelist tier",
+            )
+        )
+    if free_lines:
+        BlanketOrderLine.objects.bulk_create(free_lines, batch_size=500)
+    _apply_blanket_totals(blanket, blanket_lines)
     now = timezone.now()
     for line in lines:
         line.blanket_quantity += quantities[line.pk]
@@ -2154,6 +4857,7 @@ def create_purchase_request_tender(
         close_date=close_date,
         budget_amount=sum((quantities[line.pk] * line.estimated_unit_price for line in lines), ZERO),
         status=PurchaseTender.Status.DRAFT,
+        **assignment_kwargs(locked),
     )
     PurchaseTenderLine.objects.bulk_create(
         [
@@ -2166,6 +4870,7 @@ def create_purchase_request_tender(
                 quantity=quantities[line.pk],
                 target_unit_price=line.estimated_unit_price,
                 delivery_date=locked.required_date,
+                **assignment_kwargs(line, parent=locked),
             )
             for line in lines
         ],
@@ -2283,6 +4988,46 @@ def _recompute_request_blanket_progress(request_line_ids):
     )
 
 
+def _blanket_quantity_controlled(blanket):
+    return blanket.agreement_policy == BlanketOrder.AgreementPolicy.QUANTITY_PERIOD
+
+
+def _blanket_period_active(blanket, *, as_of=None):
+    current_date = as_of or timezone.localdate()
+    return bool(
+        blanket.date_start
+        and blanket.date_end
+        and blanket.date_start <= current_date < blanket.date_end
+    )
+
+
+def _validate_blanket_dates(blanket):
+    if blanket.date_end <= blanket.date_start:
+        raise ValidationError("Blanket Order end date must be later than its start date.")
+    if blanket.date_end == timezone.localdate():
+        raise ValidationError("Blanket Order end date cannot be today's date.")
+
+
+def _validate_blanket_release_period(blanket):
+    current_date = timezone.localdate()
+    if blanket.date_start > current_date:
+        raise ValidationError(
+            f"Release can only be created on or after the Start Date for Blanket Order {blanket.number}."
+        )
+    if blanket.date_end <= current_date:
+        raise ValidationError(
+            f"Release can only be created before the End Date for Blanket Order {blanket.number}."
+        )
+
+
+def _blanket_has_remaining_quantity(blanket_id):
+    return BlanketOrderLine.objects.filter(
+        blanket_order_id=blanket_id,
+        free_product=False,
+        released_quantity__lt=F("agreed_quantity"),
+    ).exists()
+
+
 @transaction.atomic
 def create_blanket_order_rfq(blanket_order, *, releases=None, actor=None):
     del actor
@@ -2293,6 +5038,7 @@ def create_blanket_order_rfq(blanket_order, *, releases=None, actor=None):
     )
     if blanket.status not in {BlanketOrder.Status.CONFIRMED, BlanketOrder.Status.RUNNING}:
         raise ValidationError("RFQ can only be created from a confirmed or running Blanket Order.")
+    _validate_blanket_release_period(blanket)
     lines = _require_bounded(
         list(
             BlanketOrderLine.objects.select_for_update(of=("self",))
@@ -2303,22 +5049,44 @@ def create_blanket_order_rfq(blanket_order, *, releases=None, actor=None):
         limit=MAX_PURCHASE_DOCUMENT_LINES,
         label="Blanket Order",
     )
+    paid_lines = [line for line in lines if not line.free_product]
+    benefits_by_source_id = {
+        line.free_product_source_line_id: line
+        for line in lines
+        if line.free_product and line.free_product_source_line_id
+    }
+    explicit_releases = releases is not None
     release_map = {int(key): Decimal(str(value)) for key, value in (releases or {}).items()}
+    unknown_line_ids = set(release_map).difference(line.pk for line in paid_lines)
+    if unknown_line_ids:
+        raise ValidationError("Every Blanket Order release line must be a paid line in the selected agreement.")
+    quantity_controlled = _blanket_quantity_controlled(blanket)
     selected = []
-    for line in lines:
+    for line in paid_lines:
         remaining = line.agreed_quantity - line.released_quantity
-        quantity = release_map.get(line.pk, remaining)
+        default_quantity = remaining if quantity_controlled else line.agreed_quantity
+        quantity = release_map.get(line.pk, ZERO if explicit_releases else default_quantity)
         if quantity < 0:
             raise ValidationError("Release quantity cannot be negative.")
         if quantity == 0:
             continue
-        if quantity > remaining:
+        if quantity_controlled and quantity > remaining:
             raise ValidationError(
                 f"Release quantity cannot exceed remaining quantity ({remaining}) for {line.product}."
             )
         selected.append((line, quantity))
     if not selected:
         raise ValidationError("No remaining Blanket Order quantity is available to release.")
+    selected_benefits = [
+        benefits_by_source_id[line.pk]
+        for line, _quantity in selected
+        if line.pk in benefits_by_source_id
+    ]
+    if len(selected) + len(selected_benefits) > MAX_PURCHASE_DOCUMENT_LINES:
+        raise ValidationError(
+            f"RFQ including free-product benefits exceeds the operational limit of "
+            f"{MAX_PURCHASE_DOCUMENT_LINES} lines."
+        )
     request_ids = {
         line.request_line.request_id
         for line, _quantity in selected
@@ -2348,13 +5116,55 @@ def create_blanket_order_rfq(blanket_order, *, releases=None, actor=None):
             description=line.description or line.product.name,
             quantity=quantity,
             unit_price=line.unit_price,
+            tax_percent=line.tax_percent,
             promised_date=blanket.date_end,
             expiry_date=quotation.response_deadline,
+            price_source=line.price_source,
+            applied_pricelist_id=line.applied_pricelist_id,
+            applied_pricelist_tier_id=line.applied_pricelist_tier_id,
+            price_source_note=line.price_source_note,
+            discount_formula=line.discount_formula,
         )
         for line, quantity in selected
     ]
     PurchaseQuotationLine.objects.bulk_create(quote_lines, batch_size=500)
-    quotation.quoted_amount = sum((line.quantity * line.unit_price for line in quote_lines), ZERO)
+    paid_quote_by_blanket_line_id = {line.blanket_order_line_id: line for line in quote_lines}
+    if any(line.pk is None for line in quote_lines):
+        paid_quote_by_blanket_line_id = {
+            line.blanket_order_line_id: line
+            for line in PurchaseQuotationLine.objects.filter(
+                quotation=quotation,
+                blanket_order_line_id__in=paid_quote_by_blanket_line_id,
+                free_product=False,
+            )
+        }
+    benefit_quote_lines = []
+    for benefit in selected_benefits:
+        source_quote_line = paid_quote_by_blanket_line_id[benefit.free_product_source_line_id]
+        benefit_quote_lines.append(
+            PurchaseQuotationLine(
+                quotation=quotation,
+                blanket_order_line=benefit,
+                product_id=benefit.product_id,
+                description=benefit.description or benefit.product.name,
+                quantity=benefit.agreed_quantity,
+                unit_price=ZERO,
+                tax_percent=benefit.tax_percent,
+                promised_date=blanket.date_end,
+                expiry_date=quotation.response_deadline,
+                free_product=True,
+                free_product_source_line=source_quote_line,
+                price_source=benefit.price_source,
+                applied_pricelist_id=benefit.applied_pricelist_id,
+                applied_pricelist_tier_id=benefit.applied_pricelist_tier_id,
+                price_source_note=benefit.price_source_note,
+                discount_formula=benefit.discount_formula,
+            )
+        )
+    if benefit_quote_lines:
+        PurchaseQuotationLine.objects.bulk_create(benefit_quote_lines, batch_size=500)
+    all_quote_lines = quote_lines + benefit_quote_lines
+    quotation.quoted_amount = sum((line.total_amount for line in all_quote_lines), ZERO)
     quotation.save(update_fields=["quoted_amount", "updated_at"])
     now = timezone.now()
     request_lines = {}
@@ -2419,7 +5229,14 @@ def _cancel_blanket_rfq_release(quotation):
     request_line_ids = [row["request_line_id"] for row in released_rows if row["request_line_id"]]
     _recompute_request_blanket_progress(request_line_ids)
     blanket = BlanketOrder.objects.select_for_update().get(pk=quotation.blanket_order_id)
-    if blanket.status == BlanketOrder.Status.CLOSED and blanket.auto_closed:
+    can_reopen = (
+        _blanket_period_active(blanket)
+        and (
+            not _blanket_quantity_controlled(blanket)
+            or _blanket_has_remaining_quantity(blanket.pk)
+        )
+    )
+    if blanket.status == BlanketOrder.Status.CLOSED and blanket.auto_closed and can_reopen:
         blanket.status = BlanketOrder.Status.RUNNING
         blanket.auto_closed = False
         blanket.save(update_fields=["status", "auto_closed", "updated_at"])
@@ -2431,10 +5248,9 @@ def _auto_close_blanket_after_rfq_selection(blanket_order_id):
     blanket = BlanketOrder.objects.select_for_update().get(pk=blanket_order_id)
     if blanket.status not in {BlanketOrder.Status.CONFIRMED, BlanketOrder.Status.RUNNING}:
         return
-    has_remaining = BlanketOrderLine.objects.filter(
-        blanket_order_id=blanket.pk,
-        released_quantity__lt=F("agreed_quantity"),
-    ).exists()
+    if not _blanket_quantity_controlled(blanket):
+        return
+    has_remaining = _blanket_has_remaining_quantity(blanket.pk)
     has_unselected_release = PurchaseQuotation.objects.filter(
         blanket_order_id=blanket.pk,
         status__in=[
@@ -2447,6 +5263,67 @@ def _auto_close_blanket_after_rfq_selection(blanket_order_id):
         blanket.status = BlanketOrder.Status.CLOSED
         blanket.auto_closed = True
         blanket.save(update_fields=["status", "auto_closed", "updated_at"])
+
+
+def _cancel_open_blanket_quotations(blanket):
+    open_statuses = [
+        PurchaseQuotation.Status.DRAFT,
+        PurchaseQuotation.Status.SENT,
+        PurchaseQuotation.Status.RECEIVED,
+    ]
+    quotation_ids = _require_bounded(
+        list(
+            PurchaseQuotation.objects.select_for_update(of=("self",))
+            .filter(blanket_order_id=blanket.pk, status__in=open_statuses)
+            .order_by("pk")
+            .values_list("pk", flat=True)[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="Open Blanket Order RFQs",
+    )
+    if not quotation_ids:
+        return
+    released_rows = _require_bounded(
+        list(
+            PurchaseQuotationLine.objects.filter(
+                quotation_id__in=quotation_ids,
+                blanket_order_line__isnull=False,
+            )
+            .values("blanket_order_line_id", "request_line_id")
+            .annotate(quantity=Sum("quantity"))
+            .order_by("blanket_order_line_id", "request_line_id")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="Open Blanket Order RFQ releases",
+    )
+    blanket_lines = BlanketOrderLine.objects.select_for_update().in_bulk(
+        row["blanket_order_line_id"] for row in released_rows
+    )
+    now = timezone.now()
+    for row in released_rows:
+        blanket_line = blanket_lines.get(row["blanket_order_line_id"])
+        if blanket_line is None or blanket_line.blanket_order_id != blanket.pk:
+            raise ValidationError("Blanket Order RFQ line provenance is invalid.")
+        blanket_line.released_quantity = max(
+            blanket_line.released_quantity - (row["quantity"] or ZERO),
+            ZERO,
+        )
+        blanket_line.updated_at = now
+    if blanket_lines:
+        BlanketOrderLine.objects.bulk_update(
+            list(blanket_lines.values()),
+            ["released_quantity", "updated_at"],
+            batch_size=500,
+        )
+    PurchaseQuotation.objects.filter(pk__in=quotation_ids).update(
+        status=PurchaseQuotation.Status.CANCELLED,
+        updated_at=now,
+    )
+    request_line_ids = {
+        row["request_line_id"] for row in released_rows if row["request_line_id"]
+    }
+    _recompute_request_blanket_progress(request_line_ids)
+    _recompute_request_rfq_progress(request_line_ids)
 
 
 @transaction.atomic
@@ -2481,7 +5358,9 @@ def transition_blanket_order(blanket_order, action, actor=None):
         raise ValidationError("That Blanket Order action is not available in the current state.")
     if action == "approve":
         _validate_purchase_vendor_eligibility(locked.company_id, locked.vendor_id)
+    blanket_lines = None
     if action in {"submit", "approve"}:
+        _validate_blanket_dates(locked)
         blanket_lines = _require_bounded(
             list(
                 BlanketOrderLine.objects.filter(blanket_order_id=locked.pk)
@@ -2496,8 +5375,35 @@ def transition_blanket_order(blanket_order, action, actor=None):
             lines=blanket_lines,
             transaction_date=locked.date_start,
         )
+        if action == "approve":
+            now = timezone.now()
+            snapshot_updates = []
+            for line in blanket_lines:
+                if line.tax_snapshot:
+                    continue
+                line.tax_snapshot = line.build_tax_snapshot()
+                line.updated_at = now
+                snapshot_updates.append(line)
+            if snapshot_updates:
+                BlanketOrderLine.objects.bulk_update(
+                    snapshot_updates,
+                    ["tax_snapshot", "updated_at"],
+                    batch_size=500,
+                )
+            _apply_blanket_totals(locked, blanket_lines, save=False)
+    if action == "close":
+        _cancel_open_blanket_quotations(locked)
+    if action == "reopen":
+        if not _blanket_period_active(locked):
+            raise ValidationError("Blanket Order can only be reopened before the End Date.")
+        if _blanket_quantity_controlled(locked) and not _blanket_has_remaining_quantity(locked.pk):
+            raise ValidationError("Blanket Order cannot be reopened because no remaining quantity is available.")
     locked.status = target
     update_fields = ["status", "updated_at"]
+    if action == "approve":
+        update_fields.extend(
+            ["agreement_value", "untaxed_amount", "tax_amount", "total_amount"]
+        )
     if action in {"close", "reopen"}:
         locked.auto_closed = False
         update_fields.append("auto_closed")
@@ -3730,7 +6636,7 @@ def transition_direct_purchase(direct_purchase, action, actor=None):
         list(
             DirectPurchaseLine.objects.select_for_update(of=("self",))
             .filter(direct_purchase_id=locked.pk)
-            .select_related("product")
+            .select_related("product", "request_line", "request_line__request")
             .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
         ),
         limit=MAX_PURCHASE_DOCUMENT_LINES,
@@ -3761,7 +6667,7 @@ def transition_direct_purchase(direct_purchase, action, actor=None):
         total=locked.amount,
         notes=f"Created from Direct Purchase {locked.number}.",
     )
-    PurchaseOrderLine.objects.bulk_create(
+    order_lines = PurchaseOrderLine.objects.bulk_create(
         [
             PurchaseOrderLine(
                 order=order,
@@ -3775,10 +6681,32 @@ def transition_direct_purchase(direct_purchase, action, actor=None):
         ],
         batch_size=500,
     )
+    if any(line.pk is None for line in order_lines):
+        raise ValidationError("Created Direct Purchase Order line provenance is incomplete.")
+    PurchaseOrderLinePricingProvenance.objects.bulk_create(
+        [
+            PurchaseOrderLinePricingProvenance(
+                order_line=order_line,
+                price_source=PurchaseQuotationLine.PriceSource.MANUAL,
+                price_source_note=f"Direct Purchase {locked.number}",
+                **assignment_kwargs(
+                    direct_line.request_line,
+                    parent=locked.request,
+                ),
+            )
+            for order_line, direct_line in zip(order_lines, direct_lines)
+        ],
+        batch_size=500,
+    )
     PurchaseOrderControl.objects.create(
         order=order,
         order_type_id=locked.order_type_id,
         order_template_id=locked.order_template_id,
+        **assignment_kwargs(locked.request),
+    )
+    snapshot_purchase_order_commercial_defaults(
+        order,
+        template_override=bool(locked.order_template_id),
     )
     confirm_purchase_order(order, actor)
     setting = PurchaseSetting.objects.filter(company_id=locked.company_id).only(
@@ -4004,6 +6932,7 @@ def _generate_tender_purchase_orders(locked, winning_bids, allocations, tender_l
     ]
     PurchaseOrder.objects.bulk_create(orders, batch_size=100)
     all_order_lines = []
+    tender_source_by_order_line_object = {}
     order_totals = defaultdict(lambda: ZERO)
     order_by_bid_id = {bid.pk: order for bid, order in zip(winning_bids, orders)}
     if allocations:
@@ -4019,6 +6948,7 @@ def _generate_tender_purchase_orders(locked, winning_bids, allocations, tender_l
                 unit_price=allocation.unit_price,
             )
             all_order_lines.append(order_line)
+            tender_source_by_order_line_object[id(order_line)] = tender_line
             order_totals[order.pk] += order_line.quantity * order_line.unit_price
             if tender_line.request_line_id:
                 request_line_increments[tender_line.request_line_id] += allocation.allocated_quantity
@@ -4038,6 +6968,9 @@ def _generate_tender_purchase_orders(locked, winning_bids, allocations, tender_l
                 if (line.quantity * ratio).quantize(Decimal("0.001")) > 0
             ]
             all_order_lines.extend(order_lines)
+            tender_source_by_order_line_object.update(
+                {id(order_line): line for order_line, line in zip(order_lines, tender_lines)}
+            )
             order_totals[order.pk] = sum((line.quantity * line.unit_price for line in order_lines), ZERO)
             for line in tender_lines:
                 if line.request_line_id:
@@ -4045,6 +6978,23 @@ def _generate_tender_purchase_orders(locked, winning_bids, allocations, tender_l
                         line.quantity * ratio
                     ).quantize(Decimal("0.001"))
     PurchaseOrderLine.objects.bulk_create(all_order_lines, batch_size=500)
+    if any(line.pk is None for line in all_order_lines):
+        raise ValidationError("Created Tender Purchase Order line provenance is incomplete.")
+    PurchaseOrderLinePricingProvenance.objects.bulk_create(
+        [
+            PurchaseOrderLinePricingProvenance(
+                order_line=order_line,
+                price_source=PurchaseQuotationLine.PriceSource.MANUAL,
+                price_source_note=f"Tender {locked.number} award",
+                **assignment_kwargs(
+                    tender_source_by_order_line_object[id(order_line)],
+                    parent=locked,
+                ),
+            )
+            for order_line in all_order_lines
+        ],
+        batch_size=500,
+    )
     for order in orders:
         order.total = order_totals[order.pk]
         order.updated_at = now
@@ -4056,10 +7006,15 @@ def _generate_tender_purchase_orders(locked, winning_bids, allocations, tender_l
                 tender=locked,
                 order_type_id=locked.order_type_id,
                 order_template_id=locked.order_template_id,
+                **assignment_kwargs(locked),
             )
             for order in orders
         ],
         batch_size=100,
+    )
+    snapshot_purchase_order_commercial_defaults(
+        orders,
+        template_override=bool(locked.order_template_id),
     )
     request_lines = PurchaseRequestLine.objects.select_for_update().in_bulk(request_line_increments)
     for line_id, quantity in request_line_increments.items():
@@ -4290,7 +7245,7 @@ def transition_purchase_quotation(quotation, action, actor=None):
     del actor
     locked = (
         PurchaseQuotation.objects.select_for_update(of=("self",))
-        .select_related("request", "vendor", "warehouse")
+        .select_related("request", "blanket_order", "vendor", "warehouse")
         .get(pk=_pk(quotation))
     )
     transitions = {
@@ -4326,7 +7281,12 @@ def transition_purchase_quotation(quotation, action, actor=None):
         list(
             PurchaseQuotationLine.objects.select_for_update(of=("self",))
             .filter(quotation_id=locked.pk)
-            .select_related("product", "request_line")
+            .select_related(
+                "product",
+                "request_line",
+                "blanket_order_line",
+                "blanket_order_line__blanket_order",
+            )
             .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
         ),
         limit=MAX_PURCHASE_DOCUMENT_LINES,
@@ -4338,6 +7298,10 @@ def transition_purchase_quotation(quotation, action, actor=None):
     for line in quote_lines:
         if line.quantity <= 0 or line.unit_price < 0:
             raise ValidationError("RFQ lines require a positive quantity and a non-negative unit price.")
+        if not ZERO <= line.tax_percent <= HUNDRED:
+            raise ValidationError("RFQ line tax percentage must be between 0 and 100.")
+        if not ZERO <= line.discount_percent <= HUNDRED:
+            raise ValidationError("RFQ line discount percentage must be between 0 and 100.")
         if line.request_line_id:
             quantities_by_request_line[line.request_line_id] += line.quantity
     request_lines = PurchaseRequestLine.objects.select_for_update().in_bulk(quantities_by_request_line)
@@ -4350,6 +7314,22 @@ def transition_purchase_quotation(quotation, action, actor=None):
             raise ValidationError(
                 f"Selected RFQ quantity exceeds the approved quantity for {request_line.product or request_line.description}."
             )
+
+    now = timezone.now()
+    quote_snapshot_updates = []
+    for line in quote_lines:
+        if line.tax_snapshot:
+            continue
+        line.tax_snapshot = line.build_tax_snapshot()
+        line.updated_at = now
+        quote_snapshot_updates.append(line)
+    if quote_snapshot_updates:
+        PurchaseQuotationLine.objects.bulk_update(
+            quote_snapshot_updates,
+            ["tax_snapshot", "updated_at"],
+            batch_size=500,
+        )
+    locked.quoted_amount = sum((line.total_amount for line in quote_lines), ZERO)
 
     number = (
         allocate_purchase_document_number(
@@ -4370,7 +7350,7 @@ def transition_purchase_quotation(quotation, action, actor=None):
         total=locked.quoted_amount,
         notes=f"Created from RFQ {locked.number}.",
     )
-    PurchaseOrderLine.objects.bulk_create(
+    order_lines = PurchaseOrderLine.objects.bulk_create(
         [
             PurchaseOrderLine(
                 order=order,
@@ -4384,13 +7364,64 @@ def transition_purchase_quotation(quotation, action, actor=None):
         ],
         batch_size=500,
     )
+    if any(line.pk is None for line in order_lines):
+        order_lines = _require_bounded(
+            list(
+                PurchaseOrderLine.objects.filter(order=order)
+                .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+            ),
+            limit=MAX_PURCHASE_DOCUMENT_LINES,
+            label="Created Purchase Order",
+        )
+    if len(order_lines) != len(quote_lines):
+        raise ValidationError("Created Purchase Order line provenance is incomplete.")
+    order_line_by_quote_line_id = {
+        quote_line.pk: order_line
+        for quote_line, order_line in zip(quote_lines, order_lines)
+    }
+    PurchaseOrderLinePricingProvenance.objects.bulk_create(
+        [
+            PurchaseOrderLinePricingProvenance(
+                order_line=order_line_by_quote_line_id[line.pk],
+                quotation_line=line,
+                blanket_order_line_id=line.blanket_order_line_id,
+                free_product=line.free_product,
+                free_product_source_order_line=(
+                    order_line_by_quote_line_id.get(line.free_product_source_line_id)
+                    if line.free_product_source_line_id
+                    else None
+                ),
+                price_source=line.price_source,
+                applied_pricelist_id=line.applied_pricelist_id,
+                applied_pricelist_tier_id=line.applied_pricelist_tier_id,
+                price_source_note=line.price_source_note,
+                discount_formula=line.discount_formula,
+                tax_percent=line.tax_percent,
+                discount_percent=line.discount_percent,
+                expected_date=line.promised_date or locked.expected_date,
+                expiry_date=line.expiry_date or locked.response_deadline,
+                **assignment_kwargs(
+                    line.request_line or line.blanket_order_line,
+                    parent=locked.request or locked.blanket_order,
+                ),
+            )
+            for line in quote_lines
+        ],
+        batch_size=500,
+    )
     PurchaseOrderControl.objects.create(
         order=order,
         quotation=locked,
         order_type_id=locked.order_type_id,
         order_template_id=locked.order_template_id,
+        expiry_date=locked.response_deadline,
+        expected_date=locked.expected_date,
+        **assignment_kwargs(locked.request or locked.blanket_order),
     )
-    now = timezone.now()
+    snapshot_purchase_order_commercial_defaults(
+        order,
+        template_override=bool(locked.order_template_id),
+    )
     for line_id, quantity in quantities_by_request_line.items():
         request_line = request_lines[line_id]
         request_line.ordered_quantity += quantity
@@ -4403,7 +7434,7 @@ def transition_purchase_quotation(quotation, action, actor=None):
             batch_size=500,
         )
     locked.status = PurchaseQuotation.Status.SELECTED
-    locked.save(update_fields=["status", "updated_at"])
+    locked.save(update_fields=["quoted_amount", "status", "updated_at"])
     _auto_close_blanket_after_rfq_selection(locked.blanket_order_id)
     if locked.request_id:
         PurchaseRequest.objects.filter(pk=locked.request_id).update(
@@ -4415,18 +7446,52 @@ def transition_purchase_quotation(quotation, action, actor=None):
 
 
 def recalculate_purchase_order_total(order):
-    """Refresh one PO total with one database aggregate."""
-    total = order.lines.aggregate(
-        value=Sum(
-            ExpressionWrapper(
-                F("quantity") * F("unit_price"),
-                output_field=DecimalField(max_digits=18, decimal_places=2),
-            )
-        )
-    )["value"] or ZERO
+    """Refresh one bounded PO total, including Purchase-owned tax provenance."""
+    lines = _require_bounded(
+        list(
+            PurchaseOrderLine.objects.filter(order_id=order.pk)
+            .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="Purchase order",
+    )
+    pricing_by_line_id = {
+        row.order_line_id: row
+        for row in PurchaseOrderLinePricingProvenance.objects.filter(
+            order_line_id__in=[line.pk for line in lines]
+        ).select_related("order_line")
+    }
+    total = sum(
+        (
+            pricing_by_line_id[line.pk].total_amount
+            if line.pk in pricing_by_line_id
+            else line.subtotal
+            for line in lines
+        ),
+        ZERO,
+    )
     PurchaseOrder.objects.filter(pk=order.pk).update(total=total, updated_at=timezone.now())
     order.total = total
     return order
+
+
+def recalculate_purchase_quotation_total(quotation):
+    """Refresh one RFQ total from a bounded set of live or frozen tax amounts."""
+    lines = _require_bounded(
+        list(
+            PurchaseQuotationLine.objects.filter(quotation_id=quotation.pk)
+            .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="RFQ",
+    )
+    total = sum((line.total_amount for line in lines), ZERO)
+    PurchaseQuotation.objects.filter(pk=quotation.pk).update(
+        quoted_amount=total,
+        updated_at=timezone.now(),
+    )
+    quotation.quoted_amount = total
+    return quotation
 
 
 def save_purchase_order_lines(order, formset):
@@ -4690,6 +7755,33 @@ def _settle_full_purchase_downpayment(locked, plan, invoiceable, gross, actor):
         )
     )
     JournalLine.objects.bulk_create(journal_lines, batch_size=500)
+    from .invoice_extension import apply_purchase_cost_centers_to_journal_entry
+
+    analytic_control = PurchaseOrderControl.objects.filter(order_id=locked.pk).first()
+    analytic_by_order_line_id = {
+        row.order_line_id: row
+        for row in PurchaseOrderLinePricingProvenance.objects.filter(
+            order_line_id__in=[line.pk for line, _quantity in invoiceable]
+        )
+    }
+    apply_purchase_cost_centers_to_journal_entry(
+        entry,
+        order=locked,
+        assignments=[
+            *[
+                assignment_kwargs(
+                    analytic_by_order_line_id.get(line.pk),
+                    parent=analytic_control,
+                )
+                for line, _quantity in invoiceable
+            ],
+            assignment_kwargs(analytic_control),
+        ],
+        order_line_ids=[
+            *[line.pk for line, _quantity in invoiceable],
+            None,
+        ],
+    )
     post_journal_entry(entry, actor)
     now = timezone.now()
     for line, quantity in invoiceable:
@@ -5496,7 +8588,7 @@ def _validate_order_for_receiving(order, lines):
                 raise ValidationError("Every destination warehouse must belong to the purchase order company.")
 
 
-def _validate_vendor_pricelist_moq(order, lines):
+def _validate_vendor_pricelist_moq(order, lines, *, excluded_line_ids=()):
     profile_id = (
         VendorProfile.objects.filter(company_id=order.company_id, partner_id=order.vendor_id)
         .values_list("pk", flat=True)
@@ -5504,9 +8596,14 @@ def _validate_vendor_pricelist_moq(order, lines):
     )
     if not profile_id:
         return
+    excluded_line_ids = set(excluded_line_ids)
     quantity_by_product = defaultdict(lambda: ZERO)
     for line in lines:
+        if line.pk in excluded_line_ids:
+            continue
         quantity_by_product[line.product_id] += line.quantity
+    if not quantity_by_product:
+        return
     today = timezone.localdate()
     candidates = _require_bounded(
         list(
@@ -5644,18 +8741,107 @@ def _prepare_purchase_order_for_confirmation(locked):
         .select_related("product", "warehouse")
         .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
     ), limit=MAX_PURCHASE_DOCUMENT_LINES, label="Purchase order")
+    pricing_rows = _require_bounded(
+        list(
+            PurchaseOrderLinePricingProvenance.objects.select_for_update(of=("self",))
+            .filter(order_line_id__in=[line.pk for line in lines])
+            .select_related("order_line")
+            .order_by("order_line_id")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="Purchase order pricing provenance",
+    )
+    pricing_by_line_id = {row.order_line_id: row for row in pricing_rows}
+    free_line_ids = {
+        row.order_line_id
+        for row in pricing_rows
+        if row.free_product
+    }
+    control = (
+        PurchaseOrderControl.objects.select_for_update(of=("self",))
+        .select_related("order_type")
+        .filter(order_id=locked.pk)
+        .first()
+    )
+    validate_purchase_cost_center_batch(
+        locked.company_id,
+        [
+            assignment_kwargs(control),
+            *[
+                assignment_kwargs(row, parent=control)
+                for row in pricing_rows
+            ],
+        ],
+    )
     _validate_purchase_vendor_eligibility(locked.company_id, locked.vendor_id)
     _validate_order_for_receiving(locked, lines)
+    requires_cost_center = (
+        PurchaseAccountingSetting.objects.filter(company_id=locked.company_id)
+        .values_list("require_cost_center", flat=True)
+        .first()
+    )
+    has_header_cost_center = bool(
+        control
+        and (
+            (control.cost_center or "").strip()
+            or control.cost_center_distribution_ids
+            or control.cost_center_distribution_data
+        )
+    )
+    if requires_cost_center and not has_header_cost_center:
+        raise ValidationError("Cost Center is required before confirming this Purchase Order.")
+    if control and _is_rental_purchase_order(control):
+        paid_lines = [line for line in lines if line.pk not in free_line_ids]
+        invalid_lines = [
+            line.product.name
+            for line in paid_lines
+            if line.pk not in pricing_by_line_id
+            or not pricing_by_line_id[line.pk].is_rental
+        ]
+        if invalid_lines:
+            raise ValidationError(
+                "Rental Purchase Orders only accept rental products: "
+                + ", ".join(invalid_lines)
+            )
+        if paid_lines and not control.expected_date:
+            raise ValidationError(
+                "Expected Date is required before confirming a rental Purchase Order."
+            )
+        if paid_lines and not control.is_multiple_rental_duration and control.rental_duration <= 0:
+            raise ValidationError(
+                "Rental Duration must be greater than 0 before confirming a rental Purchase Order."
+            )
+        if control.is_multiple_rental_duration:
+            invalid_duration_lines = [
+                line.product.name
+                for line in paid_lines
+                if pricing_by_line_id[line.pk].rent_duration <= 0
+                or pricing_by_line_id[line.pk].rental_end_date is None
+            ]
+            if invalid_duration_lines:
+                raise ValidationError(
+                    "Rent Duration and Expected Return Date are required for rental lines: "
+                    + ", ".join(invalid_duration_lines)
+                )
     validate_vendor_pricelist_product_eligibility(
         document=locked,
         lines=lines,
         transaction_date=locked.order_date,
+        excluded_line_ids=free_line_ids,
     )
-    _validate_vendor_pricelist_moq(locked, lines)
-    order_total = sum((line.subtotal for line in lines), ZERO)
+    _validate_vendor_pricelist_moq(locked, lines, excluded_line_ids=free_line_ids)
+    order_total = sum(
+        (
+            pricing_by_line_id[line.pk].total_amount
+            if line.pk in pricing_by_line_id
+            else line.subtotal
+            for line in lines
+        ),
+        ZERO,
+    )
     purchase_limit = enforce_vendor_purchase_limit(order=locked, order_total=order_total)
     locked.total = order_total
-    return lines, purchase_limit
+    return lines, purchase_limit, pricing_rows
 
 
 @transaction.atomic
@@ -5686,12 +8872,27 @@ def confirm_purchase_order(order, actor=None):
         PurchaseOrder.Status.WAITING_APPROVAL,
     }:
         raise ValidationError("Only a draft or waiting-approval purchase order can be approved.")
-    lines, purchase_limit = _prepare_purchase_order_for_confirmation(locked)
+    lines, purchase_limit, pricing_rows = _prepare_purchase_order_for_confirmation(locked)
     if purchase_limit.requires_approval and locked.status == PurchaseOrder.Status.DRAFT:
         locked.status = PurchaseOrder.Status.WAITING_APPROVAL
         locked.save(update_fields=["total", "status", "updated_at"])
         return locked
+    now = timezone.now()
+    snapshot_updates = []
+    for row in pricing_rows:
+        if row.tax_snapshot:
+            continue
+        row.tax_snapshot = row.build_tax_snapshot()
+        row.updated_at = now
+        snapshot_updates.append(row)
+    if snapshot_updates:
+        PurchaseOrderLinePricingProvenance.objects.bulk_update(
+            snapshot_updates,
+            ["tax_snapshot", "updated_at"],
+            batch_size=500,
+        )
     _sync_service_work_orders_locked(locked, lines, activate=True)
+    auto_route_purchase_orders(locked, actor)
     control = PurchaseOrderControl.objects.select_for_update().filter(order_id=locked.pk).first()
     if (
         control
@@ -6215,6 +9416,17 @@ def cancel_purchase_order(order, actor, *, acknowledge_received_return=False):
     locked.status = PurchaseOrder.Status.CANCELLED
     locked.received_percentage = ZERO
     locked.save(update_fields=["status", "received_percentage", "updated_at"])
+    if control.quotation_id:
+        quotation = PurchaseQuotation.objects.select_for_update().get(pk=control.quotation_id)
+        request_line_ids = list(
+            quotation.lines.values_list("request_line_id", flat=True)
+        )
+        _cancel_blanket_rfq_release(quotation)
+        quotation.status = PurchaseQuotation.Status.CANCELLED
+        quotation.save(update_fields=["status", "updated_at"])
+        _recompute_request_rfq_progress(
+            [line_id for line_id in request_line_ids if line_id]
+        )
     sync_purchase_three_way_match({locked.pk})
     return locked
 
@@ -6347,6 +9559,13 @@ def handle_purchase_document_action(
             "reset": transition_vendor_profile,
             "blacklist": transition_vendor_profile,
             "unblacklist": transition_vendor_profile,
+        }
+    elif entity == "vendor-change-proposals":
+        handlers = {
+            "submit": transition_vendor_change_proposal,
+            "approve": transition_vendor_change_proposal,
+            "reject": transition_vendor_change_proposal,
+            "cancel": transition_vendor_change_proposal,
         }
     elif entity == "vendor-legal-documents":
         handlers = {

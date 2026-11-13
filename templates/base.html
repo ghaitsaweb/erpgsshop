@@ -12,11 +12,15 @@
 </head>
 <body data-developer-mode="{% if developer_mode %}true{% else %}false{% endif %}" data-current-route="{{ request.resolver_match.view_name|default:'' }}" data-current-app="{{ active_app_slug|default:'' }}" data-current-entity="{{ developer_page_meta.entity|default:'' }}" data-current-model="{{ developer_page_meta.model|default:'' }}" data-current-table="{{ developer_page_meta.table|default:'' }}" data-current-object-id="{{ developer_page_meta.object_id|default:'' }}">
   <div class="app-shell">
-    <aside class="sidebar">
-      <a class="brand" href="{% url 'dashboard' %}">
-        <img src="{% static 'img/logo.svg' %}" alt="ERP GSSHOP logo">
-        <span><strong>ERP</strong> GSSHOP</span>
-      </a>
+    <button class="shell-sidebar-backdrop" type="button" data-sidebar-close aria-label="Close navigation" tabindex="-1"></button>
+    <aside class="sidebar" id="shell-sidebar" data-shell-sidebar aria-label="ERP navigation">
+      <div class="sidebar-head">
+        <a class="brand" href="{% url 'dashboard' %}">
+          <img src="{% static 'img/logo.svg' %}" alt="ERP GSSHOP logo">
+          <span><strong>ERP</strong> GSSHOP</span>
+        </a>
+        <button class="sidebar-close" type="button" data-sidebar-close aria-label="Close navigation">×</button>
+      </div>
 
       {% if current_nav_app %}
         <div class="active-app-card">
@@ -109,18 +113,23 @@
 
     <main class="main-content">
       <header class="topbar">
-        <div>
-          <nav class="breadcrumbs" aria-label="Breadcrumb">
-            {% for crumb in breadcrumbs %}
-              {% if crumb.url %}<a href="{{ crumb.url }}">{{ crumb.label }}</a>{% else %}<span>{{ crumb.label }}</span>{% endif %}
-              {% if not forloop.last %}<i>›</i>{% endif %}
-            {% endfor %}
-          </nav>
-          <p class="eyebrow">Business operations</p>
-          <h1>{% block page_title %}ERP GSSHOP{% endblock %}</h1>
+        <div class="topbar-primary">
+          <button class="sidebar-toggle" type="button" data-sidebar-open aria-controls="shell-sidebar" aria-expanded="false" aria-label="Open navigation" title="Open navigation">
+            <span aria-hidden="true">•••</span>
+          </button>
+          <div class="topbar-title">
+            <nav class="breadcrumbs" aria-label="Breadcrumb">
+              {% for crumb in breadcrumbs %}
+                {% if crumb.url %}<a href="{{ crumb.url }}">{{ crumb.label }}</a>{% else %}<span>{{ crumb.label }}</span>{% endif %}
+                {% if not forloop.last %}<i>›</i>{% endif %}
+              {% endfor %}
+            </nav>
+            <p class="eyebrow">Business operations</p>
+            <h1>{% block page_title %}ERP GSSHOP{% endblock %}</h1>
+          </div>
         </div>
         <div class="topbar-actions">
-          <button class="organization-chip" type="button" data-organization-open>
+          <button class="organization-chip" type="button" data-organization-open aria-label="Change active organization" title="Change active organization">
             <span class="organization-chip-icon">⌘</span>
             <span>
               <small>Active organization</small>
@@ -293,6 +302,7 @@
       </form>
     </aside>
   {% endif %}
+  {% render_global_ui %}
   <script>
     (() => {
       const input = document.getElementById('menu-search-input');
@@ -358,6 +368,8 @@
   </script>
   <script src="{% static 'js/organization-context.js' %}"></script>
   <script src="{% static 'js/organization-form-scope.js' %}"></script>
+  <script src="{% static 'js/responsive-shell.js' %}"></script>
+  <script src="{% static 'js/smart-actions.js' %}"></script>
   {% if can_use_developer_mode %}<script src="{% static 'js/developer-mode.js' %}"></script>{% endif %}
   {% block extra_js %}{% endblock %}
 </body>

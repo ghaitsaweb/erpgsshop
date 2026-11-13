@@ -35,9 +35,11 @@ from .forms import (
 from .developer import developer_field_metadata, developer_metadata
 from .document_registry import apply_document_extensions
 from .entity_registry import discover_installed_entity_configs, merge_entity_configs
+from .list_sorting import prepare_list_sorting, query_without_page
 from .record_navigation import build_record_navigation
 from .smart_actions import (
     configure_standard_smart_actions,
+    existing_smart_action_keys,
     get_smart_action,
     smart_actions_for_source,
 )
@@ -2669,7 +2671,7 @@ def _scope_form(form, user, entity):
 
 def _record_smart_actions(request, source_entity, source):
     """Build fixed-query, permission-aware actions for one scoped record."""
-    actions = []
+    action_candidates = []
     for definition in smart_actions_for_source(source_entity):
         if definition.is_available is not None and not definition.is_available(source):
             continue
@@ -2685,14 +2687,16 @@ def _record_smart_actions(request, source_entity, source):
         related_queryset = definition.filter_queryset(target_queryset, source)
         if definition.show_count:
             count = related_queryset.count()
-        elif definition.hide_when_empty:
-            count = 1 if related_queryset.exists() else 0
         else:
             count = 0
         if definition.hide_when_empty and not count:
-            continue
+            if definition.show_count:
+                continue
+            existence_queryset = related_queryset
+        else:
+            existence_queryset = None
         query = urlencode({"smart_action": definition.key, "source_id": source.pk})
-        actions.append(
+        action_candidates.append((
             {
                 "key": definition.key,
                 "label": definition.label,
@@ -2700,9 +2704,19 @@ def _record_smart_actions(request, source_entity, source):
                 "count": count,
                 "show_count": definition.show_count,
                 "href": f"{reverse('entity_list', kwargs={'entity': definition.target_entity})}?{query}",
-            }
-        )
-    return actions
+            },
+            existence_queryset,
+        ))
+    existing_keys = existing_smart_action_keys(
+        (action["key"], queryset)
+        for action, queryset in action_candidates
+        if queryset is not None
+    )
+    return [
+        action
+        for action, queryset in action_candidates
+        if queryset is None or action["key"] in existing_keys
+    ]
 
 
 def _apply_smart_action_scope(request, target_entity, queryset, config):
@@ -2868,7 +2882,9 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
     is_derived_line_total = entity in {"cash-advances", "expenses"}
     header_form_class = (
         SaleOrderDocumentForm if entity == "sales" else
-        config.get("form") or modelform_factory(model, form=StyledModelForm, fields=document["header_fields"])
+        document.get("header_form")
+        or config.get("form")
+        or modelform_factory(model, form=StyledModelForm, fields=document["header_fields"])
     )
     form = header_form_class(request.POST or None, request.FILES or None, instance=instance)
     section_definitions = document.get("line_sections") or [{
@@ -2884,9 +2900,13 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
     for index, section in enumerate(section_definitions):
         prefix = f"document_lines_{index}" if document.get("line_sections") else "document_lines"
         line_form_class = (
-            SaleOrderLineForm if entity == "sales" and index == 0 else
-            CashAdvanceLineForm if entity == "cash-advances" and index == 0 else
-            ExpenseClaimLineForm if entity == "expenses" and index == 0 else StyledModelForm
+            section.get("line_form")
+            or document.get("line_form")
+            or (
+                SaleOrderLineForm if entity == "sales" and index == 0 else
+                CashAdvanceLineForm if entity == "cash-advances" and index == 0 else
+                ExpenseClaimLineForm if entity == "expenses" and index == 0 else StyledModelForm
+            )
         )
         configured_line_limit = section.get("line_limit", document.get("line_limit"))
         if is_derived_line_total:
@@ -3053,6 +3073,10 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
             or definition["is_available"](instance)
         )
     ]
+    for action_item in available_actions:
+        href_builder = action_item.pop("href_builder", None)
+        if href_builder is not None:
+            action_item["href"] = href_builder(instance)
     if entity == "purchase-tenders" and instance and current_status == PurchaseTender.Status.AWARDED:
         decision_actions = {
             PurchaseTender.DecisionStatus.DRAFT: {"submit-decision", "reopen-award"},
@@ -3511,7 +3535,16 @@ def entity_list(request, entity):
         for field in config["search"]:
             filters |= Q(**{f"{field}__icontains": query})
         queryset = queryset.filter(filters)
-    if not queryset.ordered:
+    columns = [
+        {"label": label, **developer_field_metadata(model, field)}
+        for field, label in config["columns"]
+    ]
+    columns, list_ordering, current_sort, current_sort_direction = prepare_list_sorting(
+        request, model, columns
+    )
+    if list_ordering:
+        queryset = queryset.order_by(*list_ordering)
+    elif not queryset.ordered:
         queryset = queryset.order_by("pk")
     page = Paginator(queryset, 25).get_page(request.GET.get("page"))
     page_items = list(page.object_list)
@@ -3519,10 +3552,6 @@ def entity_list(request, entity):
         availability = current_allocation_availability(page_items)
         for allocation in page_items:
             allocation.available_days = availability[allocation.pk]
-    columns = [
-        {"label": label, **developer_field_metadata(model, field)}
-        for field, label in config["columns"]
-    ]
     rows = [
         {
             "object": obj,
@@ -3560,6 +3589,9 @@ def entity_list(request, entity):
         "rows": rows,
         "page": page,
         "query": query,
+        "current_sort": current_sort,
+        "current_sort_direction": current_sort_direction,
+        "list_query": query_without_page(request),
         "layout": layout,
         "view_modes": view_modes,
         "kanban_groups": kanban_groups,
@@ -3576,6 +3608,11 @@ def entity_list(request, entity):
         "can_merge_sales": entity == "sales"
         and _can(request.user, "add", model, entity)
         and _can(request.user, "change", model, entity),
+        "collection_actions": [
+            action
+            for action in config.get("collection_actions", [])
+            if not action.get("requires_change") or _can(request.user, "change", model, entity)
+        ],
         "smart_action_scope": smart_action_scope,
         "scope_query": scope_query,
     }
@@ -4926,6 +4963,13 @@ def document_action(request, entity, pk, action):
                 else:
                     reverse_journal_entry(instance, request.user)
                     instance.refresh_from_db(fields=[workflow_field, "updated_at"])
+            except ValidationError as exc:
+                messages.error(request, "; ".join(exc.messages))
+                return redirect("entity_edit", entity=entity, pk=pk)
+            target_status = getattr(instance, workflow_field)
+        elif definition.get("handler") is not None:
+            try:
+                instance = definition["handler"](instance, request.user)
             except ValidationError as exc:
                 messages.error(request, "; ".join(exc.messages))
                 return redirect("entity_edit", entity=entity, pk=pk)

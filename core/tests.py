@@ -339,7 +339,7 @@ class ERPIntegrityTests(TestCase):
             if "entity" in item
         }
 
-        self.assertEqual(len(expected_entities), 81)
+        self.assertEqual(len(expected_entities), 90)
         self.assertTrue(expected_entities.issubset(ENTITY_CONFIG))
         self.assertTrue(expected_entities.issubset(navigation_entities))
         self.assertTrue(
@@ -535,8 +535,12 @@ class ERPIntegrityTests(TestCase):
 
         analytics = build_purchase_analytics("overview", scoped_user)
 
-        purchase_orders = next(metric for metric in analytics["metrics"] if metric["label"] == "Purchase Orders")
-        self.assertEqual(purchase_orders["value"], 1)
+        purchase_orders = next(
+            metric
+            for metric in analytics["metrics"]
+            if metric["label"] == "Purchase Order Value"
+        )
+        self.assertIn("1 active PO", purchase_orders["detail"])
 
     def test_employee_loan_list_query_count_does_not_grow(self):
         self.client.force_login(self.user)

@@ -358,6 +358,6 @@ class PurchaseLineMergeParityTests(TestCase):
         with CaptureQueriesContext(connection) as large_queries:
             self.assertEqual(merge_purchase_document_lines(large), 11)
 
-        self.assertEqual((len(small_queries), len(large_queries)), (15, 15))
+        self.assertEqual((len(small_queries), len(large_queries)), (18, 18))
         self.assertEqual(small.lines.get().quantity, Decimal("2"))
         self.assertEqual(large.lines.get().quantity, Decimal("12"))

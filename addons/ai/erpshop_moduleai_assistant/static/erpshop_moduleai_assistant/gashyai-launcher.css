@@ -1,0 +1,164 @@
+.gashyai-shell {
+  --gashyai-size: 68px;
+  --gashyai-z: 1040;
+  font-family: Inter, "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+}
+
+.gashyai-launcher {
+  position: fixed;
+  right: 28px;
+  bottom: 28px;
+  width: var(--gashyai-size);
+  height: var(--gashyai-size);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  overflow: visible;
+  border: 1px solid rgba(255, 255, 255, .78);
+  border-radius: 22px;
+  color: white;
+  background: linear-gradient(145deg, rgba(255, 255, 255, .95), rgba(240, 235, 255, .9));
+  box-shadow: 0 18px 45px rgba(52, 34, 122, .28), inset 0 1px 0 white;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  z-index: var(--gashyai-z);
+  isolation: isolate;
+  transition: transform .2s ease, border-radius .25s ease, box-shadow .2s ease;
+}
+
+.gashyai-launcher::before {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  border: 1px solid rgba(124, 58, 237, .17);
+  border-radius: 17px;
+  background: radial-gradient(circle at 30% 18%, #fff 0 16%, transparent 42%), linear-gradient(145deg, #f5f3ff, #ede9fe);
+  z-index: -1;
+}
+
+.gashyai-launcher:hover,
+.gashyai-launcher:focus-visible {
+  transform: translateY(-3px) scale(1.035);
+  border-radius: 25px;
+  box-shadow: 0 23px 52px rgba(67, 39, 151, .34), inset 0 1px 0 white;
+}
+
+.gashyai-launcher:focus-visible { outline: 3px solid rgba(34, 211, 238, .36); outline-offset: 4px; }
+.gashyai-launcher.is-dragging { cursor: grabbing; transform: none; transition: none; }
+.gashyai-launcher img { width: 47px; height: 47px; pointer-events: none; user-select: none; -webkit-user-drag: none; }
+
+.gashyai-launcher-glow {
+  position: absolute;
+  inset: -7px;
+  border-radius: 27px;
+  background: conic-gradient(from 210deg, transparent, rgba(34, 211, 238, .5), rgba(124, 58, 237, .42), transparent 72%);
+  filter: blur(8px);
+  opacity: .48;
+  z-index: -2;
+  animation: gashyai-breathe 3.6s ease-in-out infinite;
+}
+
+.gashyai-launcher-status {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 14px;
+  height: 14px;
+  border: 3px solid white;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 2px 7px rgba(16, 185, 129, .35);
+}
+
+@keyframes gashyai-breathe { 50% { opacity: .8; transform: scale(1.06); } }
+
+.gashyai-panel {
+  position: fixed;
+  right: 28px;
+  bottom: 110px;
+  width: min(430px, calc(100vw - 32px));
+  height: min(680px, calc(100dvh - 140px));
+  min-height: 440px;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, .72);
+  border-radius: 26px;
+  color: #20243a;
+  background: rgba(250, 250, 255, .94);
+  box-shadow: 0 28px 80px rgba(24, 17, 69, .29), 0 8px 24px rgba(24, 17, 69, .12);
+  backdrop-filter: blur(22px) saturate(1.18);
+  z-index: calc(var(--gashyai-z) + 1);
+  transform-origin: bottom right;
+  animation: gashyai-panel-in .22s cubic-bezier(.2, .8, .2, 1);
+}
+
+.gashyai-panel[hidden] { display: none; }
+@keyframes gashyai-panel-in { from { opacity: 0; transform: translateY(15px) scale(.96); } }
+
+.gashyai-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 78px;
+  padding: 14px 16px 13px;
+  color: white;
+  background: radial-gradient(circle at 78% -30%, rgba(34, 211, 238, .46), transparent 52%), linear-gradient(125deg, #24215c, #5b2bb5 60%, #7e22ce);
+}
+
+.gashyai-identity { display: flex; align-items: center; gap: 11px; }
+.gashyai-identity > span:last-child { display: grid; gap: 1px; }
+.gashyai-identity small { color: #d8d6fa; font-size: 9px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.gashyai-identity strong { font-size: 20px; letter-spacing: -.035em; }
+.gashyai-mark { width: 48px; height: 48px; display: grid; place-items: center; border: 1px solid rgba(255,255,255,.24); border-radius: 16px; background: rgba(255,255,255,.12); box-shadow: inset 0 1px 0 rgba(255,255,255,.2); }
+.gashyai-mark img { width: 39px; height: 39px; }
+.gashyai-head-actions { display: flex; align-items: center; gap: 6px; }
+.gashyai-head-actions a, .gashyai-head-actions button { width: 34px; height: 34px; display: grid; place-items: center; padding: 0; border: 1px solid rgba(255,255,255,.2); border-radius: 11px; color: white; background: rgba(255,255,255,.1); cursor: pointer; text-decoration: none; font-size: 17px; }
+.gashyai-head-actions a:hover, .gashyai-head-actions button:hover { background: rgba(255,255,255,.2); }
+
+.gashyai-session-strip { padding: 11px 12px 10px; border-bottom: 1px solid #e7e5f4; background: rgba(255,255,255,.78); }
+.gashyai-new-chat { display: inline-flex; align-items: center; gap: 6px; padding: 7px 10px; border: 0; border-radius: 10px; color: #5b21b6; background: #ede9fe; cursor: pointer; font-size: 10px; font-weight: 800; }
+.gashyai-new-chat:hover { background: #ddd6fe; }
+.gashyai-session-list { display: flex; gap: 6px; margin-top: 8px; overflow-x: auto; scrollbar-width: thin; }
+.gashyai-session-chip { flex: 0 0 auto; max-width: 150px; padding: 6px 9px; overflow: hidden; border: 1px solid #e4e1ef; border-radius: 999px; color: #697086; background: white; cursor: pointer; font-size: 9px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.gashyai-session-chip:hover, .gashyai-session-chip.is-active { border-color: #a78bfa; color: #5b21b6; background: #f5f3ff; }
+
+.gashyai-panel-body { min-height: 0; padding: 18px 17px; overflow-y: auto; overscroll-behavior: contain; background: radial-gradient(circle at 20% 0, rgba(237,233,254,.75), transparent 32%), linear-gradient(180deg, #fbfaff, #fff); }
+.gashyai-welcome { max-width: 310px; margin: 10% auto 0; text-align: center; }
+.gashyai-welcome-mark { width: 72px; height: 72px; display: grid; place-items: center; margin: 0 auto 13px; border: 1px solid #ddd6fe; border-radius: 24px; background: linear-gradient(145deg, #fff, #f2efff); box-shadow: 0 14px 35px rgba(91,33,182,.13); }
+.gashyai-welcome-mark img { width: 55px; height: 55px; }
+.gashyai-welcome h2 { margin: 0; color: #282342; font-size: 19px; letter-spacing: -.03em; }
+.gashyai-welcome p { margin: 8px 0 0; color: #777d91; font-size: 11px; line-height: 1.6; }
+
+.gashyai-message { max-width: 88%; margin: 0 0 12px; padding: 10px 12px; border: 1px solid #e7e5ee; border-radius: 15px 15px 15px 4px; color: #34384c; background: white; box-shadow: 0 4px 15px rgba(31,26,64,.045); }
+.gashyai-message.is-user { margin-left: auto; border-color: #d8ccff; border-radius: 15px 15px 4px 15px; color: #30265b; background: linear-gradient(145deg, #f3f0ff, #ece7ff); }
+.gashyai-message.is-failed { border-color: #fecaca; background: #fff7f7; }
+.gashyai-message header { display: flex; justify-content: space-between; gap: 9px; margin-bottom: 4px; color: #7c3aed; font-size: 8px; font-weight: 800; }
+.gashyai-message.is-user header { color: #5b21b6; }
+.gashyai-message p { margin: 0; font-size: 11px; line-height: 1.56; white-space: pre-wrap; overflow-wrap: anywhere; }
+.gashyai-thinking { display: inline-flex; gap: 4px; padding: 8px 10px; border-radius: 12px; background: #f2efff; }
+.gashyai-thinking i { width: 5px; height: 5px; border-radius: 50%; background: #8b5cf6; animation: gashyai-dot 1s ease-in-out infinite; }
+.gashyai-thinking i:nth-child(2) { animation-delay: .15s; }.gashyai-thinking i:nth-child(3) { animation-delay: .3s; }
+@keyframes gashyai-dot { 50% { opacity: .25; transform: translateY(-2px); } }
+
+.gashyai-panel-feedback { margin: 0; padding: 7px 15px; border-top: 1px solid #f0d8a4; color: #7c5a13; background: #fff9e9; font-size: 9px; line-height: 1.45; }
+.gashyai-panel-feedback.is-error { border-color: #fecaca; color: #9f2f37; background: #fff2f2; }
+.gashyai-panel-feedback[hidden] { display: none; }
+
+.gashyai-composer-mini { display: grid; grid-template-columns: minmax(0, 1fr) 40px; gap: 7px; padding: 12px 13px 10px; border-top: 1px solid #e9e7f1; background: white; }
+.gashyai-composer-mini textarea { width: 100%; min-height: 42px; max-height: 115px; resize: none; padding: 11px 12px; border: 1px solid #dcd9e7; border-radius: 13px; outline: none; color: #2f3347; background: #fbfbfd; font: inherit; font-size: 11px; line-height: 1.45; }
+.gashyai-composer-mini textarea:focus { border-color: #9b7bea; box-shadow: 0 0 0 3px rgba(124,58,237,.1); }
+.gashyai-composer-mini > button { width: 40px; height: 40px; align-self: center; border: 0; border-radius: 13px; color: white; background: linear-gradient(145deg, #4f46e5, #9333ea); box-shadow: 0 7px 17px rgba(91,33,182,.23); cursor: pointer; font-size: 19px; }
+.gashyai-composer-mini > button:disabled { opacity: .5; cursor: wait; }
+.gashyai-composer-mini small { grid-column: 1 / -1; color: #989cad; font-size: 8px; }
+
+@media (max-width: 620px) {
+  .gashyai-launcher { right: 18px; bottom: 18px; }
+  .gashyai-panel { right: 8px; bottom: 8px; width: calc(100vw - 16px); height: calc(100dvh - 16px); min-height: 0; border-radius: 22px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gashyai-launcher-glow, .gashyai-thinking i { animation: none; }
+  .gashyai-panel { animation: none; }
+}

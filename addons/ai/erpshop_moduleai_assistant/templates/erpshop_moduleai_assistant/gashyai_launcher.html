@@ -1,0 +1,58 @@
+{% load static %}
+<link rel="stylesheet" href="{% static 'erpshop_moduleai_assistant/gashyai-launcher.css' %}">
+<div
+  class="gashyai-shell"
+  data-gashyai-shell
+  data-state-url="{% url 'erpshop_moduleai_assistant:launcher_state' %}"
+  data-new-session-url="{% url 'erpshop_moduleai_assistant:new_session' %}"
+  data-workspace-url="{% url 'erpshop_moduleai_assistant:home' %}"
+>
+  <button
+    class="gashyai-launcher"
+    type="button"
+    data-gashyai-launcher
+    aria-label="Buka GashyAI"
+    aria-controls="gashyai-panel"
+    aria-expanded="false"
+    title="Buka GashyAI · geser untuk memindahkan"
+  >
+    <span class="gashyai-launcher-glow" aria-hidden="true"></span>
+    <img src="{% static 'erpshop_moduleai_assistant/gashyai-hat.svg' %}" alt="" draggable="false">
+    <span class="gashyai-launcher-status" aria-hidden="true"></span>
+  </button>
+
+  <aside class="gashyai-panel" id="gashyai-panel" data-gashyai-panel aria-label="GashyAI assistant" hidden>
+    <header class="gashyai-panel-head">
+      <div class="gashyai-identity">
+        <span class="gashyai-mark"><img src="{% static 'erpshop_moduleai_assistant/gashyai-hat.svg' %}" alt=""></span>
+        <span><small>ERP GSSHOP intelligence</small><strong>GashyAI</strong></span>
+      </div>
+      <div class="gashyai-head-actions">
+        <a href="{% url 'erpshop_moduleai_assistant:home' %}" data-gashyai-workspace-link title="Buka workspace penuh" aria-label="Buka workspace GashyAI penuh">↗</a>
+        <button type="button" data-gashyai-close aria-label="Tutup GashyAI">×</button>
+      </div>
+    </header>
+
+    <section class="gashyai-session-strip" aria-label="Percakapan GashyAI">
+      <button class="gashyai-new-chat" type="button" data-gashyai-new-chat><span>＋</span> Chat baru</button>
+      <div class="gashyai-session-list" data-gashyai-sessions></div>
+    </section>
+
+    <div class="gashyai-panel-body" data-gashyai-messages aria-live="polite">
+      <div class="gashyai-welcome">
+        <span class="gashyai-welcome-mark"><img src="{% static 'erpshop_moduleai_assistant/gashyai-hat.svg' %}" alt=""></span>
+        <h2>Ada yang bisa GashyAI bantu?</h2>
+        <p>Saya bekerja dalam scope company aktif dan tidak mengubah data ERP tanpa alur yang diizinkan.</p>
+      </div>
+    </div>
+
+    <p class="gashyai-panel-feedback" data-gashyai-feedback hidden></p>
+    <form class="gashyai-composer-mini" data-gashyai-composer>
+      {% csrf_token %}
+      <textarea name="content" rows="1" maxlength="50000" placeholder="Tulis pesan ke GashyAI…" aria-label="Pesan untuk GashyAI" required></textarea>
+      <button type="submit" aria-label="Kirim pesan">↑</button>
+      <small>Enter untuk kirim · Shift+Enter untuk baris baru</small>
+    </form>
+  </aside>
+</div>
+<script src="{% static 'erpshop_moduleai_assistant/gashyai-launcher.js' %}" defer></script>

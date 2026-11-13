@@ -1,12 +1,13 @@
 # HMX AI Functional Parity Matrix
 
-Source baseline: `/home/yusufmjt/hmx-human-resources-port8000-latest/hmx`, rechecked on 8 November 2026 at checkout commit `71ea0fb4cf5e`. The three AI source trees are unchanged from the earlier AI baseline commit `0cbc0c2266`.
+Source baseline: `/home/yusufmjt/hmx-human-resources-port8000-latest/hmx`. The launcher contract was rechecked read-only on 13 November 2026 at checkout commit `b59d2b9d743799729ca969e559ae992fea8b19f0`; the remaining matrix evidence retains its dated baselines below.
 
 This is a functional comparison. HMX is not imported into ERP GS Shop: the Django add-ons retain their own models, access controls, and deployment lifecycle. A row is not `MATCH` merely because it has a similar menu or model name; it needs equivalent access, data, action, and output evidence.
 
 | HMX module / behavior | ERP GS Shop add-on | Current state | Evidence / remaining work |
 | --- | --- | --- | --- |
 | `ai`: provider-backed Hashy chat, sessions, attachments, feedback, proactive greeting | `erpshop_moduleai_assistant` | PARTIAL | Company-scoped sessions support HMX-aligned rename/archive/restore, HTTPS provider policy, bounded history/files, feedback and auditable work episodes. Streaming and Hashy OS launch-token verification remain separate integrations. |
+| `ai`: movable bottom-right assistant launcher and session panel | `erpshop_moduleai_assistant` | MATCH | A module-owned global shell extension provides a viewport-clamped, pointer-draggable launcher with relative-position persistence, keyboard/focus support, bounded lazy session/message loading, new-chat/send/poll behavior, and a full-workspace link. The visual identity is intentionally an original modern ERP GSSHOP topi SVG and the local product name is GashyAI, rather than a copy of the HMX Hashy artwork. |
 | `ai`: local/base knowledge supplied to chat | `erpshop_moduleai_assistant` | PARTIAL | Company profile, reusable category vocabulary, structured company business-flow references, document chunks, request-relevant PostgreSQL full-text retrieval, source labels, and a bounded local knowledge graph are implemented. Every observed HMX Base Knowledge proxy path now has a local `/hmx_api/ai/knowledge/...` counterpart, including method aliases, upload polling, flow generation/reasoning, mappings, and graph lookup. Documents and mappings mirror HMX `division_id` through company-wide-or-Branch scope. Semantic/vector retrieval, response-fixture comparison against the live Hashy service, and live provider acceptance still require separate verification. |
 | `ai`: digest and work-profile intelligence | `erpshop_moduleai_assistant` | PARTIAL | Company-scoped digest rules, records, work episodes, aggregate signals, and bounded refresh jobs exist. HMX runtime scenario comparison remains required. |
 | `ai_coworker`: provider/model/pricing, credits, sessions, memory, subagents, cron and heartbeat | `erpshop_ai_coworker` | PARTIAL | Equivalent Django-owned model families and governed background runtime exist. A HMX-style connection check is queued in the worker and retains only state, selected model, and latency—never credentials or response text. HMX runtime fixtures and multi-channel delivery scenarios remain unverified. |
@@ -20,6 +21,35 @@ This is a functional comparison. HMX is not imported into ERP GS Shop: the Djang
 - Hashy Bridge owns external read-only ERP access and its audit trail.
 
 No add-on may bypass another add-on's ownership boundary or place provider credentials in database rows. Each new parity slice needs isolated tests, company-scope checks, bounded data access, and an HMX scenario comparison before its status becomes `MATCH`.
+
+## GashyAI floating launcher — 13 November 2026
+
+HMX evidence was taken from `hashy-session-icons.vue`,
+`hashy-session-icons.js`, `hashy-session-management.css`, and the corresponding
+launcher UI/E2E contract tests. ERP GSSHOP preserves the functional interaction
+contract while using its own product identity: the add-on registers a global UI
+fragment through the generic AppHub shell registry, and the shared base template
+contains no assistant-specific branch.
+
+The launcher is shown only when the AI application is enabled, the signed-in
+user can access it, and an active company exists. Opening it performs the first
+bounded data request; normal page rendering does not fetch chat sessions. The
+panel returns at most 12 active sessions and 50 recent messages, retains the
+existing company/user scope, and reuses the governed new-session, message queue,
+and Celery processing flow. The user can drag the 68-pixel launcher in both axes;
+its relative viewport position is persisted under
+`gashyai_launcher_position_ratio` and re-clamped after viewport changes.
+
+Validation: 5 focused launcher tests and the combined 37-test Assistant
+regression run passed; the 2-versus-12 session query-growth check remained flat.
+System check and migration drift passed, and working-scope Scale Guard reported
+zero new findings. Migration `0017_gashyai_brand` updates the default local
+display name without renaming Hashy OS compatibility identifiers. Deployment on
+port 8010 completed with healthy web, worker, and beat services; an authenticated
+live smoke test returned dashboard 200, rendered the launcher, and returned a
+successful scoped launcher-state response. Provider runtime remains disabled
+until an administrator selects a provider and mounts its secret environment
+variable, so this slice does not change the whole Assistant row from `PARTIAL`.
 
 ## HMX Base Knowledge compatibility API — 8 November 2026
 

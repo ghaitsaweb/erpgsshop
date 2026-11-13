@@ -1,5 +1,11 @@
 # HMX Purchase Approval Workflow Parity
 
+> Scope note: this document covers Purchase approval workflows only. It is not
+> evidence that the complete HMX Purchase application, its optional extension
+> modules, reports, dashboards, localizations, or every UI interaction are 1:1.
+> See `docs/hmx-purchase-full-parity-audit.md` for the current full-domain
+> evidence boundary and remaining gaps.
+
 Baseline: HMX commit `f616d3ad55f8e3fe5a353c8700e235b941d9a7ab` in
 `hmx/module/basic/core_purchase`.
 

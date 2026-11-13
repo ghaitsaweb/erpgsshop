@@ -85,7 +85,7 @@ def _active_company(request):
     context = getattr(request, "organization_context", None)
     company_id = getattr(context, "company_id", None)
     if not company_id:
-        raise PermissionError("Select an active company before using Hashy AI Assistant.")
+        raise PermissionError("Select an active company before using GashyAI.")
     return company_id
 
 
@@ -107,10 +107,10 @@ def assistant_access_required(view):
     def wrapped(request, *args, **kwargs):
         app = ERPApp.objects.filter(slug=APP_SLUG, enabled=True).first()
         if app is None:
-            messages.info(request, "Install ERPShop Module AI — Hashy Assistant before opening this workspace.")
+            messages.info(request, "Install ERPShop Module AI — GashyAI before opening this workspace.")
             return redirect("app_manager")
         if not _can_use(request.user):
-            messages.error(request, "Your role does not include Hashy AI Assistant access.")
+            messages.error(request, "Your role does not include GashyAI access.")
             return redirect("dashboard")
         try:
             _active_company(request)
@@ -208,6 +208,8 @@ def new_session(request):
     page_context = {}
     if raw_context:
         if len(raw_context.encode("utf-8")) > 12000:
+            if _is_json_request(request):
+                return JsonResponse({"ok": False, "message": "Page context must be at most 12 KB."}, status=400)
             messages.error(request, "Page context must be at most 12 KB.")
             return redirect(reverse("erpshop_moduleai_assistant:home"))
         try:
@@ -217,6 +219,8 @@ def new_session(request):
             else:
                 raise ValueError
         except ValueError:
+            if _is_json_request(request):
+                return JsonResponse({"ok": False, "message": "Page context must be a JSON object."}, status=400)
             messages.error(request, "Page context must be a JSON object.")
             return redirect(reverse("erpshop_moduleai_assistant:home"))
     session = AssistantSession.objects.create(
@@ -228,6 +232,8 @@ def new_session(request):
         page_context=page_context,
     )
     AssistantAuditEvent.objects.create(session=session, actor=request.user, event="session_created")
+    if _is_json_request(request):
+        return JsonResponse({"ok": True, "session_id": session.pk}, status=201)
     return redirect(f"{reverse('erpshop_moduleai_assistant:home')}?session={session.pk}")
 
 
@@ -259,9 +265,16 @@ def send_message(request, session_id):
     content = request.POST.get("content", "").strip()
     uploads = request.FILES.getlist("attachments")
     if not content:
-        messages.error(request, "Write a message before sending it to Hashy.")
+        if _is_json_request(request):
+            return JsonResponse({"ok": False, "message": "Tulis pesan sebelum mengirim ke GashyAI."}, status=400)
+        messages.error(request, "Write a message before sending it to GashyAI.")
         return redirect(f"{reverse('erpshop_moduleai_assistant:home')}?session={session.pk}")
     if len(uploads) > MAX_ATTACHMENTS_PER_MESSAGE:
+        if _is_json_request(request):
+            return JsonResponse(
+                {"ok": False, "message": f"Attach at most {MAX_ATTACHMENTS_PER_MESSAGE} files per message."},
+                status=400,
+            )
         messages.error(request, f"Attach at most {MAX_ATTACHMENTS_PER_MESSAGE} files per message.")
         return redirect(f"{reverse('erpshop_moduleai_assistant:home')}?session={session.pk}")
 
@@ -278,6 +291,8 @@ def send_message(request, session_id):
                 _save_attachment(session, message, upload, session.configuration)
         except ValidationError as exc:
             transaction.set_rollback(True)
+            if _is_json_request(request):
+                return JsonResponse({"ok": False, "message": "; ".join(exc.messages)}, status=400)
             messages.error(request, "; ".join(exc.messages))
             return redirect(f"{reverse('erpshop_moduleai_assistant:home')}?session={session.pk}")
         if session.title == "New conversation":
@@ -299,11 +314,18 @@ def send_message(request, session_id):
         AssistantMessage.objects.create(
             session=session,
             role=AssistantMessage.Role.ASSISTANT,
-            content="Hashy queue is unavailable. Ask an administrator to check the background worker.",
+            content="GashyAI queue is unavailable. Ask an administrator to check the background worker.",
             state=AssistantMessage.State.FAILED,
             error_message="The background worker could not be reached.",
         )
+        if _is_json_request(request):
+            return JsonResponse(
+                {"ok": False, "message": "Worker AI tidak dapat dijangkau; tidak ada request provider yang dikirim."},
+                status=503,
+            )
         messages.error(request, "The AI job could not be queued; no provider request was sent.")
+    if _is_json_request(request):
+        return JsonResponse({"ok": True, "session_id": session.pk, "message_id": message.pk}, status=202)
     return redirect(f"{reverse('erpshop_moduleai_assistant:home')}?session={session.pk}")
 
 
@@ -394,6 +416,76 @@ def session_state(request, session_id):
             "pending": pending,
             "latest_message_id": latest.pk if latest else None,
             "latest_state": latest.state if latest else None,
+        }
+    )
+
+
+@require_GET
+@assistant_access_required
+def launcher_state(request):
+    """Return a bounded chat snapshot only after the floating panel is opened."""
+    sessions_queryset = _session_queryset(request).filter(status=AssistantSession.Status.ACTIVE)
+    recent_sessions = list(sessions_queryset[:12])
+    requested_session_id = request.GET.get("session")
+    selected_session = None
+    if requested_session_id:
+        try:
+            parsed_session_id = int(requested_session_id)
+        except (TypeError, ValueError):
+            return JsonResponse({"ok": False, "message": "Percakapan tidak valid."}, status=400)
+        selected_session = next((item for item in recent_sessions if item.pk == parsed_session_id), None)
+        if selected_session is None:
+            selected_session = sessions_queryset.filter(pk=parsed_session_id).first()
+        if selected_session is None:
+            return JsonResponse({"ok": False, "message": "Percakapan tidak ditemukan pada scope aktif."}, status=404)
+    elif recent_sessions:
+        selected_session = recent_sessions[0]
+
+    message_rows = []
+    pending = False
+    configuration = selected_session.configuration if selected_session else None
+    if selected_session:
+        message_rows = list(
+            selected_session.messages.order_by("-pk").values("id", "role", "content", "state", "created_at")[:50]
+        )
+        message_rows.reverse()
+        pending = selected_session.messages.filter(state=AssistantMessage.State.PENDING).exists()
+    if configuration is None:
+        configuration = AssistantConfiguration.objects.filter(company_id=_active_company(request)).first()
+
+    workspace_url = reverse("erpshop_moduleai_assistant:home")
+    if selected_session:
+        workspace_url = f"{workspace_url}?session={selected_session.pk}"
+    return JsonResponse(
+        {
+            "ok": True,
+            "selected_session_id": selected_session.pk if selected_session else None,
+            "sessions": [
+                {
+                    "id": item.pk,
+                    "title": item.title,
+                    "last_activity_at": item.last_activity_at.isoformat(),
+                }
+                for item in recent_sessions
+            ],
+            "messages": [
+                {
+                    "id": item["id"],
+                    "role": item["role"],
+                    "content": item["content"],
+                    "state": item["state"],
+                    "time": timezone.localtime(item["created_at"]).strftime("%H:%M"),
+                }
+                for item in message_rows
+            ],
+            "pending": pending,
+            "configuration_ready": bool(configuration and configuration.is_ready),
+            "send_url": (
+                reverse("erpshop_moduleai_assistant:send_message", args=[selected_session.pk])
+                if selected_session
+                else ""
+            ),
+            "workspace_url": workspace_url,
         }
     )
 

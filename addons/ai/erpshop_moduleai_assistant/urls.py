@@ -142,6 +142,7 @@ urlpatterns = [
     path("hmx_api/ai/knowledge/base/graph/path", compat_api.graph_path_api, name="compat_graph_path"),
     path("hmx_api/ai/knowledge/base/graph/trace", compat_api.graph_trace_api, name="compat_graph_trace"),
     path("ai/assistant/", views.assistant_home, name="home"),
+    path("ai/assistant/launcher/state/", views.launcher_state, name="launcher_state"),
     path("ai/assistant/new/", views.new_session, name="new_session"),
     path("ai/assistant/<int:session_id>/send/", views.send_message, name="send_message"),
     path("ai/assistant/<int:session_id>/archive/", views.archive_session, name="archive_session"),

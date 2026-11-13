@@ -5,6 +5,36 @@ from . import views
 
 urlpatterns = [
     path(
+        "app/purchase-reports/order-analysis/",
+        views.purchase_order_analysis,
+        name="purchase_order_analysis",
+    ),
+    path(
+        "app/purchase-reports/request-analysis/",
+        views.purchase_request_analysis,
+        name="purchase_request_analysis",
+    ),
+    path(
+        "app/purchase-order-templates/duplicate/",
+        views.purchase_order_template_duplicate,
+        name="purchase_order_template_duplicate",
+    ),
+    path(
+        "app/purchase-quotations/compare/",
+        views.purchase_quotation_compare,
+        name="purchase_quotation_compare",
+    ),
+    path(
+        "app/purchase-quotations/<int:pk>/send-email/",
+        views.purchase_quotation_email,
+        name="purchase_quotation_email",
+    ),
+    path(
+        "app/purchase-quotations/<int:pk>/compare-confirm/",
+        views.purchase_quotation_compare_confirm,
+        name="purchase_quotation_compare_confirm",
+    ),
+    path(
         "app/purchase-requests/<int:pk>/approve-lines/",
         views.purchase_request_approve,
         name="purchase_request_approve",

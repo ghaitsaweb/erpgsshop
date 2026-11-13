@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · ERP GSSHOP{% endblock %}
+{% block page_title %}{{ title }}{% endblock %}
+{% block content %}
+  <section class="document-paper">
+    <div class="document-title-row">
+      <div>
+        <p class="eyebrow">Purchase communication</p>
+        <h2>{{ quotation.number }} · {{ quotation.vendor.name }}</h2>
+        <p>The RFQ PDF will be attached automatically. A delivery record is retained for every attempt.</p>
+      </div>
+      <div class="document-title-actions">
+        <a class="btn btn-secondary" href="{% url 'document_pdf' 'purchase-quotations' quotation.pk %}" target="_blank" rel="noopener">Preview PDF</a>
+      </div>
+    </div>
+
+    <form method="post" class="document-form">
+      {% csrf_token %}
+      {% if form.non_field_errors %}<div class="message error">{{ form.non_field_errors }}</div>{% endif %}
+      <div class="document-header-grid">
+        {% for field in form %}
+          <div class="field">
+            <label for="{{ field.id_for_label }}">{{ field.label }}{% if field.field.required %}<span class="required">*</span>{% endif %}</label>
+            {{ field }}
+            {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+          </div>
+        {% endfor %}
+      </div>
+      <div class="document-actions">
+        <a class="btn btn-secondary" href="{% url 'entity_edit' 'purchase-quotations' quotation.pk %}">Cancel</a>
+        <button class="btn btn-primary" type="submit">Send RFQ Email</button>
+      </div>
+    </form>
+  </section>
+  <script>
+    (() => {
+      const select = document.getElementById("id_template");
+      if (!select) return;
+      select.addEventListener("change", () => {
+        const url = new URL(window.location.href);
+        url.searchParams.set("template", select.value);
+        window.location.assign(url.toString());
+      });
+    })();
+  </script>
+{% endblock %}

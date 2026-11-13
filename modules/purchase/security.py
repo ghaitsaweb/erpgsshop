@@ -14,6 +14,7 @@ from .access import (
 VENDOR_MODELS = {
     "vendorcategory",
     "vendorprofile",
+    "vendorchangeproposal",
     "vendorlegaldocument",
     "vendorprequalification",
     "vendordocumentreview",
@@ -81,6 +82,8 @@ PURCHASE_MODELS = VENDOR_MODELS | BUDGET_MODELS | {
     "purchaseproductcategory",
     "purchaseproductvariant",
     "purchaseordercommunication",
+    "purchasemailtemplate",
+    "purchasequotationcommunication",
     "purchaseaccountingdocument",
     "purchaseaccountingline",
     "purchasestockdemand",

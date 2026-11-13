@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import DecimalField, ExpressionWrapper, F, Sum
+from django.db.models import DecimalField, ExpressionWrapper, F, Q, Sum
 from django.utils import timezone
 
 from core.models import Product, PurchaseOrder, PurchaseOrderLine
@@ -23,10 +23,17 @@ from .models import (
     PurchaseBillLineProvenance,
     PurchaseInvoiceAccounting,
     PurchaseInvoiceLineProvenance,
+    PurchaseJournalLineAnalyticSnapshot,
     PurchaseOrderControl,
+    PurchaseOrderLinePricingProvenance,
     PurchaseOrderInvoiceAccounting,
     PurchaseOrderMilestone,
     ServiceWorkOrder,
+)
+from .purchase_cost_center import (
+    MAX_COST_CENTER_ASSIGNMENTS,
+    assignment_kwargs,
+    validate_purchase_cost_center_batch,
 )
 from .three_way_match import (
     sync_purchase_three_way_match,
@@ -36,6 +43,119 @@ from .three_way_match import (
 
 ZERO = Decimal("0")
 MAX_PURCHASE_BILL_LINES = 500
+MAX_PURCHASE_JOURNAL_ANALYTIC_REFERENCES = (
+    (MAX_PURCHASE_BILL_LINES + 1) * MAX_COST_CENTER_ASSIGNMENTS
+)
+
+
+def apply_purchase_cost_centers_to_journal_entry(
+    entry,
+    *,
+    order,
+    assignments,
+    order_line_ids,
+):
+    """Materialize bounded Purchase assignments on Finance journal lines."""
+    if len(assignments) > MAX_PURCHASE_BILL_LINES + 1:
+        raise ValidationError(
+            f"Purchase journal analytic snapshot exceeds {MAX_PURCHASE_BILL_LINES + 1} lines."
+        )
+    if len(assignments) != len(order_line_ids):
+        raise ValidationError("Purchase journal analytic source mapping is incomplete.")
+    normalized = validate_purchase_cost_center_batch(order.company_id, assignments)
+    journal_lines = list(
+        entry.lines.order_by("pk")[: MAX_PURCHASE_BILL_LINES + 2]
+    )
+    if len(journal_lines) != len(normalized):
+        raise ValidationError("Purchase journal analytic lines do not match the posting plan.")
+
+    cost_center_ids = {
+        cost_center_id
+        for assignment in normalized
+        for cost_center_id in (
+            assignment["cost_center_distribution_ids"]
+            + [
+                row["cost_center_id"]
+                for row in assignment["cost_center_distribution_data"]
+            ]
+        )
+    }
+    cost_center_codes = {
+        assignment["cost_center"]
+        for assignment in normalized
+        if assignment["cost_center"]
+    }
+    from modules.finance.models import (
+        AccountingCostCenter,
+        JournalLineCostCenterAllocation,
+    )
+
+    centers = list(
+        AccountingCostCenter.objects.filter(company_id=order.company_id)
+        .filter(Q(pk__in=cost_center_ids) | Q(code__in=cost_center_codes))
+        .order_by("pk")
+        [: MAX_PURCHASE_JOURNAL_ANALYTIC_REFERENCES + 1]
+    )
+    if len(centers) > MAX_PURCHASE_JOURNAL_ANALYTIC_REFERENCES:
+        raise ValidationError("Purchase journal analytic references exceed the operational limit.")
+    center_by_id = {center.pk: center for center in centers}
+    center_by_code = {center.code: center for center in centers}
+    allocations = []
+    snapshots = []
+    changed_lines = []
+    for journal_line, assignment, order_line_id in zip(
+        journal_lines,
+        normalized,
+        order_line_ids,
+    ):
+        rows = assignment["cost_center_distribution_data"]
+        primary = center_by_code.get(assignment["cost_center"])
+        if primary is None:
+            assigned_ids = assignment["cost_center_distribution_ids"] or [
+                row["cost_center_id"] for row in rows
+            ]
+            if len(assigned_ids) == 1:
+                primary = center_by_id.get(assigned_ids[0])
+        if primary is not None and journal_line.cost_center_id != primary.pk:
+            journal_line.cost_center_id = primary.pk
+            changed_lines.append(journal_line)
+
+        allocation_rows = rows
+        if not allocation_rows and primary is not None:
+            allocation_rows = [
+                {"cost_center_id": primary.pk, "percentage": "100"}
+            ]
+        allocations.extend(
+            JournalLineCostCenterAllocation(
+                journal_line=journal_line,
+                cost_center_id=row["cost_center_id"],
+                percentage=Decimal(row["percentage"]),
+            )
+            for row in allocation_rows
+        )
+        snapshots.append(
+            PurchaseJournalLineAnalyticSnapshot(
+                journal_line=journal_line,
+                order=order,
+                order_line_id=order_line_id,
+                **assignment,
+            )
+        )
+    if changed_lines:
+        type(journal_lines[0]).objects.bulk_update(
+            changed_lines,
+            ["cost_center"],
+            batch_size=500,
+        )
+    if allocations:
+        JournalLineCostCenterAllocation.objects.bulk_create(
+            allocations,
+            batch_size=500,
+        )
+    PurchaseJournalLineAnalyticSnapshot.objects.bulk_create(
+        snapshots,
+        batch_size=500,
+    )
 
 
 def _purchase_invoice_posting(*, invoice, rows, partner_account, total, journal, actor=None):
@@ -72,7 +192,22 @@ def _purchase_invoice_posting(*, invoice, rows, partner_account, total, journal,
     }
     if len(line_sources) != len(rows):
         raise ValidationError("Every Purchase Order bill line must carry exact purchase provenance.")
+    order = provenance.order_accounting.order
+    control = PurchaseOrderControl.objects.filter(order_id=order.pk).first()
+    order_line_ids = {
+        source.order_line_id
+        for source in line_sources.values()
+        if source.order_line_id
+    }
+    pricing_by_order_line_id = {
+        row.order_line_id: row
+        for row in PurchaseOrderLinePricingProvenance.objects.filter(
+            order_line_id__in=order_line_ids
+        )
+    }
     posting_lines = []
+    posting_assignments = []
+    posting_order_line_ids = []
     if provenance.invoice_kind == PurchaseInvoiceAccounting.InvoiceKind.DOWNPAYMENT:
         if any(source.source_downpayment_line_id for source in line_sources.values()):
             raise ValidationError("Purchase down-payment bill lines cannot carry settlement provenance.")
@@ -84,6 +219,8 @@ def _purchase_invoice_posting(*, invoice, rows, partner_account, total, journal,
                 description=f"Purchase Down Payment: {provenance.order_accounting.order.number}",
             )
         )
+        posting_assignments.append(assignment_kwargs(control))
+        posting_order_line_ids.append(None)
     else:
         product_ids = {
             source.order_line.product_id
@@ -113,6 +250,13 @@ def _purchase_invoice_posting(*, invoice, rows, partner_account, total, journal,
                         description=row.description,
                     )
                 )
+                posting_assignments.append(
+                    assignment_kwargs(
+                        pricing_by_order_line_id.get(source.order_line_id),
+                        parent=control,
+                    )
+                )
+                posting_order_line_ids.append(source.order_line_id)
             elif source.source_downpayment_line_id:
                 if amount >= 0:
                     raise ValidationError("Purchase settlement down-payment applications must be negative.")
@@ -124,6 +268,8 @@ def _purchase_invoice_posting(*, invoice, rows, partner_account, total, journal,
                         description=row.description,
                     )
                 )
+                posting_assignments.append(assignment_kwargs(control))
+                posting_order_line_ids.append(None)
             else:
                 raise ValidationError("Purchase settlement lines require an order line or down-payment source.")
     if total > 0:
@@ -136,11 +282,23 @@ def _purchase_invoice_posting(*, invoice, rows, partner_account, total, journal,
                 due_date=invoice.due_date,
             )
         )
+        posting_assignments.append(assignment_kwargs(control))
+        posting_order_line_ids.append(None)
+
+    def apply_analytic_snapshots(entry):
+        apply_purchase_cost_centers_to_journal_entry(
+            entry,
+            order=order,
+            assignments=posting_assignments,
+            order_line_ids=posting_order_line_ids,
+        )
+
     return InvoicePostingOverride(
         lines=tuple(posting_lines),
         journal=commercial.purchase_journal,
         description=invoice.notes,
         total=total,
+        after_post=apply_analytic_snapshots,
     )
 
 

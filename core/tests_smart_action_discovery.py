@@ -34,7 +34,7 @@ class StandardSmartActionDiscoveryTests(SimpleTestCase):
         self.assertEqual(by_key["contacts.company"].target_entity, "companies")
         self.assertEqual(by_key["companies.contacts"].target_entity, "contacts")
         self.assertFalse(by_key["companies.contacts"].show_count)
-        self.assertFalse(by_key["companies.contacts"].hide_when_empty)
+        self.assertTrue(by_key["companies.contacts"].hide_when_empty)
 
     def test_explicit_exception_wins_for_its_direction(self):
         explicit = SmartActionDefinition(

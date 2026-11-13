@@ -55,7 +55,13 @@ def eligible_vendor_pricelist_product_ids(*, company_id, vendor_id, transaction_
     return item_ids | legacy_ids
 
 
-def validate_vendor_pricelist_product_eligibility(*, document, lines, transaction_date):
+def validate_vendor_pricelist_product_eligibility(
+    *,
+    document,
+    lines,
+    transaction_date,
+    excluded_line_ids=(),
+):
     """Validate a bounded, preloaded line collection using one shared eligibility set."""
     restricted = (
         PurchaseSetting.objects.filter(company_id=document.company_id)
@@ -70,7 +76,10 @@ def validate_vendor_pricelist_product_eligibility(*, document, lines, transactio
         transaction_date=transaction_date,
     )
     invalid_products = {}
+    excluded_line_ids = set(excluded_line_ids)
     for line in lines:
+        if line.pk in excluded_line_ids or getattr(line, "free_product", False):
+            continue
         if line.product_id not in eligible_ids:
             invalid_products[line.product_id] = line.product
     if not invalid_products:

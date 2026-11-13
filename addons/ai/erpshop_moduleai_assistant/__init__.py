@@ -1,1 +1,1 @@
-"""Company-scoped Hashy AI Assistant for ERP GSSHOP."""
+"""Company-scoped GashyAI assistant for ERP GSSHOP."""

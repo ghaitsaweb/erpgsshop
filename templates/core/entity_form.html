@@ -8,7 +8,6 @@
       {% csrf_token %}
       <header class="form-commandbar">
         <span>{{ mode }} {{ config.singular }}</span>
-        {% include "core/_smart_buttons.html" %}
         <div class="form-command-actions">
           {% include "core/_record_navigator.html" %}
           <a class="btn btn-secondary" href="{% url 'entity_list' entity %}">Cancel</a>
@@ -32,6 +31,7 @@
       <p class="eyebrow">ERP GSSHOP</p>
       <h2>{{ config.singular }} record</h2>
       <p>Fields marked with an asterisk are required. Changes are recorded immediately after saving.</p>
+      {% include "core/_smart_button_drawer.html" %}
       {% if workflow_actions %}
         <section class="workflow-actions-panel">
           <div><small>Current status</small><strong>{{ current_status|title }}</strong></div>

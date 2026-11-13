@@ -1,8 +1,8 @@
 {% if smart_actions %}
-  <div class="smart-button-box" name="smart_button_box" aria-label="Related records">
+  <div class="smart-button-box" name="smart_button_box" aria-label="Related records" data-smart-actions>
     <div class="smart-button-list" name="smart_button_list">
-      {% for action in smart_actions %}
-        <a class="smart-button oe_stat_button" href="{{ action.href }}" data-smart-action="{{ action.key }}" aria-label="Open {{ action.label }}">
+      {% for action in smart_actions|slice:":2" %}
+        <a class="smart-button oe_stat_button" href="{{ action.href }}" data-smart-action="{{ action.key }}" data-smart-action-slot="primary" aria-label="Open {{ action.label }}">
           <span class="smart-button__icon" aria-hidden="true">{{ action.icon }}</span>
           <span class="smart-button__content">
             {% if action.show_count %}<strong class="smart-button__statinfo">{{ action.count }}</strong>{% endif %}
@@ -10,6 +10,32 @@
           </span>
         </a>
       {% endfor %}
+      {% if smart_actions|length > 2 %}
+        <button class="smart-button smart-button-more oe_stat_button" type="button" data-smart-actions-open aria-label="Show more related records">
+          <span class="smart-button__icon" aria-hidden="true">•••</span>
+          <span class="smart-button__content"><strong>+{{ smart_actions|length|add:"-2" }}</strong><small>More</small></span>
+        </button>
+      {% endif %}
     </div>
+    {% if smart_actions|length > 2 %}
+      <dialog class="smart-actions-dialog" data-smart-actions-dialog aria-label="More related records">
+        <header class="smart-actions-dialog__head">
+          <div><p class="eyebrow">Related records</p><h2>More smart buttons</h2></div>
+          <button type="button" data-smart-actions-close aria-label="Close more smart buttons">×</button>
+        </header>
+        <div class="smart-actions-dialog__grid">
+          {% for action in smart_actions|slice:"2:" %}
+            <a class="smart-actions-dialog__item" href="{{ action.href }}" data-smart-action="{{ action.key }}" data-smart-action-slot="overflow" aria-label="Open {{ action.label }}">
+              <span class="smart-button__icon" aria-hidden="true">{{ action.icon }}</span>
+              <span class="smart-button__content">
+                {% if action.show_count %}<strong class="smart-button__statinfo">{{ action.count }}</strong>{% endif %}
+                <small>{{ action.label }}</small>
+              </span>
+              <i aria-hidden="true">›</i>
+            </a>
+          {% endfor %}
+        </div>
+      </dialog>
+    {% endif %}
   </div>
 {% endif %}

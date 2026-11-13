@@ -10,6 +10,10 @@
         <input type="hidden" name="smart_action" value="{{ smart_action_scope.definition.key }}">
         <input type="hidden" name="source_id" value="{{ smart_action_scope.source.pk }}">
       {% endif %}
+      {% if current_sort %}
+        <input type="hidden" name="sort" value="{{ current_sort }}">
+        <input type="hidden" name="direction" value="{{ current_sort_direction }}">
+      {% endif %}
       <input type="hidden" name="layout" value="{{ layout }}" data-entity-layout-input>
       <button class="btn btn-secondary" type="submit">Search</button>
     </form>
@@ -70,7 +74,10 @@
             {% if can_merge_sales %}
               <button type="submit" formaction="{% url 'sales_merge' %}"><span aria-hidden="true">⇄</span> Merge Quotations</button>
             {% endif %}
-            <button type="button" data-open-delete-wizard><span aria-hidden="true">×</span> Delete</button>
+            {% for action in collection_actions %}
+              <button type="submit" formaction="{% url action.url_name %}"><span aria-hidden="true">{{ action.icon }}</span> {{ action.label }}</button>
+            {% endfor %}
+            {% if can_delete %}<button type="button" data-open-delete-wizard><span aria-hidden="true">×</span> Delete</button>{% endif %}
           </div>
         </details>
         <button class="list-clear-selection" type="button" data-clear-selection>Clear</button>
@@ -120,9 +127,9 @@
       {% empty %}<div class="panel empty">No employees found. Add the first employee.</div>{% endfor %}
       {% if page.paginator.num_pages > 1 %}
         <div class="pagination">
-          {% if page.has_previous %}<a href="?q={{ query|urlencode }}&layout=kanban&page={{ page.previous_page_number }}{% if scope_query %}&{{ scope_query }}{% endif %}">← Previous</a>{% endif %}
+          {% if page.has_previous %}<a href="?{% if list_query %}{{ list_query }}&amp;{% endif %}page={{ page.previous_page_number }}">← Previous</a>{% endif %}
           <span>Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
-          {% if page.has_next %}<a href="?q={{ query|urlencode }}&layout=kanban&page={{ page.next_page_number }}{% if scope_query %}&{{ scope_query }}{% endif %}">Next →</a>{% endif %}
+          {% if page.has_next %}<a href="?{% if list_query %}{{ list_query }}&amp;{% endif %}page={{ page.next_page_number }}">Next →</a>{% endif %}
         </div>
       {% endif %}
     </div>
@@ -140,9 +147,9 @@
       {% empty %}<div class="panel empty">No records found. Add the first {{ config.singular|lower }}.</div>{% endfor %}
       {% if page.paginator.num_pages > 1 %}
         <div class="pagination">
-          {% if page.has_previous %}<a href="?q={{ query|urlencode }}&layout=kanban&page={{ page.previous_page_number }}{% if scope_query %}&{{ scope_query }}{% endif %}">← Previous</a>{% endif %}
+          {% if page.has_previous %}<a href="?{% if list_query %}{{ list_query }}&amp;{% endif %}page={{ page.previous_page_number }}">← Previous</a>{% endif %}
           <span>Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
-          {% if page.has_next %}<a href="?q={{ query|urlencode }}&layout=kanban&page={{ page.next_page_number }}{% if scope_query %}&{{ scope_query }}{% endif %}">Next →</a>{% endif %}
+          {% if page.has_next %}<a href="?{% if list_query %}{{ list_query }}&amp;{% endif %}page={{ page.next_page_number }}">Next →</a>{% endif %}
         </div>
       {% endif %}
     </div>
@@ -151,7 +158,7 @@
   <div class="panel table-panel" data-dev-model="{{ developer_meta.model }}" data-dev-table="{{ developer_meta.table }}" data-dev-entity="{{ developer_meta.entity }}">
     <div class="table-wrap">
       <table data-entity-list-table data-dev-model="{{ developer_meta.model }}" data-dev-table="{{ developer_meta.table }}">
-        <thead><tr>{% if can_select %}<th class="list-select-column"><input class="list-select-checkbox" type="checkbox" data-select-all aria-label="Select all records on this page"></th>{% endif %}{% for column in columns %}<th data-list-field="{{ column.name }}" data-dev-field="{{ column.name }}" data-dev-field-label="{{ column.label }}" data-dev-field-type="{{ column.type }}" data-dev-field-column="{{ column.column }}" data-dev-field-relation="{{ column.relation }}" data-dev-field-kind="{{ column.kind }}">{{ column.label }}</th>{% endfor %}</tr></thead>
+        <thead><tr>{% if can_select %}<th class="list-select-column"><input class="list-select-checkbox" type="checkbox" data-select-all aria-label="Select all records on this page"></th>{% endif %}{% for column in columns %}<th data-list-field="{{ column.name }}" data-dev-field="{{ column.name }}" data-dev-field-label="{{ column.label }}" data-dev-field-type="{{ column.type }}" data-dev-field-column="{{ column.column }}" data-dev-field-relation="{{ column.relation }}" data-dev-field-kind="{{ column.kind }}"{% if column.sortable %} aria-sort="{{ column.aria_sort }}"{% endif %}>{% if column.sortable %}<a class="list-sort-link{% if column.sort_active %} is-active{% endif %}" href="{{ column.sort_url }}" title="Sort {{ column.label }} {{ column.next_sort_direction }}"><span>{{ column.label }}</span><span class="list-sort-indicator" aria-hidden="true">{% if column.sort_active and column.sort_direction == 'asc' %}↑{% elif column.sort_active %}↓{% else %}↕{% endif %}</span></a>{% else %}{{ column.label }}{% endif %}</th>{% endfor %}</tr></thead>
         <tbody>
           {% for row in rows %}
             <tr class="{% if can_change %}record-row{% endif %}" data-list-row data-dev-object data-dev-entity="{{ row.developer_meta.entity }}" data-dev-model="{{ row.developer_meta.model }}" data-dev-table="{{ row.developer_meta.table }}" data-dev-object-id="{{ row.developer_meta.object_id }}" data-dev-object-name="{{ row.developer_meta.object_name }}" {% if can_change %}data-record-url="{% url 'entity_edit' entity row.object.pk %}" tabindex="0" role="link" aria-label="Open {{ row.developer_meta.object_name }}"{% endif %}>
@@ -165,14 +172,14 @@
     </div>
     {% if page.paginator.num_pages > 1 %}
       <div class="pagination">
-        {% if page.has_previous %}<a href="?q={{ query|urlencode }}&page={{ page.previous_page_number }}{% if scope_query %}&{{ scope_query }}{% endif %}">← Previous</a>{% endif %}
+        {% if page.has_previous %}<a href="?{% if list_query %}{{ list_query }}&amp;{% endif %}page={{ page.previous_page_number }}">← Previous</a>{% endif %}
         <span>Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
-        {% if page.has_next %}<a href="?q={{ query|urlencode }}&page={{ page.next_page_number }}{% if scope_query %}&{{ scope_query }}{% endif %}">Next →</a>{% endif %}
+        {% if page.has_next %}<a href="?{% if list_query %}{{ list_query }}&amp;{% endif %}page={{ page.next_page_number }}">Next →</a>{% endif %}
       </div>
     {% endif %}
   </div>
   </div>
-  {% if can_select %}
+  {% if can_select and can_delete %}
     <dialog class="delete-wizard" data-delete-wizard aria-labelledby="delete-wizard-title">
       <div class="delete-wizard-head">
         <span class="delete-wizard-icon" aria-hidden="true">×</span>

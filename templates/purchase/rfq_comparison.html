@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · ERP GSSHOP{% endblock %}
+{% block page_title %}{{ title }}{% endblock %}
+{% block content %}
+  <div class="toolbar">
+    <div>
+      <p class="eyebrow">Purchase sourcing</p>
+      <h2>{{ comparison.selected_count }} RFQs · {{ comparison.total_products }} products</h2>
+    </div>
+    <a class="btn btn-secondary" href="{% url 'entity_list' 'purchase-quotations' %}">Back to RFQs</a>
+  </div>
+
+  <section class="metric-grid">
+    <article class="metric-card"><span>Vendors</span><strong>{{ comparison.insights.total_vendors }}</strong></article>
+    <article class="metric-card"><span>Products</span><strong>{{ comparison.insights.total_products }}</strong></article>
+    <article class="metric-card"><span>Target budget</span><strong>{{ comparison.insights.target_budget.display }}</strong></article>
+    <article class="metric-card"><span>Bid deadline</span><strong>{{ comparison.insights.deadline_bid }}</strong></article>
+  </section>
+
+  {% if comparison.has_mixed_currencies %}
+    <div class="info-strip">Amounts are normalized to {{ comparison.company_currency }}. Source currencies: {{ comparison.currency_names|join:", " }}.</div>
+  {% endif %}
+
+  <div class="panel table-panel">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Product</th>
+            {% for column in comparison.columns %}
+              <th>
+                <strong>{{ column.vendor_name }}</strong><br>
+                <small>{{ column.code }} · {{ column.status_display }} · {{ column.currency_name }}</small><br>
+                <small>On schedule {{ column.delivery_on_schedule.display }} · Fulfillment {{ column.delivery_fulfillment.display }} · Rating {{ column.star_rating.display }}</small>
+              </th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in comparison.product_rows %}
+            <tr>
+              <td><strong>{{ row.product_code }} · {{ row.product_name }}</strong><br><small>{{ row.description }} · Target {{ row.target_quantity }}</small></td>
+              {% for cell in row.cells %}
+                <td class="{% if cell.highlight == 'best' %}success-text{% elif cell.highlight == 'highest' %}danger-text{% endif %}">
+                  {% if cell.quoted %}
+                    <strong>{{ cell.unit_price.display }}</strong>
+                    {% if cell.badges %}<small> · {{ cell.badges|join:", " }}</small>{% endif %}<br>
+                    <small>{{ cell.quantity }}{% if cell.discount %} · Discount {{ cell.discount }}{% endif %} · {{ cell.expected_date }}</small><br>
+                    <span>{{ cell.subtotal.display }}</span>
+                    {% if cell.unit_price.secondary %}<br><small>{{ cell.unit_price.secondary }}</small>{% endif %}
+                  {% else %}—{% endif %}
+                </td>
+              {% endfor %}
+            </tr>
+          {% endfor %}
+          {% for row in comparison.summary_rows %}
+            <tr>
+              <td><strong>{{ row.label }}</strong></td>
+              {% for cell in row.cells %}<td><strong>{{ cell.money.display }}</strong>{% if cell.money.secondary %}<br><small>{{ cell.money.secondary }}</small>{% endif %}</td>{% endfor %}
+            </tr>
+          {% endfor %}
+          <tr>
+            <td><strong>Decision</strong></td>
+            {% for column in comparison.columns %}
+              <td>
+                <form method="post" action="{% url 'purchase_quotation_compare_confirm' column.id %}">
+                  {% csrf_token %}
+                  <button class="btn btn-primary" type="submit">Confirm as PO</button>
+                </form>
+              </td>
+            {% endfor %}
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}

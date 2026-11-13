@@ -7,6 +7,8 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.utils import timezone
+from django.views.decorators.http import require_POST
 
 from modules.approval_workflow.services import can_user_act, pending_approval_for
 
@@ -21,8 +23,21 @@ from .forms import (
     PurchaseRequestRFQLineFormSet,
     PurchaseRequestReRequestLineFormSet,
     PurchaseRequestTenderForm,
+    PurchaseRFQMailForm,
 )
-from .models import BlanketOrder, BlanketOrderLine, PurchaseRequest, PurchaseRequestLine
+from .models import (
+    BlanketOrder,
+    BlanketOrderLine,
+    PurchaseQuotation,
+    PurchaseOrderTemplate,
+    PurchaseRequest,
+    PurchaseRequestLine,
+)
+from .rfq_comparison import compare_purchase_quotations, confirm_quotation_from_comparison
+from .purchase_analysis import (
+    build_purchase_order_analysis,
+    build_purchase_request_analysis,
+)
 from .services import (
     MAX_PURCHASE_DOCUMENT_LINES,
     approve_purchase_request_lines,
@@ -32,7 +47,240 @@ from .services import (
     create_purchase_request_rfqs,
     create_purchase_request_re_request,
     create_purchase_request_tender,
+    duplicate_purchase_order_template,
+    send_purchase_quotation_email,
 )
+
+
+def _comparison_selection(raw_ids):
+    selected = []
+    seen = set()
+    for raw_id in raw_ids:
+        if not str(raw_id).isdigit():
+            raise ValidationError("The RFQ selection is invalid.")
+        value = int(raw_id)
+        if value < 1 or value in seen:
+            raise ValidationError("The RFQ selection is invalid.")
+        selected.append(value)
+        seen.add(value)
+    return selected
+
+
+def _purchase_analysis_response(request, *, entity, builder):
+    if not can_purchase_entity_action(request.user, entity, "view"):
+        messages.error(request, "You do not have permission to view this Purchase analysis.")
+        return redirect("dashboard")
+    try:
+        analysis = builder(request.user, request.GET)
+    except ValidationError as exc:
+        analysis = {"rows": [], "contract": {"title": "Purchase Analysis", "measures": []}}
+        messages.error(request, " ".join(exc.messages))
+    measure_labels = {
+        "quantity": "Quantity",
+        "approved_qty": "Approved Qty",
+        "rfq_qty": "RFQ Qty",
+        "po_qty": "PO Qty",
+        "received_qty": "Received Qty",
+        "total_discount_line_amount": "Discount",
+        "untaxed_amount": "Untaxed",
+        "taxes_amount": "Tax",
+        "total_amount": "Total",
+        "subtotal_lines": "Gross Subtotal",
+    }
+    measures = analysis["contract"]["measures"]
+    table_rows = [
+        {
+            "product": row.get("product__name") or "Unspecified Product",
+            "sku": row.get("product__sku") or "",
+            "month": row.get("expected_month"),
+            "values": [row.get(measure) or 0 for measure in measures],
+        }
+        for row in analysis["rows"]
+    ]
+    return render(
+        request,
+        "purchase/purchase_analysis.html",
+        {
+            "title": analysis["contract"]["title"],
+            "analysis": analysis,
+            "measure_headers": [measure_labels.get(measure, measure) for measure in measures],
+            "table_rows": table_rows,
+            "breadcrumbs": [
+                {"label": "Home", "url": reverse("dashboard")},
+                {"label": "Purchase Reports", "url": ""},
+                {"label": analysis["contract"]["title"], "url": ""},
+            ],
+        },
+    )
+
+
+@login_required
+def purchase_order_analysis(request):
+    return _purchase_analysis_response(
+        request,
+        entity="purchases",
+        builder=build_purchase_order_analysis,
+    )
+
+
+@login_required
+def purchase_request_analysis(request):
+    return _purchase_analysis_response(
+        request,
+        entity="purchase-requests",
+        builder=build_purchase_request_analysis,
+    )
+
+
+@login_required
+def purchase_quotation_email(request, pk):
+    if not can_purchase_entity_action(request.user, "purchase-quotations", "change"):
+        messages.error(request, "You do not have permission to email RFQs.")
+        return redirect("entity_list", entity="purchase-quotations")
+    quotation = get_object_or_404(
+        scope_purchase_queryset(
+            request.user,
+            "purchase-quotations",
+            PurchaseQuotation.objects.select_related("company", "vendor", "warehouse"),
+        ),
+        pk=pk,
+    )
+    form = PurchaseRFQMailForm(
+        request.POST or None,
+        quotation=quotation,
+        template_code=request.GET.get("template"),
+    )
+    if request.method == "POST" and form.is_valid():
+        try:
+            communication = send_purchase_quotation_email(
+                quotation,
+                template=form.cleaned_data["template"],
+                email_to=form.cleaned_data["email_to"],
+                email_cc=form.cleaned_data["email_cc"],
+                subject=form.cleaned_data["subject"],
+                body_html=form.cleaned_data["body_html"],
+                actor=request.user,
+            )
+        except ValidationError as exc:
+            form.add_error(None, " ".join(exc.messages))
+        else:
+            messages.success(
+                request,
+                f"RFQ email sent to {communication.email_to} and recorded in communication history.",
+            )
+            return redirect("entity_edit", entity="purchase-quotations", pk=pk)
+    return render(
+        request,
+        "purchase/rfq_email_form.html",
+        {
+            "quotation": quotation,
+            "form": form,
+            "title": f"Send RFQ {quotation.number}",
+            "breadcrumbs": [
+                {"label": "Home", "url": reverse("dashboard")},
+                {
+                    "label": "Purchase Quotations",
+                    "url": reverse("entity_list", kwargs={"entity": "purchase-quotations"}),
+                },
+                {"label": quotation.number, "url": reverse("entity_edit", kwargs={"entity": "purchase-quotations", "pk": quotation.pk})},
+                {"label": "Send Email", "url": ""},
+            ],
+        },
+    )
+
+
+@require_POST
+@login_required
+def purchase_order_template_duplicate(request):
+    if not can_purchase_entity_action(request.user, "purchase-order-templates", "add"):
+        messages.error(request, "You do not have permission to duplicate Purchase Order Templates.")
+        return redirect("entity_list", entity="purchase-order-templates")
+    try:
+        selected_ids = [
+            int(value)
+            for value in request.POST.getlist("selected_ids")
+            if str(value).isdigit() and int(value) > 0
+        ]
+        if len(selected_ids) != 1 or len(set(selected_ids)) != 1:
+            raise ValidationError("Select exactly one Purchase Order Template to duplicate.")
+        scoped = scope_purchase_queryset(
+            request.user,
+            "purchase-order-templates",
+            PurchaseOrderTemplate.objects.filter(pk=selected_ids[0]),
+        ).first()
+        if scoped is None:
+            raise ValidationError("The Purchase Order Template is outside your access scope.")
+        duplicate = duplicate_purchase_order_template(scoped, request.user)
+    except ValidationError as exc:
+        messages.error(request, " ".join(exc.messages))
+        return redirect("entity_list", entity="purchase-order-templates")
+    messages.success(request, f"Purchase Order Template duplicated as {duplicate.name}.")
+    return redirect("entity_edit", entity="purchase-order-templates", pk=duplicate.pk)
+
+
+@require_POST
+@login_required
+def purchase_quotation_compare(request):
+    if not can_purchase_entity_action(request.user, "purchase-quotations", "change"):
+        messages.error(request, "You do not have permission to compare RFQs.")
+        return redirect("entity_list", entity="purchase-quotations")
+    try:
+        selected_ids = _comparison_selection(request.POST.getlist("selected_ids"))
+        scoped_ids = set(
+            scope_purchase_queryset(
+                request.user,
+                "purchase-quotations",
+                PurchaseQuotation.objects.filter(pk__in=selected_ids),
+            ).values_list("pk", flat=True)
+        )
+        if scoped_ids != set(selected_ids):
+            raise ValidationError("The RFQ selection changed or is outside your access scope.")
+        comparison = compare_purchase_quotations(selected_ids)
+    except ValidationError as exc:
+        messages.error(request, " ".join(exc.messages))
+        return redirect("entity_list", entity="purchase-quotations")
+    return render(
+        request,
+        "purchase/rfq_comparison.html",
+        {
+            "comparison": comparison,
+            "title": comparison["title"],
+            "breadcrumbs": [
+                {"label": "Home", "url": reverse("dashboard")},
+                {
+                    "label": "Purchase Quotations",
+                    "url": reverse("entity_list", kwargs={"entity": "purchase-quotations"}),
+                },
+                {"label": "RFQ Comparison"},
+            ],
+        },
+    )
+
+
+@require_POST
+@login_required
+def purchase_quotation_compare_confirm(request, pk):
+    if not can_purchase_entity_action(request.user, "purchase-quotations", "change"):
+        messages.error(request, "You do not have permission to confirm an RFQ comparison.")
+        return redirect("entity_list", entity="purchase-quotations")
+    quotation = get_object_or_404(
+        scope_purchase_queryset(
+            request.user,
+            "purchase-quotations",
+            PurchaseQuotation.objects.all(),
+        ),
+        pk=pk,
+    )
+    try:
+        order = confirm_quotation_from_comparison(quotation, request.user)
+    except ValidationError as exc:
+        messages.error(request, " ".join(exc.messages))
+        return redirect("entity_edit", entity="purchase-quotations", pk=pk)
+    messages.success(
+        request,
+        f"RFQ {quotation.number} created PO {order.number} with status {order.get_status_display()}.",
+    )
+    return redirect("entity_edit", entity="purchases", pk=order.pk)
 
 
 def _bounded_purchase_request_lines(purchase_request):
@@ -219,6 +467,16 @@ def blanket_order_convert_to_rfq(request, pk):
     if blanket_order.status not in {BlanketOrder.Status.CONFIRMED, BlanketOrder.Status.RUNNING}:
         messages.error(request, "RFQ can only be created from a confirmed or running Blanket Order.")
         return redirect("entity_edit", entity="blanket-orders", pk=pk)
+    current_date = timezone.localdate()
+    if blanket_order.date_start > current_date:
+        messages.error(request, "RFQ release is only available on or after the Blanket Order Start Date.")
+        return redirect("entity_edit", entity="blanket-orders", pk=pk)
+    if blanket_order.date_end <= current_date:
+        messages.error(request, "RFQ release is only available before the Blanket Order End Date.")
+        return redirect("entity_edit", entity="blanket-orders", pk=pk)
+    quantity_controlled = (
+        blanket_order.agreement_policy == BlanketOrder.AgreementPolicy.QUANTITY_PERIOD
+    )
     lines = list(
         BlanketOrderLine.objects.filter(blanket_order_id=pk)
         .select_related("product")
@@ -230,7 +488,7 @@ def blanket_order_convert_to_rfq(request, pk):
     initial = []
     for line in lines:
         remaining = line.agreed_quantity - line.released_quantity
-        if remaining > 0:
+        if not quantity_controlled or remaining > 0:
             initial.append(
                 {
                     "include": True,
@@ -240,7 +498,7 @@ def blanket_order_convert_to_rfq(request, pk):
                     "agreed_quantity": line.agreed_quantity,
                     "released_quantity": line.released_quantity,
                     "remaining_quantity": remaining,
-                    "quantity": remaining,
+                    "quantity": remaining if quantity_controlled else line.agreed_quantity,
                 }
             )
     if not initial:
@@ -250,6 +508,7 @@ def blanket_order_convert_to_rfq(request, pk):
         request.POST or None,
         prefix="release_lines",
         initial=initial,
+        form_kwargs={"quantity_controlled": quantity_controlled},
     )
     if request.method == "POST" and line_formset.is_valid():
         releases = {
@@ -270,6 +529,7 @@ def blanket_order_convert_to_rfq(request, pk):
         {
             "blanket_order": blanket_order,
             "line_formset": line_formset,
+            "quantity_controlled": quantity_controlled,
             "title": f"Create RFQ from {blanket_order.number}",
             "cancel_url": reverse("entity_edit", kwargs={"entity": "blanket-orders", "pk": pk}),
         },

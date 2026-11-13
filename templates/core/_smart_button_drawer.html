@@ -1,0 +1,16 @@
+{% if smart_actions %}
+  <section class="smart-button-drawer" data-smart-actions-drawer>
+    <button class="smart-button-drawer__open" type="button" data-smart-actions-drawer-open aria-expanded="false">
+      <span aria-hidden="true">←</span>
+      <strong>Smart buttons</strong>
+      <small>{{ smart_actions|length }} related</small>
+    </button>
+    <div class="smart-button-drawer__content" data-smart-actions-drawer-content hidden>
+      <header>
+        <div><small>Record navigation</small><strong>Smart buttons</strong></div>
+        <button type="button" data-smart-actions-drawer-close aria-label="Close smart buttons"><span>Smart buttons</span> <b aria-hidden="true">→</b></button>
+      </header>
+      {% include "core/_smart_buttons.html" %}
+    </div>
+  </section>
+{% endif %}

@@ -2,12 +2,13 @@ from dataclasses import dataclass
 from typing import Callable
 
 from django.core.exceptions import ImproperlyConfigured
-from django.db.models import ForeignKey, OneToOneField
+from django.db.models import CharField, ForeignKey, OneToOneField, Value
 from django.db.models import Q, QuerySet
 
 
 SmartActionFilter = Callable[[QuerySet, object], QuerySet]
 SmartActionAvailability = Callable[[object], bool]
+SMART_ACTION_EXISTS_BATCH_SIZE = 50
 
 
 @dataclass(frozen=True)
@@ -620,7 +621,6 @@ EXPLICIT_SMART_ACTIONS = (
         icon="▣",
         filter_queryset=_all_scoped_records,
         show_count=False,
-        hide_when_empty=False,
         allow_edit=False,
     ),
     SmartActionDefinition(
@@ -2416,7 +2416,6 @@ def build_standard_smart_actions(entity_config, explicit_actions=()):
                     icon="▤",
                     filter_queryset=_children_on(field.name),
                     show_count=False,
-                    hide_when_empty=False,
                 )
             )
     return tuple(generated)
@@ -2447,3 +2446,28 @@ def smart_actions_for_source(entity):
 
 def get_smart_action(key):
     return SMART_ACTIONS_BY_KEY.get(key)
+
+
+def existing_smart_action_keys(keyed_querysets, *, batch_size=SMART_ACTION_EXISTS_BATCH_SIZE):
+    """Resolve non-empty action querysets in bounded database round trips.
+
+    Every union branch selects at most one constant key, so each batch returns
+    no more rows than the fixed number of action definitions in that batch.
+    """
+    keyed_querysets = tuple(keyed_querysets)
+    existing = set()
+    for start in range(0, len(keyed_querysets), batch_size):
+        batch = keyed_querysets[start : start + batch_size]
+        marker_queries = [
+            queryset.order_by()
+            .annotate(
+                _smart_action_key=Value(key, output_field=CharField(max_length=255))
+            )
+            .values_list("_smart_action_key", flat=True)[:1]
+            for key, queryset in batch
+        ]
+        if not marker_queries:
+            continue
+        combined = marker_queries[0].union(*marker_queries[1:], all=True)
+        existing.update(combined.iterator(chunk_size=batch_size))
+    return existing

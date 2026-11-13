@@ -1,8 +1,8 @@
 {
   "slug": "erpshop-moduleai-assistant",
-  "name": "ERPShop Module AI — Hashy Assistant",
+  "name": "ERPShop Module AI — GashyAI",
   "category": "AI & Data",
-  "summary": "Hashy AI Assistant chat, Hashy OS account reference, contextual sessions, files, feedback, and governed provider runtime.",
+  "summary": "GashyAI chat for ERP GSSHOP, Hashy OS account reference, contextual sessions, files, feedback, and governed provider runtime.",
   "icon": "AI",
   "version": "1.0.0",
   "status": "beta",

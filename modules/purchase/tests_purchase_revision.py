@@ -13,13 +13,16 @@ from core.models import Company, Contact, Product, PurchaseOrder, PurchaseOrderL
 from .models import (
     GoodsReceipt,
     PurchaseOrderControl,
+    PurchaseOrderLinePricingProvenance,
     PurchaseOrderRevision,
     PurchaseOrderType,
+    PurchaseProductRentalProfile,
     PurchaseSetting,
     VendorPricelist,
     VendorProfile,
 )
 from .purchase_revision import revise_purchase_order
+from .services import sync_purchase_order_rental_controls
 from .workflow_extensions import purchase_revision_action_available
 
 
@@ -100,6 +103,21 @@ class PurchaseOrderRevisionParityTests(TestCase):
 
     def test_revision_creates_new_draft_and_preserves_immutable_source_snapshot(self):
         source = self._order("PO-PREV-001")
+        source.purchase_control.payment_terms = "Net 30"
+        source.purchase_control.delivery_terms = "DAP Jakarta"
+        source.purchase_control.legal_terms = "Indonesian law"
+        source.purchase_control.vendor_address = "Vendor address snapshot"
+        source.purchase_control.bill_address = "Billing address snapshot"
+        source.purchase_control.save(
+            update_fields=[
+                "payment_terms",
+                "delivery_terms",
+                "legal_terms",
+                "vendor_address",
+                "bill_address",
+                "updated_at",
+            ]
+        )
 
         revised = revise_purchase_order(source, self.actor, reason="Correct negotiated price")
 
@@ -119,6 +137,11 @@ class PurchaseOrderRevisionParityTests(TestCase):
         self.assertEqual(revised_line.unit_price, Decimal("15"))
         self.assertEqual(revised_line.received_quantity, Decimal("0"))
         self.assertEqual(revised.purchase_control.revision_number, 1)
+        self.assertEqual(revised.purchase_control.payment_terms, "Net 30")
+        self.assertEqual(revised.purchase_control.delivery_terms, "DAP Jakarta")
+        self.assertEqual(revised.purchase_control.legal_terms, "Indonesian law")
+        self.assertEqual(revised.purchase_control.vendor_address, "Vendor address snapshot")
+        self.assertEqual(revised.purchase_control.bill_address, "Billing address snapshot")
 
         with self.assertRaises(ValidationError):
             revise_purchase_order(source, self.actor)
@@ -143,6 +166,53 @@ class PurchaseOrderRevisionParityTests(TestCase):
         self.assertEqual(link.original_order, root)
         self.assertEqual(second.lines.get().unit_price, Decimal("12"))
         self.assertEqual(second.purchase_control.revision_number, 2)
+
+    def test_revision_preserves_rental_timeline_and_pricing_provenance(self):
+        rental_type = PurchaseOrderType.objects.create(
+            company=self.company,
+            name="Rental",
+        )
+        PurchaseProductRentalProfile.objects.create(product=self.product, is_rental=True)
+        source = self._order(
+            "PO-PREV-RENTAL",
+            status=PurchaseOrder.Status.DRAFT,
+        )
+        control = source.purchase_control
+        control.order_type = rental_type
+        control.expected_date = timezone.localdate()
+        control.expiry_date = timezone.localdate()
+        control.rental_duration = 2
+        control.duration_unit = PurchaseOrderControl.DurationUnit.WEEK
+        control.save(
+            update_fields=[
+                "order_type",
+                "expected_date",
+                "expiry_date",
+                "rental_duration",
+                "duration_unit",
+                "updated_at",
+            ]
+        )
+        sync_purchase_order_rental_controls(source)
+        source.status = PurchaseOrder.Status.CONFIRMED
+        source.save(update_fields=["status", "updated_at"])
+
+        revised = revise_purchase_order(source, self.actor)
+
+        source_provenance = PurchaseOrderLinePricingProvenance.objects.get(
+            order_line__order=source
+        )
+        revised_provenance = PurchaseOrderLinePricingProvenance.objects.get(
+            order_line__order=revised
+        )
+        self.assertTrue(revised_provenance.is_rental)
+        self.assertEqual(revised_provenance.rent_duration, source_provenance.rent_duration)
+        self.assertEqual(revised_provenance.rental_period, source_provenance.rental_period)
+        self.assertEqual(revised_provenance.expected_date, source_provenance.expected_date)
+        self.assertEqual(revised_provenance.expiry_date, source_provenance.expiry_date)
+        self.assertEqual(revised.purchase_control.rental_duration, 2)
+        self.assertEqual(revised.purchase_control.duration_unit, PurchaseOrderControl.DurationUnit.WEEK)
+        self.assertEqual(revised_provenance.tax_snapshot, {})
 
     def test_revision_disabled_blacklisted_expired_and_receipt_guards(self):
         disabled = self._order("PO-PREV-DISABLED")

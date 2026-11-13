@@ -123,7 +123,28 @@ PURCHASE_KPI_METRIC_CHOICES = [
 ]
 
 
-class PurchaseRequest(TimeStampedModel):
+class PurchaseCostCenterStructuredFields(models.Model):
+    """Portable purchase-side representation of HMX analytic assignments."""
+
+    class Mode(models.TextChoices):
+        SINGLE = "single", "Single Cost Center"
+        DISTRIBUTION = "distribution", "Distribution"
+
+    cost_center_mode = models.CharField(
+        max_length=16,
+        choices=Mode.choices,
+        default=Mode.SINGLE,
+        blank=True,
+    )
+    cost_center_distribution_ids = models.JSONField(default=list, blank=True)
+    cost_center_distribution_data = models.JSONField(default=list, blank=True)
+    cost_center_analytic_tag_ids = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        abstract = True
+
+
+class PurchaseRequest(PurchaseCostCenterStructuredFields, TimeStampedModel):
     class Status(models.TextChoices):
         DRAFT = "draft", "Draft"
         PENDING = "pending", "Pending Approval"
@@ -145,23 +166,41 @@ class PurchaseRequest(TimeStampedModel):
         blank=True,
         null=True,
     )
+    team = models.ForeignKey(
+        "PurchaseTeam",
+        on_delete=models.SET_NULL,
+        related_name="requests",
+        blank=True,
+        null=True,
+    )
     number = models.CharField(max_length=40)
     requestor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="purchase_requests")
     request_date = models.DateField(default=timezone.localdate)
-    required_date = models.DateField()
+    required_date = models.DateField(blank=True, null=True)
     expiry_date = models.DateField(blank=True, null=True)
     destination_warehouse = models.ForeignKey(
         Warehouse,
         on_delete=models.PROTECT,
         related_name="purchase_requests",
         null=True,
+        blank=True,
         help_text="Default destination warehouse carried into RFQs and purchase orders.",
     )
     currency = models.CharField(max_length=3, default="IDR")
+    cost_center = models.CharField(max_length=80, blank=True)
     justification = models.TextField()
     status = models.CharField(max_length=24, choices=Status.choices, default=Status.DRAFT)
     rejection_reason = models.TextField(blank=True)
     notes = models.TextField(blank=True)
+    remark_template = models.ForeignKey(
+        "PurchaseRemarkTemplate",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="purchase_requests",
+    )
+    remark_template_code = models.CharField(max_length=64, blank=True, editable=False)
+    remark_template_name = models.CharField(max_length=255, blank=True, editable=False)
 
     class Meta:
         ordering = ["-request_date", "number"]
@@ -173,6 +212,8 @@ class PurchaseRequest(TimeStampedModel):
         self.apply_expiry_default()
         errors = {}
         validate_purchase_configuration_company(self, errors)
+        if self.team_id and self.team.company_id != self.company_id:
+            errors["team"] = "Purchase Team must belong to the selected company."
         if self.required_date and self.required_date < self.request_date:
             errors["required_date"] = "Required date must be on or after request date."
         if self.expiry_date and self.expiry_date <= self.request_date:
@@ -207,7 +248,7 @@ class PurchaseRequest(TimeStampedModel):
         return self.number
 
 
-class PurchaseRequestLine(TimeStampedModel):
+class PurchaseRequestLine(PurchaseCostCenterStructuredFields, TimeStampedModel):
     class Status(models.TextChoices):
         DRAFT = "draft", "Draft"
         PENDING = "pending", "Pending"
@@ -243,7 +284,16 @@ class PurchaseRequestLine(TimeStampedModel):
     re_request_quantity = models.DecimalField(max_digits=18, decimal_places=3, default=0, editable=False)
     ordered_quantity = models.DecimalField(max_digits=18, decimal_places=3, default=0)
     estimated_unit_price = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    cost_center = models.CharField(max_length=80, blank=True)
+    expected_date = models.DateField(blank=True, null=True)
     expiry_date = models.DateField(blank=True, null=True)
+    destination_warehouse = models.ForeignKey(
+        Warehouse,
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="purchase_request_lines",
+    )
     line_status = models.CharField(max_length=24, choices=Status.choices, default=Status.DRAFT, editable=False)
     approval_justification = models.TextField(blank=True)
     rejection_reason = models.CharField(max_length=120, blank=True)
@@ -258,6 +308,11 @@ class PurchaseRequestLine(TimeStampedModel):
         ordering = ["id"]
 
     def clean(self):
+        if self.request_id:
+            self.expected_date = self.expected_date or self.request.required_date
+            self.destination_warehouse_id = (
+                self.destination_warehouse_id or self.request.destination_warehouse_id
+            )
         if not self.expiry_date and self.request_id:
             self.expiry_date = self.request.expiry_date
         errors = {}
@@ -265,6 +320,12 @@ class PurchaseRequestLine(TimeStampedModel):
             errors["approved_quantity"] = "Approved quantity cannot be negative."
         if self.ordered_quantity < 0 or self.ordered_quantity > self.approved_quantity:
             errors["ordered_quantity"] = "Ordered quantity must be between zero and approved quantity."
+        if (
+            self.destination_warehouse_id
+            and self.request_id
+            and self.destination_warehouse.company_id != self.request.company_id
+        ):
+            errors["destination_warehouse"] = "Line warehouse must belong to the Purchase Request company."
         for field_name in (
             "rfq_quantity",
             "blanket_quantity",
@@ -278,8 +339,12 @@ class PurchaseRequestLine(TimeStampedModel):
             raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
-        if not self.expiry_date and self.request_id:
-            self.expiry_date = self.request.expiry_date
+        if self.request_id:
+            self.expected_date = self.expected_date or self.request.required_date
+            self.expiry_date = self.expiry_date or self.request.expiry_date
+            self.destination_warehouse_id = (
+                self.destination_warehouse_id or self.request.destination_warehouse_id
+            )
         return super().save(*args, **kwargs)
 
     @property
@@ -392,6 +457,11 @@ class PurchaseQuotation(TimeStampedModel):
             errors["request"] = "Purchase request must belong to the selected company."
         if self.warehouse_id and self.warehouse.company_id != self.company_id:
             errors["warehouse"] = "Destination warehouse must belong to the selected company."
+        if self.blanket_order_id:
+            if self.blanket_order.company_id != self.company_id:
+                errors["blanket_order"] = "Blanket Order must belong to the quotation company."
+            elif self.vendor_id and self.blanket_order.vendor_id != self.vendor_id:
+                errors["blanket_order"] = "Blanket Order vendor must match the quotation vendor."
         if self.response_deadline and self.response_deadline < self.issue_date:
             errors["response_deadline"] = "Response deadline must be on or after issue date."
         if errors:
@@ -574,7 +644,7 @@ class AwardStrategy(TimeStampedModel):
         return self.name
 
 
-class PurchaseTender(TimeStampedModel):
+class PurchaseTender(PurchaseCostCenterStructuredFields, TimeStampedModel):
     class Category(models.TextChoices):
         OPEX = "opex", "OPEX"
         CAPEX = "capex", "CAPEX"
@@ -638,6 +708,7 @@ class PurchaseTender(TimeStampedModel):
         related_name="purchase_tenders",
     )
     currency = models.CharField(max_length=3, default="IDR")
+    cost_center = models.CharField(max_length=80, blank=True)
     publish_date = models.DateField(blank=True, null=True)
     bid_start_date = models.DateField(blank=True, null=True)
     close_date = models.DateField(blank=True)
@@ -755,7 +826,11 @@ class TenderBid(TimeStampedModel):
             raise ValidationError(errors)
 
 
-class BlanketOrder(TimeStampedModel):
+class BlanketOrder(PurchaseCostCenterStructuredFields, TimeStampedModel):
+    class AgreementPolicy(models.TextChoices):
+        QUANTITY_PERIOD = "quantity_period", "Quantity and Period"
+        PERIOD_ONLY = "period_only", "Period Only"
+
     class Status(models.TextChoices):
         DRAFT = "draft", "Draft"
         WAITING_APPROVAL = "waiting_approval", "Waiting Approval"
@@ -793,10 +868,19 @@ class BlanketOrder(TimeStampedModel):
         related_name="blanket_orders",
     )
     currency = models.CharField(max_length=3, default="IDR")
+    cost_center = models.CharField(max_length=80, blank=True)
     date_start = models.DateField()
     date_end = models.DateField()
     agreement_value = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    untaxed_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0, editable=False)
+    tax_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0, editable=False)
+    total_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0, editable=False)
     consumed_value = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    agreement_policy = models.CharField(
+        max_length=32,
+        choices=AgreementPolicy.choices,
+        default=AgreementPolicy.QUANTITY_PERIOD,
+    )
     terms = models.TextField(blank=True)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
     auto_closed = models.BooleanField(default=False, editable=False)
@@ -808,8 +892,10 @@ class BlanketOrder(TimeStampedModel):
     def clean(self):
         errors = {}
         validate_purchase_configuration_company(self, errors)
-        if self.date_end < self.date_start:
-            errors["date_end"] = "End date must be on or after start date."
+        if self.date_end <= self.date_start:
+            errors["date_end"] = "End date must be later than start date."
+        elif self.date_end == timezone.localdate():
+            errors["date_end"] = "End date cannot be today's date."
         if self.consumed_value > self.agreement_value:
             errors["consumed_value"] = "Consumed value cannot exceed agreement value."
         if self.vendor_id and self.vendor.company_id != self.company_id:
@@ -825,8 +911,9 @@ class BlanketOrder(TimeStampedModel):
 
 class VendorCategory(TimeStampedModel):
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="vendor_categories")
-    code = models.CharField(max_length=30)
+    code = models.CharField(max_length=30, blank=True)
     name = models.CharField(max_length=120)
+    description = models.TextField(blank=True)
     risk_level = models.CharField(max_length=20, default="standard")
     active = models.BooleanField(default=True)
 
@@ -836,6 +923,13 @@ class VendorCategory(TimeStampedModel):
 
     def __str__(self):
         return f"{self.code} - {self.name}"
+
+    def save(self, *args, **kwargs):
+        if not self.code:
+            self.code = f"VC-{uuid4().hex[:12].upper()}"
+            if kwargs.get("update_fields") is not None:
+                kwargs["update_fields"] = set(kwargs["update_fields"]) | {"code"}
+        return super().save(*args, **kwargs)
 
 
 class PurchaseLegalDocument(TimeStampedModel):
@@ -989,6 +1083,19 @@ class VendorProfile(TimeStampedModel):
     category = models.ForeignKey(VendorCategory, on_delete=models.SET_NULL, blank=True, null=True, related_name="vendors")
     registration_number = models.CharField(max_length=80, blank=True)
     tax_number = models.CharField(max_length=80, blank=True)
+    mobile_number = models.CharField(max_length=40, blank=True)
+    bank_account = models.CharField(max_length=80, blank=True)
+    parent_vendor = models.ForeignKey(
+        "self",
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="subsidiary_vendors",
+    )
+    payment_terms = models.TextField(
+        blank=True,
+        help_text="Default payment terms copied to new Purchase Orders when enabled in Purchase Settings.",
+    )
     purchase_credit_limit = models.DecimalField(
         max_digits=18,
         decimal_places=2,
@@ -1046,6 +1153,11 @@ class VendorProfile(TimeStampedModel):
             errors["partner"] = "Vendor contact must belong to the selected company."
         if self.category_id and self.category.company_id != self.company_id:
             errors["category"] = "Vendor category must belong to the selected company."
+        if self.parent_vendor_id:
+            if self.parent_vendor_id == self.pk:
+                errors["parent_vendor"] = "A vendor cannot be its own parent."
+            elif self.parent_vendor.company_id != self.company_id:
+                errors["parent_vendor"] = "Parent Vendor must belong to the selected company."
         if self.registration_number and type(self).objects.filter(
             company_id=self.company_id,
             registration_number__iexact=self.registration_number,
@@ -1082,6 +1194,52 @@ class VendorProfile(TimeStampedModel):
 
     def __str__(self):
         return str(self.partner)
+
+
+class VendorChangeProposal(TimeStampedModel):
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        WAITING_APPROVAL = "waiting_approval", "Waiting Approval"
+        APPROVED = "approved", "Approved"
+        REJECTED = "rejected", "Rejected"
+        CANCELLED = "cancelled", "Cancelled"
+
+    vendor = models.ForeignKey(
+        VendorProfile,
+        on_delete=models.PROTECT,
+        related_name="change_proposals",
+    )
+    proposed_values = models.JSONField(default=dict)
+    original_snapshot = models.JSONField(default=dict, editable=False)
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.DRAFT)
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="requested_vendor_changes",
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="reviewed_vendor_changes",
+        editable=False,
+    )
+    reviewed_at = models.DateTimeField(blank=True, null=True, editable=False)
+    review_reason = models.TextField(blank=True, editable=False)
+
+    class Meta:
+        ordering = ["-created_at", "-pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["vendor"],
+                condition=models.Q(status__in=["draft", "waiting_approval"]),
+                name="unique_open_vendor_change_proposal",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.vendor} - {self.get_status_display()}"
 
 
 class VendorLegalDocument(TimeStampedModel):
@@ -2120,7 +2278,17 @@ class PurchaseTeam(TimeStampedModel):
         if not self.code:
             self.code = f"PT-{uuid4().hex[:8].upper()}"
         self.status = "active" if self.active else "inactive"
-        return super().save(*args, **kwargs)
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None:
+            kwargs["update_fields"] = set(update_fields) | {"code", "status"}
+        result = super().save(*args, **kwargs)
+        if self.manager_id:
+            PurchaseTeamMember.objects.get_or_create(
+                team_id=self.pk,
+                user_id=self.manager_id,
+                defaults={"role": "Team Lead"},
+            )
+        return result
 
     def delete(self, *args, **kwargs):
         if self.code:
@@ -2160,8 +2328,15 @@ class PurchaseTeamMember(TimeStampedModel):
                 errors["user"] = "Member must have access to the Purchase Team company."
         if self.is_primary and self.pk and not self.categories.exists():
             errors["is_primary"] = "A Primary Buyer must have at least one assigned category."
+        if self.pk and self.team_id and self.categories.exclude(company_id=self.team.company_id).exists():
+            errors["categories"] = "Assigned categories must belong to the Purchase Team company."
         if errors:
             raise ValidationError(errors)
+
+    def delete(self, *args, **kwargs):
+        if self.team_id and self.user_id == self.team.manager_id:
+            raise ValidationError("The Team Lead cannot be removed from the Purchase Team.")
+        return super().delete(*args, **kwargs)
 
 
 class PurchaseKPITemplate(TimeStampedModel):
@@ -2898,6 +3073,10 @@ class PurchaseSetting(TimeStampedModel):
             "vendor pricelist valid on the transaction date."
         ),
     )
+    is_use_vendor_payment_terms = models.BooleanField(
+        default=True,
+        verbose_name="Use Vendor Default Payment Terms",
+    )
     allow_order_revision = models.BooleanField(
         default=False,
         verbose_name="Allow Order Revision",
@@ -3017,7 +3196,13 @@ class PurchaseSetting(TimeStampedModel):
         return f"Purchase Settings - {self.company}"
 
 
-class PurchaseOrderControl(TimeStampedModel):
+class PurchaseOrderControl(PurchaseCostCenterStructuredFields, TimeStampedModel):
+    class DurationUnit(models.TextChoices):
+        DAY = "day", "Day"
+        WEEK = "week", "Week"
+        MONTH = "month", "Month"
+        YEAR = "year", "Year"
+
     class ReceivingStatus(models.TextChoices):
         NOT_RECEIVED = "not_received", "Not Received"
         PARTIAL = "partial", "Partially Received"
@@ -3089,6 +3274,31 @@ class PurchaseOrderControl(TimeStampedModel):
     discount_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0, validators=[MaxValueValidator(100)])
     cost_center = models.CharField(max_length=80, blank=True)
     contract_terms = models.TextField(blank=True)
+    payment_terms = models.TextField(blank=True)
+    delivery_terms = models.TextField(blank=True)
+    legal_terms = models.TextField(blank=True)
+    vendor_address = models.TextField(blank=True)
+    bill_address = models.TextField(blank=True)
+    remark_template = models.ForeignKey(
+        PurchaseRemarkTemplate,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="purchase_orders",
+    )
+    remark_template_code = models.CharField(max_length=64, blank=True, editable=False)
+    remark_template_name = models.CharField(max_length=255, blank=True, editable=False)
+    expected_date = models.DateField(blank=True, null=True)
+    rental_duration = models.PositiveIntegerField(default=0)
+    duration_unit = models.CharField(
+        max_length=8,
+        choices=DurationUnit.choices,
+        default=DurationUnit.DAY,
+    )
+    is_multiple_expected_date = models.BooleanField(default=False)
+    is_multiple_rental_duration = models.BooleanField(default=False)
+    expected_return_date = models.DateField(blank=True, null=True, editable=False)
+    total_rental_duration = models.PositiveIntegerField(default=0, editable=False)
     communication_history = models.TextField(blank=True)
     receiving_status = models.CharField(max_length=20, choices=ReceivingStatus.choices, default=ReceivingStatus.NOT_RECEIVED)
     accounting_status = models.CharField(max_length=20, choices=AccountingStatus.choices, default=AccountingStatus.NOT_BILLED)
@@ -3107,6 +3317,7 @@ class PurchaseOrderControl(TimeStampedModel):
         default=0,
         editable=False,
     )
+    vendor_moq_warning_message = models.TextField(blank=True, editable=False)
     approval_reference = models.CharField(max_length=80, blank=True)
 
     class Meta:
@@ -3466,6 +3677,12 @@ class PurchaseInsight(TimeStampedModel):
 
 
 class PurchaseQuotationLine(TimeStampedModel):
+    class PriceSource(models.TextChoices):
+        PRICELIST = "pricelist", "Pricelist"
+        PURCHASE_REQUEST = "purchase_request", "Purchase Request"
+        MANUAL = "manual", "Manual"
+        NO_MATCH = "no_match", "No Match"
+
     quotation = models.ForeignKey(PurchaseQuotation, on_delete=models.CASCADE, related_name="lines")
     request_line = models.ForeignKey(PurchaseRequestLine, on_delete=models.SET_NULL, blank=True, null=True, related_name="quotation_lines")
     blanket_order_line = models.ForeignKey(
@@ -3480,18 +3697,102 @@ class PurchaseQuotationLine(TimeStampedModel):
     specification = models.TextField(blank=True)
     quantity = models.DecimalField(max_digits=18, decimal_places=3, default=1, validators=[MinValueValidator(Decimal("0.001"))])
     unit_price = models.DecimalField(max_digits=18, decimal_places=2, default=0)
-    tax_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0, validators=[MaxValueValidator(100)])
+    tax_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+    )
     discount_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0, validators=[MaxValueValidator(100)])
+    tax_snapshot = models.JSONField(default=dict, blank=True, editable=False)
     promised_date = models.DateField(blank=True, null=True)
     expiry_date = models.DateField(blank=True, null=True)
+    free_product = models.BooleanField(default=False, editable=False)
+    free_product_source_line = models.ForeignKey(
+        "self",
+        on_delete=models.CASCADE,
+        blank=True,
+        null=True,
+        related_name="free_product_benefit_lines",
+        editable=False,
+    )
+    price_source = models.CharField(max_length=20, choices=PriceSource.choices, blank=True)
+    applied_pricelist = models.ForeignKey(
+        VendorPricelist,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="purchase_quotation_lines",
+        editable=False,
+    )
+    applied_pricelist_tier = models.ForeignKey(
+        VendorPricelistTier,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="purchase_quotation_lines",
+        editable=False,
+    )
+    price_source_note = models.CharField(max_length=255, blank=True, editable=False)
+    discount_formula = models.CharField(max_length=64, blank=True, editable=False)
 
     class Meta:
         ordering = ["id"]
 
     @property
+    def untaxed_amount(self):
+        if self.tax_snapshot:
+            return Decimal(str(self.tax_snapshot.get("untaxed_amount", "0")))
+        if self.free_product:
+            return Decimal("0")
+        return self.quantity * self.unit_price * (
+            Decimal("1") - self.discount_percent / Decimal("100")
+        )
+
+    @property
+    def tax_amount(self):
+        if self.tax_snapshot:
+            return Decimal(str(self.tax_snapshot.get("taxes_amount", "0")))
+        return self.untaxed_amount * self.tax_percent / Decimal("100")
+
+    @property
+    def total_amount(self):
+        if self.tax_snapshot:
+            return Decimal(str(self.tax_snapshot.get("total_amount", "0")))
+        return self.untaxed_amount + self.tax_amount
+
+    @property
     def subtotal(self):
-        discounted = self.quantity * self.unit_price * (Decimal("1") - self.discount_percent / Decimal("100"))
-        return discounted * (Decimal("1") + self.tax_percent / Decimal("100"))
+        return self.total_amount
+
+    def build_tax_snapshot(self):
+        untaxed = self.untaxed_amount
+        tax = untaxed * self.tax_percent / Decimal("100")
+        discount = (
+            Decimal("0")
+            if self.free_product
+            else self.quantity * self.unit_price * self.discount_percent / Decimal("100")
+        )
+        taxes = []
+        if self.tax_percent:
+            taxes.append(
+                {
+                    "name": f"Tax {self.tax_percent}%",
+                    "amount_type": "percent",
+                    "amount": str(self.tax_percent),
+                    "price_include": False,
+                }
+            )
+        return {
+            "taxes": taxes,
+            "subtotal": str(untaxed + tax),
+            "discount_line_amount": str(discount),
+            "global_discount_line_amount": "0",
+            "total_discount_line_amount": str(discount),
+            "untaxed_amount": str(untaxed),
+            "taxes_amount": str(tax),
+            "total_amount": str(untaxed + tax),
+        }
 
     def clean(self):
         if not self.expiry_date and self.quotation_id:
@@ -3505,6 +3806,18 @@ class PurchaseQuotationLine(TimeStampedModel):
             errors["quantity"] = "Quantity must be greater than zero."
         if self.unit_price < 0:
             errors["unit_price"] = "Unit price cannot be negative."
+        if self.free_product and self.unit_price != 0:
+            errors["unit_price"] = "Free-product RFQ lines must have a zero unit price."
+        if self.free_product_source_line_id:
+            source = self.free_product_source_line
+            if self.pk and source.pk == self.pk:
+                errors["free_product_source_line"] = "A free-product line cannot reference itself."
+            elif source.quotation_id != self.quotation_id:
+                errors["free_product_source_line"] = "Free-product source must belong to the same RFQ."
+            elif source.free_product:
+                errors["free_product_source_line"] = "Free-product benefits must reference a paid RFQ line."
+            if not self.free_product:
+                errors["free_product"] = "A line with a free-product source must be marked as free."
         if errors:
             raise ValidationError(errors)
 
@@ -3515,6 +3828,181 @@ class PurchaseQuotationLine(TimeStampedModel):
 
     def __str__(self):
         return f"{self.quotation} - {self.description}"
+
+
+class PurchaseOrderLinePricingProvenance(PurchaseCostCenterStructuredFields, TimeStampedModel):
+    """Purchase-owned price and free-benefit trace for a core Purchase Order line."""
+
+    order_line = models.OneToOneField(
+        PurchaseOrderLine,
+        on_delete=models.CASCADE,
+        related_name="purchase_pricing_provenance",
+    )
+    quotation_line = models.OneToOneField(
+        PurchaseQuotationLine,
+        on_delete=models.PROTECT,
+        related_name="purchase_order_pricing_provenance",
+        blank=True,
+        null=True,
+    )
+    blanket_order_line = models.ForeignKey(
+        "BlanketOrderLine",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="purchase_order_pricing_provenance",
+    )
+    free_product = models.BooleanField(default=False, editable=False)
+    free_product_source_order_line = models.ForeignKey(
+        PurchaseOrderLine,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="free_product_benefit_provenance",
+        editable=False,
+    )
+    price_source = models.CharField(
+        max_length=20,
+        choices=PurchaseQuotationLine.PriceSource.choices,
+        blank=True,
+    )
+    applied_pricelist = models.ForeignKey(
+        VendorPricelist,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="purchase_order_line_provenance",
+        editable=False,
+    )
+    applied_pricelist_tier = models.ForeignKey(
+        VendorPricelistTier,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="purchase_order_line_provenance",
+        editable=False,
+    )
+    price_source_note = models.CharField(max_length=255, blank=True, editable=False)
+    discount_formula = models.CharField(max_length=64, blank=True, editable=False)
+    applicable_vendor_moq = models.DecimalField(
+        max_digits=18,
+        decimal_places=3,
+        default=0,
+        editable=False,
+    )
+    is_below_vendor_moq = models.BooleanField(default=False, editable=False)
+    moq_warning_message = models.TextField(blank=True, editable=False)
+    is_rental = models.BooleanField(default=False, editable=False)
+    rent_duration = models.PositiveIntegerField(default=0)
+    rental_period = models.CharField(
+        max_length=8,
+        choices=PurchaseOrderControl.DurationUnit.choices,
+        default=PurchaseOrderControl.DurationUnit.DAY,
+    )
+    expected_date = models.DateField(blank=True, null=True)
+    expiry_date = models.DateField(blank=True, null=True)
+    rental_end_date = models.DateField(blank=True, null=True, editable=False)
+    total_rental_duration = models.PositiveIntegerField(default=0, editable=False)
+    cost_center = models.CharField(max_length=80, blank=True)
+    tax_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        editable=False,
+    )
+    discount_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        editable=False,
+    )
+    tax_snapshot = models.JSONField(default=dict, blank=True, editable=False)
+
+    class Meta:
+        ordering = ["order_line_id"]
+
+    @property
+    def untaxed_amount(self):
+        if self.tax_snapshot:
+            return Decimal(str(self.tax_snapshot.get("untaxed_amount", "0")))
+        if self.free_product:
+            return Decimal("0")
+        rental_multiplier = Decimal(self.total_rental_duration or 1) if self.is_rental else Decimal("1")
+        return self.order_line.quantity * self.order_line.unit_price * rental_multiplier * (
+            Decimal("1") - self.discount_percent / Decimal("100")
+        )
+
+    @property
+    def tax_amount(self):
+        if self.tax_snapshot:
+            return Decimal(str(self.tax_snapshot.get("taxes_amount", "0")))
+        return self.untaxed_amount * self.tax_percent / Decimal("100")
+
+    @property
+    def total_amount(self):
+        if self.tax_snapshot:
+            return Decimal(str(self.tax_snapshot.get("total_amount", "0")))
+        return self.untaxed_amount + self.tax_amount
+
+    def build_tax_snapshot(self):
+        untaxed = self.untaxed_amount
+        tax = untaxed * self.tax_percent / Decimal("100")
+        rental_multiplier = Decimal(self.total_rental_duration or 1) if self.is_rental else Decimal("1")
+        discount = (
+            Decimal("0")
+            if self.free_product
+            else self.order_line.quantity
+            * self.order_line.unit_price
+            * rental_multiplier
+            * self.discount_percent
+            / Decimal("100")
+        )
+        taxes = []
+        if self.tax_percent:
+            taxes.append(
+                {
+                    "name": f"Tax {self.tax_percent}%",
+                    "amount_type": "percent",
+                    "amount": str(self.tax_percent),
+                    "price_include": False,
+                }
+            )
+        return {
+            "taxes": taxes,
+            "subtotal": str(untaxed + tax),
+            "discount_line_amount": str(discount),
+            "global_discount_line_amount": "0",
+            "total_discount_line_amount": str(discount),
+            "untaxed_amount": str(untaxed),
+            "taxes_amount": str(tax),
+            "total_amount": str(untaxed + tax),
+        }
+
+    def clean(self):
+        errors = {}
+        if self.quotation_line_id and self.order_line_id:
+            quotation = self.quotation_line.quotation
+            if quotation.company_id != self.order_line.order.company_id:
+                errors["quotation_line"] = "RFQ and Purchase Order line must belong to the same company."
+        if self.blanket_order_line_id and self.quotation_line_id:
+            if self.blanket_order_line_id != self.quotation_line.blanket_order_line_id:
+                errors["blanket_order_line"] = "Blanket Order provenance must match the RFQ line."
+        if self.free_product_source_order_line_id:
+            if self.free_product_source_order_line.order_id != self.order_line.order_id:
+                errors["free_product_source_order_line"] = (
+                    "Free-product source must belong to the same Purchase Order."
+                )
+            if not self.free_product:
+                errors["free_product"] = "A line with a free-product source must be marked as free."
+        if self.free_product and self.order_line.unit_price != 0:
+            errors["order_line"] = "Free-product Purchase Order lines must have a zero unit price."
+        if errors:
+            raise ValidationError(errors)
+
+    def __str__(self):
+        return f"{self.order_line} - {self.get_price_source_display() or 'Unspecified'}"
 
 
 class DirectPurchaseLine(TimeStampedModel):
@@ -3588,7 +4076,7 @@ class ServiceWorkOrderLine(TimeStampedModel):
         return f"{self.work_order} - {self.description}"
 
 
-class PurchaseTenderLine(TimeStampedModel):
+class PurchaseTenderLine(PurchaseCostCenterStructuredFields, TimeStampedModel):
     tender = models.ForeignKey(PurchaseTender, on_delete=models.CASCADE, related_name="lines")
     request_line = models.ForeignKey(PurchaseRequestLine, on_delete=models.SET_NULL, blank=True, null=True, related_name="tender_lines")
     product = models.ForeignKey(Product, on_delete=models.PROTECT, blank=True, null=True, related_name="purchase_tender_lines")
@@ -3596,6 +4084,7 @@ class PurchaseTenderLine(TimeStampedModel):
     specification = models.TextField(blank=True)
     quantity = models.DecimalField(max_digits=18, decimal_places=3, default=1)
     target_unit_price = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    cost_center = models.CharField(max_length=80, blank=True)
     delivery_date = models.DateField(blank=True, null=True)
 
     class Meta:
@@ -3907,7 +4396,12 @@ class TenderAuditLog(TimeStampedModel):
         return f"{self.tender} - {self.action}"
 
 
-class BlanketOrderLine(TimeStampedModel):
+class BlanketOrderLine(PurchaseCostCenterStructuredFields, TimeStampedModel):
+    class PriceSource(models.TextChoices):
+        PRICELIST = "pricelist", "Pricelist"
+        MANUAL = "manual", "Manual"
+        NO_MATCH = "no_match", "No Match"
+
     blanket_order = models.ForeignKey(BlanketOrder, on_delete=models.CASCADE, related_name="lines")
     request_line = models.ForeignKey(
         PurchaseRequestLine,
@@ -3918,17 +4412,134 @@ class BlanketOrderLine(TimeStampedModel):
     )
     product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name="blanket_order_lines")
     description = models.CharField(max_length=240, blank=True)
+    cost_center = models.CharField(max_length=80, blank=True)
     agreed_quantity = models.DecimalField(max_digits=18, decimal_places=3, default=0)
     released_quantity = models.DecimalField(max_digits=18, decimal_places=3, default=0)
     unit_price = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    tax_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+    )
+    tax_snapshot = models.JSONField(default=dict, blank=True, editable=False)
     minimum_release_quantity = models.DecimalField(max_digits=18, decimal_places=3, default=0)
+    free_product = models.BooleanField(default=False, editable=False)
+    free_product_source_line = models.ForeignKey(
+        "self",
+        on_delete=models.CASCADE,
+        blank=True,
+        null=True,
+        related_name="free_product_benefit_lines",
+        editable=False,
+    )
+    price_source = models.CharField(max_length=20, choices=PriceSource.choices, blank=True)
+    applied_pricelist = models.ForeignKey(
+        VendorPricelist,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="blanket_order_lines",
+        editable=False,
+    )
+    applied_pricelist_tier = models.ForeignKey(
+        VendorPricelistTier,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="blanket_order_lines",
+        editable=False,
+    )
+    price_source_note = models.CharField(max_length=255, blank=True, editable=False)
+    discount_formula = models.CharField(max_length=64, blank=True, editable=False)
 
     class Meta:
         ordering = ["product__name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["free_product_source_line"],
+                condition=models.Q(free_product_source_line__isnull=False),
+                name="unique_blanket_free_benefit_source",
+            )
+        ]
+
+    @property
+    def untaxed_amount(self):
+        if self.tax_snapshot:
+            return Decimal(str(self.tax_snapshot.get("untaxed_amount", "0")))
+        if self.free_product:
+            return Decimal("0")
+        return self.agreed_quantity * self.unit_price
+
+    @property
+    def tax_amount(self):
+        if self.tax_snapshot:
+            return Decimal(str(self.tax_snapshot.get("taxes_amount", "0")))
+        return self.untaxed_amount * self.tax_percent / Decimal("100")
+
+    @property
+    def total_amount(self):
+        if self.tax_snapshot:
+            return Decimal(str(self.tax_snapshot.get("total_amount", "0")))
+        return self.untaxed_amount + self.tax_amount
+
+    @property
+    def subtotal(self):
+        return self.total_amount
+
+    def build_tax_snapshot(self):
+        untaxed = self.untaxed_amount
+        tax = untaxed * self.tax_percent / Decimal("100")
+        taxes = []
+        if self.tax_percent:
+            taxes.append(
+                {
+                    "name": f"Tax {self.tax_percent}%",
+                    "amount_type": "percent",
+                    "amount": str(self.tax_percent),
+                    "price_include": False,
+                }
+            )
+        return {
+            "taxes": taxes,
+            "subtotal": str(untaxed + tax),
+            "discount_line_amount": "0",
+            "global_discount_line_amount": "0",
+            "total_discount_line_amount": "0",
+            "untaxed_amount": str(untaxed),
+            "taxes_amount": str(tax),
+            "total_amount": str(untaxed + tax),
+        }
 
     def clean(self):
-        if self.released_quantity > self.agreed_quantity:
-            raise ValidationError({"released_quantity": "Released quantity cannot exceed agreed quantity."})
+        errors = {}
+        if (
+            self.blanket_order_id
+            and self.blanket_order.agreement_policy == BlanketOrder.AgreementPolicy.QUANTITY_PERIOD
+            and self.released_quantity > self.agreed_quantity
+        ):
+            errors["released_quantity"] = "Released quantity cannot exceed agreed quantity."
+        if self.product_id and self.blanket_order_id and self.product.company_id != self.blanket_order.company_id:
+            errors["product"] = "Product must belong to the Blanket Order company."
+        if self.free_product and self.unit_price != 0:
+            errors["unit_price"] = "Free-product Blanket Order lines must have a zero unit price."
+        if self.free_product_source_line_id:
+            source = self.free_product_source_line
+            if self.pk and source.pk == self.pk:
+                errors["free_product_source_line"] = "A free-product line cannot reference itself."
+            elif source.blanket_order_id != self.blanket_order_id:
+                errors["free_product_source_line"] = "Free-product source must belong to the same Blanket Order."
+            elif source.free_product:
+                errors["free_product_source_line"] = "Free-product benefits must reference a paid Blanket Order line."
+            if not self.free_product:
+                errors["free_product"] = "A line with a free-product source must be marked as free."
+            if self.request_line_id:
+                errors["request_line"] = "Generated free-product lines cannot consume Purchase Request quantity."
+        if self.applied_pricelist_tier_id and self.applied_pricelist_id:
+            if self.applied_pricelist_tier.item.pricelist_id != self.applied_pricelist_id:
+                errors["applied_pricelist_tier"] = "Applied tier must belong to the applied pricelist."
+        if errors:
+            raise ValidationError(errors)
 
     def __str__(self):
         return f"{self.blanket_order} - {self.product}"
@@ -3968,6 +4579,23 @@ class PurchaseProductVariant(TimeStampedModel):
 
     def __str__(self):
         return f"{self.product} - {self.variant_code}"
+
+
+class PurchaseProductRentalProfile(TimeStampedModel):
+    """Purchase-owned rental eligibility for a shared core Product."""
+
+    product = models.OneToOneField(
+        Product,
+        on_delete=models.CASCADE,
+        related_name="purchase_rental_profile",
+    )
+    is_rental = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["product__name"]
+
+    def __str__(self):
+        return f"{self.product} - {'Rental' if self.is_rental else 'Regular'}"
 
 
 class VendorCommunication(TimeStampedModel):
@@ -4030,6 +4658,108 @@ class PurchaseOrderCommunication(TimeStampedModel):
 
     def __str__(self):
         return f"{self.order} - {self.subject}"
+
+
+class PurchaseMailTemplate(TimeStampedModel):
+    """Company-owned, editable RFQ mail template with stable seed identity."""
+
+    class TemplateType(models.TextChoices):
+        STANDARD = "standard_rfq", "Standard RFQ Request"
+        URGENT = "urgent_rfq", "Urgent RFQ Request"
+        FOLLOW_UP = "follow_up_rfq", "Follow-up RFQ"
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.PROTECT,
+        related_name="purchase_mail_templates",
+    )
+    code = models.CharField(max_length=32, choices=TemplateType.choices)
+    name = models.CharField(max_length=120)
+    subject_template = models.CharField(max_length=255)
+    body_html = models.TextField()
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["company", "code"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "code"],
+                name="unique_purchase_mail_template_code",
+            )
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.pk:
+            original = type(self).objects.filter(pk=self.pk).values(
+                "company_id", "code"
+            ).first()
+            if original and (
+                original["company_id"] != self.company_id
+                or original["code"] != self.code
+            ):
+                raise ValidationError(
+                    {"code": "Mail Template company and code cannot be changed."}
+                )
+
+    def __str__(self):
+        return f"{self.company.code} - {self.name}"
+
+
+class PurchaseQuotationCommunication(TimeStampedModel):
+    """Immutable delivery evidence for one RFQ email attempt."""
+
+    class Status(models.TextChoices):
+        QUEUED = "queued", "Queued"
+        SENT = "sent", "Sent"
+        FAILED = "failed", "Failed"
+
+    quotation = models.ForeignKey(
+        PurchaseQuotation,
+        on_delete=models.CASCADE,
+        related_name="communications",
+    )
+    template = models.ForeignKey(
+        PurchaseMailTemplate,
+        on_delete=models.PROTECT,
+        related_name="communications",
+    )
+    subject = models.CharField(max_length=255)
+    email_from = models.EmailField()
+    email_to = models.TextField()
+    email_cc = models.TextField(blank=True)
+    body_html = models.TextField()
+    status = models.CharField(
+        max_length=12,
+        choices=Status.choices,
+        default=Status.QUEUED,
+        editable=False,
+    )
+    failure_reason = models.TextField(blank=True, editable=False)
+    sent_at = models.DateTimeField(blank=True, null=True, editable=False)
+    sent_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="purchase_quotation_communications",
+    )
+
+    class Meta:
+        ordering = ["-created_at", "-pk"]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if (
+            self.quotation_id
+            and self.template_id
+            and self.quotation.company_id != self.template.company_id
+        ):
+            errors["template"] = "Mail Template must belong to the RFQ company."
+        if errors:
+            raise ValidationError(errors)
+
+    def __str__(self):
+        return f"{self.quotation.number} - {self.subject}"
 
 
 class ProductBudgetMovement(TimeStampedModel):
@@ -4260,6 +4990,35 @@ class PurchaseAccountingLine(TimeStampedModel):
 
     def __str__(self):
         return f"{self.document} - {self.account_code}"
+
+
+class PurchaseJournalLineAnalyticSnapshot(PurchaseCostCenterStructuredFields, TimeStampedModel):
+    """Immutable Purchase assignment attached to the real Finance journal line."""
+
+    journal_line = models.OneToOneField(
+        "gsshop_finance.JournalLine",
+        on_delete=models.CASCADE,
+        related_name="purchase_analytic_snapshot",
+    )
+    order = models.ForeignKey(
+        PurchaseOrder,
+        on_delete=models.PROTECT,
+        related_name="journal_line_analytic_snapshots",
+    )
+    order_line = models.ForeignKey(
+        PurchaseOrderLine,
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="purchase_journal_analytic_snapshots",
+    )
+    cost_center = models.CharField(max_length=80, blank=True)
+
+    class Meta:
+        ordering = ["journal_line_id"]
+
+    def __str__(self):
+        return f"{self.order.number} - journal line {self.journal_line_id}"
 
 
 class PurchaseBillLineProvenance(TimeStampedModel):

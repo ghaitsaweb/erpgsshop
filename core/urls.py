@@ -32,6 +32,11 @@ urlpatterns = [
     path("app/<slug:entity>/", views.entity_list, name="entity_list"),
     path("app/<slug:entity>/jump/", views.entity_jump, name="entity_jump"),
     path("app/<slug:entity>/new/", views.entity_create, name="entity_create"),
+    path(
+        "app/<slug:entity>/<int:pk>/image/<str:field_name>/",
+        views.entity_image,
+        name="entity_image",
+    ),
     path("app/invoices/<int:pk>/add-payment/", views.invoice_add_payment, name="invoice_add_payment"),
     path("app/sales/merge/", views.sales_merge, name="sales_merge"),
     path("app/<slug:entity>/bulk-delete/", views.entity_bulk_delete, name="entity_bulk_delete"),

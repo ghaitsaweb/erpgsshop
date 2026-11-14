@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="{% static 'css/app.css' %}">
   {% block extra_css %}{% endblock %}
 </head>
-<body data-developer-mode="{% if developer_mode %}true{% else %}false{% endif %}" data-current-route="{{ request.resolver_match.view_name|default:'' }}" data-current-app="{{ active_app_slug|default:'' }}" data-current-entity="{{ developer_page_meta.entity|default:'' }}" data-current-model="{{ developer_page_meta.model|default:'' }}" data-current-table="{{ developer_page_meta.table|default:'' }}" data-current-object-id="{{ developer_page_meta.object_id|default:'' }}">
+<body class="{% block body_class %}{% endblock %}" data-developer-mode="{% if developer_mode %}true{% else %}false{% endif %}" data-current-route="{{ request.resolver_match.view_name|default:'' }}" data-current-app="{{ active_app_slug|default:'' }}" data-current-entity="{{ developer_page_meta.entity|default:'' }}" data-current-model="{{ developer_page_meta.model|default:'' }}" data-current-table="{{ developer_page_meta.table|default:'' }}" data-current-object-id="{{ developer_page_meta.object_id|default:'' }}" {% block body_attrs %}{% endblock %}>
   <div class="app-shell">
     <button class="shell-sidebar-backdrop" type="button" data-sidebar-close aria-label="Close navigation" tabindex="-1"></button>
     <aside class="sidebar" id="shell-sidebar" data-shell-sidebar aria-label="ERP navigation">
@@ -22,21 +22,23 @@
         <button class="sidebar-close" type="button" data-sidebar-close aria-label="Close navigation">×</button>
       </div>
 
-      {% if current_nav_app %}
-        <div class="active-app-card">
-          <a class="active-app-main" href="{% url 'app_workspace' current_nav_app.slug %}">
-            <span class="active-app-icon app-tone-{{ current_nav_app|app_category_key }}">
-              <svg aria-hidden="true"><use href="{% static 'img/app-icons.svg' %}#icon-{{ current_nav_app|app_icon_key }}"></use></svg>
-            </span>
-            <span><small>{{ current_nav_app.category }}</small><strong>{{ current_nav_app.name }}</strong></span>
+      {% block sidebar_application_context %}
+        {% if current_nav_app %}
+          <div class="active-app-card">
+            <a class="active-app-main" href="{% url 'app_workspace' current_nav_app.slug %}">
+              <span class="active-app-icon app-tone-{{ current_nav_app|app_category_key }}">
+                <svg aria-hidden="true"><use href="{% static 'img/app-icons.svg' %}#icon-{{ current_nav_app|app_icon_key }}"></use></svg>
+              </span>
+              <span><small>{{ current_nav_app.category }}</small><strong>{{ current_nav_app.name }}</strong></span>
+            </a>
+            <a class="app-switch-link" href="{% url 'app_manager' %}" data-app-switcher-open title="Switch application" aria-label="Switch application">⇄</a>
+          </div>
+        {% else %}
+          <a class="application-launcher" href="{% url 'app_manager' %}" data-app-switcher-open>
+            <span class="nav-icon">▦</span><span>Switch application</span><i>⇄</i>
           </a>
-          <a class="app-switch-link" href="{% url 'app_manager' %}" data-app-switcher-open title="Switch application" aria-label="Switch application">⇄</a>
-        </div>
-      {% else %}
-        <a class="application-launcher" href="{% url 'app_manager' %}" data-app-switcher-open>
-          <span class="nav-icon">▦</span><span>Switch application</span><i>⇄</i>
-        </a>
-      {% endif %}
+        {% endif %}
+      {% endblock %}
 
       <label class="menu-search" for="menu-search-input">
         <span>⌕</span>
@@ -44,6 +46,7 @@
       </label>
 
       <div class="global-menu-results" id="global-menu-results" hidden>
+        {% block global_menu_search_results %}
         <p class="nav-label">Search results</p>
         {% for item in global_menu_items %}
           <a class="global-menu-result" data-global-menu-item data-search="{{ item.search }}" href="{{ item.url }}">
@@ -51,10 +54,13 @@
             <span><strong>{{ item.label }}</strong><small>{{ item.app }} · {{ item.group }}{% if item.installed %} · Installed{% endif %}</small></span>
           </a>
         {% endfor %}
+        {% block global_menu_search_items %}{% endblock %}
         <p class="menu-empty" id="global-menu-search-empty" hidden>No matching menu.</p>
+        {% endblock %}
       </div>
 
-      <nav class="main-nav" id="primary-navigation" data-nav-mode="{% if current_nav_app %}application{% else %}workspace{% endif %}" aria-label="Primary navigation">
+      <nav class="main-nav" id="primary-navigation" data-nav-mode="{% block sidebar_nav_mode %}{% if current_nav_app %}application{% else %}workspace{% endif %}{% endblock %}" aria-label="Primary navigation">
+        {% block sidebar_navigation %}
         {% if perms.core.view_company or perms.organization.view_branch or perms.auth.view_user %}
           <details class="nav-section nav-group organization-quick-nav" open>
             <summary data-group-search="company branch organization"><span class="nav-icon">O</span><span>Master Organization</span><i>⌄</i></summary>
@@ -99,11 +105,12 @@
           {% endif %}
         {% endfor %}
         <p class="menu-empty" id="menu-search-empty" hidden>No matching menu.</p>
+        {% endblock %}
       </nav>
 
       <div class="sidebar-foot">
         <a class="nav-item" href="{% url 'database_manager' %}"><span class="nav-icon">D</span>Switch database</a>
-        <a class="nav-item" href="{% url 'admin:index' %}"><span class="nav-icon">A</span>Administration</a>
+        <a class="nav-item {% if request.resolver_match.namespace == 'admin' %}active{% endif %}" href="{% url 'admin:index' %}"><span class="nav-icon">A</span>Administration</a>
         <form method="post" action="{% url 'logout' %}">
           {% csrf_token %}
           <button class="nav-item nav-button" type="submit"><span class="nav-icon">↗</span>Sign out</button>
@@ -118,12 +125,14 @@
             <span aria-hidden="true">•••</span>
           </button>
           <div class="topbar-title">
-            <nav class="breadcrumbs" aria-label="Breadcrumb">
-              {% for crumb in breadcrumbs %}
-                {% if crumb.url %}<a href="{{ crumb.url }}">{{ crumb.label }}</a>{% else %}<span>{{ crumb.label }}</span>{% endif %}
-                {% if not forloop.last %}<i>›</i>{% endif %}
-              {% endfor %}
-            </nav>
+            {% block topbar_breadcrumbs %}
+              <nav class="breadcrumbs" aria-label="Breadcrumb">
+                {% for crumb in breadcrumbs %}
+                  {% if crumb.url %}<a href="{{ crumb.url }}">{{ crumb.label }}</a>{% else %}<span>{{ crumb.label }}</span>{% endif %}
+                  {% if not forloop.last %}<i>›</i>{% endif %}
+                {% endfor %}
+              </nav>
+            {% endblock %}
             <p class="eyebrow">Business operations</p>
             <h1>{% block page_title %}ERP GSSHOP{% endblock %}</h1>
           </div>
@@ -151,9 +160,11 @@
         </div>
       {% endif %}
 
-      <section class="page-content">
-        {% block content %}{% endblock %}
-      </section>
+      {% block page_content %}
+        <section class="page-content">
+          {% block content %}{% endblock %}
+        </section>
+      {% endblock %}
     </main>
   </div>
 
@@ -309,10 +320,58 @@
       const navigation = document.getElementById('primary-navigation');
       const globalResults = document.getElementById('global-menu-results');
       const globalEmpty = document.getElementById('global-menu-search-empty');
+      const menuEmpty = document.getElementById('menu-search-empty');
       if (input) {
         input.addEventListener('input', () => {
           const query = input.value.trim().toLowerCase().replace(/\s+/g, ' ');
           const terms = query.split(' ').filter(Boolean);
+
+          if (navigation?.dataset.navMode === 'admin') {
+            let matches = 0;
+            navigation.hidden = false;
+            globalResults.hidden = true;
+            globalEmpty.hidden = true;
+
+            const homeSection = navigation.querySelector('.erp-admin-home-link');
+            const homeItem = homeSection?.querySelector('[data-menu-item]');
+            if (homeItem) {
+              const haystack = (homeItem.dataset.search || homeItem.textContent).toLowerCase();
+              const visible = !query || terms.every((term) => haystack.includes(term));
+              homeSection.hidden = !visible;
+              if (query && visible) matches += 1;
+            }
+
+            navigation.querySelectorAll('.erp-admin-nav-group').forEach((group) => {
+              const summary = group.querySelector('summary');
+              const groupHaystack = (summary?.dataset.groupSearch || summary?.textContent || '').toLowerCase();
+              const groupMatches = Boolean(query) && terms.every((term) => groupHaystack.includes(term));
+              let visibleItems = 0;
+
+              group.querySelectorAll('[data-menu-item]').forEach((item) => {
+                const haystack = (item.dataset.search || item.textContent).toLowerCase();
+                const visible = !query || groupMatches || terms.every((term) => haystack.includes(term));
+                const row = item.closest('.erp-admin-nav-row') || item;
+                row.hidden = !visible;
+                if (query && visible) visibleItems += 1;
+              });
+
+              group.hidden = Boolean(query) && !groupMatches && visibleItems === 0;
+              if (query && !group.hidden) {
+                if (!Object.hasOwn(group.dataset, 'openBeforeSearch')) {
+                  group.dataset.openBeforeSearch = group.open ? '1' : '0';
+                }
+                group.open = true;
+              } else if (!query && Object.hasOwn(group.dataset, 'openBeforeSearch')) {
+                group.open = group.dataset.openBeforeSearch === '1';
+                delete group.dataset.openBeforeSearch;
+              }
+              if (query) matches += visibleItems;
+            });
+
+            if (menuEmpty) menuEmpty.hidden = !query || matches > 0;
+            return;
+          }
+
           let matches = 0;
           navigation.hidden = Boolean(query);
           globalResults.hidden = !query;

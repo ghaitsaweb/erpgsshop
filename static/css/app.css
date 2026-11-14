@@ -550,6 +550,13 @@ input[type="checkbox"].form-control { width: 20px; min-height: 20px; }
 .required, .field-error { color: var(--red); }
 .field-error { margin: 0; font-size: 11px; }
 .field small { color: var(--muted); }
+.image-field-preview { width: min(280px, 100%); min-height: 160px; display: grid; place-items: center; padding: 12px; overflow: hidden; border: 1px solid #dbe3ee; border-radius: 12px; color: #8591a3; background: linear-gradient(145deg, #f8fafc, #eef3f8); }
+.image-field-preview img { max-width: 100%; max-height: 180px; display: block; object-fit: contain; }
+.image-field-preview span { font-size: 10px; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; }
+.image-file-input { display: flex; align-items: flex-start; flex-direction: column; gap: 8px; }
+.image-file-input > .form-control { width: 100%; }
+.image-field-clear { display: inline-flex; align-items: center; gap: 7px; color: #7d3b37; cursor: pointer; font-size: 10px; font-weight: 750; }
+.image-field-clear input { width: 16px; height: 16px; margin: 0; accent-color: #b5473f; }
 .organization-access-options.form-control { max-height: 230px; min-height: 120px; margin: 0; padding: 7px; overflow: auto; list-style: none; background: #f8fafc; }
 .organization-access-options li + li { margin-top: 4px; }
 .organization-access-options > div + div { margin-top: 4px; }
@@ -599,10 +606,10 @@ input[type="checkbox"].form-control { width: 20px; min-height: 20px; }
 .delete-wizard-actions .btn:disabled { cursor: wait; opacity: .65; }
 
 .document-shell { max-width: 1280px; margin: 0 auto; }
-.document-commandbar { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 13px 13px 0 0; background: #f8faf9; }
-.document-actions { display: flex; align-items: center; gap: 8px; }
+.document-commandbar { min-width: 0; min-height: 58px; display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 13px 13px 0 0; background: #f8faf9; }
+.document-actions { min-width: 0; flex: 1 1 0; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .document-actions form { margin: 0; }
-.document-commandbar__right { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+.document-commandbar__right { min-width: 0; flex: 0 1 auto; display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
 .record-navigator { display: inline-flex; flex: 0 0 auto; align-items: center; overflow: hidden; border: 1px solid #dbe2ec; border-radius: 10px; background: white; box-shadow: 0 5px 14px rgba(37, 74, 122, .07); }
 .record-navigator__button { width: 34px; height: 34px; display: grid; place-items: center; border: 0; color: #344054; background: white; font-size: 23px; font-weight: 650; line-height: 1; text-decoration: none; transition: color .15s ease, background .15s ease; }
 .record-navigator__button:hover, .record-navigator__button:focus-visible { outline: 0; color: #2459b8; background: #eef4ff; }
@@ -610,7 +617,7 @@ input[type="checkbox"].form-control { width: 20px; min-height: 20px; }
 .record-navigator__current { width: 54px; height: 34px; padding: 0 6px; border: 0; border-right: 1px solid #e5eaf1; border-left: 1px solid #e5eaf1; outline: 0; appearance: textfield; color: #526071; background: white; font-family: inherit; font-size: 10px; font-weight: 850; line-height: 34px; text-align: center; }
 .record-navigator__current:focus { color: #174ea6; background: #eef4ff; box-shadow: inset 0 0 0 2px #7aa2ef; }
 .record-navigator__current::-webkit-inner-spin-button, .record-navigator__current::-webkit-outer-spin-button { margin: 0; appearance: none; }
-.document-statusbar { position: relative; z-index: 20; width: clamp(270px, 31vw, 350px); color: #172033; }
+.document-statusbar { position: relative; z-index: 20; width: clamp(270px, 31vw, 350px); max-width: 100%; color: #172033; }
 .document-statusbar__summary { width: 100%; min-height: 48px; display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 11px; padding: 5px 8px 5px 6px; border: 1px solid #dbe2ec; border-radius: 14px; outline: 0; color: inherit; background: white; cursor: pointer; font: inherit; text-align: left; box-shadow: 0 7px 20px rgba(37, 74, 122, .08); transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
 .document-statusbar__summary:hover, .document-statusbar__summary:focus-visible { border-color: #9ab9f7; box-shadow: 0 10px 26px rgba(37, 99, 235, .14), 0 0 0 3px rgba(37, 99, 235, .07); transform: translateY(-1px); }
 .document-statusbar__active-icon { --status-accent: #2563eb; width: 36px; height: 36px; display: grid; place-items: center; border-radius: 12px; background: linear-gradient(145deg, color-mix(in srgb, var(--status-accent) 78%, white), var(--status-accent)); box-shadow: 0 7px 16px color-mix(in srgb, var(--status-accent) 28%, transparent); }
@@ -622,7 +629,7 @@ input[type="checkbox"].form-control { width: 20px; min-height: 20px; }
 .document-statusbar__trigger { display: inline-flex; align-items: center; gap: 4px; padding: 5px 8px; border-radius: 999px; color: #52228a; background: #f2eafb; font-size: 9px; font-weight: 850; white-space: nowrap; }
 .document-statusbar__chevron { display: inline-block; color: inherit; font-size: 15px; line-height: 8px; transition: transform .2s ease; }
 .document-statusbar:hover .document-statusbar__chevron, .document-statusbar:focus-within .document-statusbar__chevron { transform: rotate(180deg); }
-.document-statusbar__flow { position: absolute; top: calc(100% + 7px); right: 0; width: 100%; max-height: min(430px, 68vh); display: flex; visibility: hidden; flex-direction: column; padding: 10px; overflow: auto; border: 1px solid #dbe2ec; border-radius: 14px; opacity: 0; background: rgba(255,255,255,.98); box-shadow: 0 24px 54px rgba(26, 44, 77, .20); pointer-events: none; backdrop-filter: blur(12px); transform: translateY(-7px) scale(.985); transform-origin: top right; transition: opacity .18s ease, transform .18s ease, visibility 0s linear .18s; }
+.document-statusbar__flow { position: absolute; top: calc(100% + 7px); right: 0; width: 100%; max-height: min(430px, 68vh); display: flex; visibility: hidden; flex-direction: column; padding: 10px; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; border: 1px solid #dbe2ec; border-radius: 14px; opacity: 0; background: rgba(255,255,255,.98); box-shadow: 0 24px 54px rgba(26, 44, 77, .20); pointer-events: none; backdrop-filter: blur(12px); transform: translateY(-7px) scale(.985); transform-origin: top right; transition: opacity .18s ease, transform .18s ease, visibility 0s linear .18s; }
 .document-statusbar:hover > .document-statusbar__flow, .document-statusbar:focus-within > .document-statusbar__flow { visibility: visible; opacity: 1; pointer-events: auto; transform: translateY(0) scale(1); transition-delay: 0s; }
 .document-statusbar__step { --status-accent: #2563eb; position: relative; min-height: 58px; display: grid; grid-template-columns: 24px minmax(0, 1fr); align-items: center; gap: 11px; padding: 7px 10px; border: 1px solid transparent; border-radius: 11px; color: inherit; background: transparent; }
 .document-statusbar__step.current { border-color: color-mix(in srgb, var(--status-accent) 27%, white); background: linear-gradient(90deg, color-mix(in srgb, var(--status-accent) 12%, white), rgba(255,255,255,.96)); box-shadow: inset 3px 0 0 var(--status-accent), 0 6px 18px color-mix(in srgb, var(--status-accent) 11%, transparent); }

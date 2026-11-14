@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 from django.conf import settings
@@ -43,3 +44,18 @@ class DocumentStatusbarTemplateTests(SimpleTestCase):
 
         self.assertNotIn("status-current-spin", css)
         self.assertNotIn("status-current-pulse", css)
+
+    def test_shared_document_header_wraps_actions_without_horizontal_status_scroll(self):
+        css = (Path(settings.BASE_DIR) / "static/css/app.css").read_text()
+
+        action_rule = re.search(r"\.document-actions\s*\{([^}]*)\}", css)
+        statusbar_rule = re.search(r"\.document-statusbar\s*\{([^}]*)\}", css)
+        flow_rule = re.search(r"\.document-statusbar__flow\s*\{([^}]*)\}", css)
+
+        self.assertIsNotNone(action_rule)
+        self.assertIsNotNone(statusbar_rule)
+        self.assertIsNotNone(flow_rule)
+        self.assertIn("flex-wrap: wrap", action_rule.group(1))
+        self.assertIn("max-width: 100%", statusbar_rule.group(1))
+        self.assertIn("overflow-x: hidden", flow_rule.group(1))
+        self.assertIn("overflow-y: auto", flow_rule.group(1))

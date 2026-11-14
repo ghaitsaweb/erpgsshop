@@ -1,0 +1,9 @@
+<div class="image-file-input">
+  {% if widget.is_initial and not widget.required %}
+    <label class="image-field-clear" for="{{ widget.checkbox_id }}">
+      <input type="checkbox" name="{{ widget.checkbox_name }}" id="{{ widget.checkbox_id }}"{% if widget.attrs.disabled %} disabled{% endif %}>
+      <span>{{ widget.clear_checkbox_label }}</span>
+    </label>
+  {% endif %}
+  <input type="{{ widget.type }}" name="{{ widget.name }}"{% include "django/forms/widgets/attrs.html" %}>
+</div>

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% load gsshop_developer %}
+{% load static gsshop_developer %}
 {% block title %}{{ mode }} {{ config.singular }} · ERP GSSHOP{% endblock %}
 {% block page_title %}{{ mode }} {{ config.singular }}{% endblock %}
 {% block content %}
@@ -20,6 +20,16 @@
           {% developer_field field config.model as field_meta %}
           <div class="field {% if field.field.widget.input_type == 'checkbox' %}field-checkbox{% endif %}" data-dev-field="{{ field_meta.name }}" data-dev-field-label="{{ field_meta.label }}" data-dev-field-type="{{ field_meta.type }}" data-dev-field-column="{{ field_meta.column }}" data-dev-field-relation="{{ field_meta.relation }}" data-dev-field-kind="{{ field_meta.kind }}" data-dev-required="{{ field_meta.required|yesno:'true,false' }}">
             <label for="{{ field.id_for_label }}">{{ field.label }}{% if field.field.required %}<span class="required">*</span>{% endif %}</label>
+            {% if field.field.widget.is_image_preview %}
+              <div class="image-field-preview" data-image-field-preview>
+                <img
+                  data-image-field-preview-image
+                  alt="{{ field.label }} preview"
+                  {% if object and field.value %}src="{% url 'entity_image' entity object.pk field.name %}" data-saved-src="{% url 'entity_image' entity object.pk field.name %}"{% else %}hidden{% endif %}
+                >
+                <span data-image-field-preview-empty {% if object and field.value %}hidden{% endif %}>No image selected</span>
+              </div>
+            {% endif %}
             {{ field }}
             {% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}
             {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
@@ -142,3 +152,4 @@
     {% endif %}
   {% endif %}
 {% endblock %}
+{% block extra_js %}<script src="{% static 'js/image-field-preview.js' %}" defer></script>{% endblock %}

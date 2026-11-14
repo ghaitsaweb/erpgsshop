@@ -39,10 +39,21 @@ class SearchableMasterWidget(forms.HiddenInput):
         return False
 
 
+class ImagePreviewFileInput(forms.ClearableFileInput):
+    """Render image uploads without exposing the storage path as a text link."""
+
+    template_name = "core/widgets/image_preview_file_input.html"
+    clear_checkbox_label = "Remove current image"
+
+
 class StyledModelForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         for field in self.fields.values():
+            if isinstance(field, forms.ImageField):
+                if not isinstance(field.widget, ImagePreviewFileInput):
+                    field.widget = ImagePreviewFileInput(attrs=field.widget.attrs)
+                field.widget.is_image_preview = True
             existing = field.widget.attrs.get("class", "")
             field.widget.attrs["class"] = f"form-control {existing}".strip()
             if isinstance(field.widget, forms.Textarea):

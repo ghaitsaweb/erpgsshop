@@ -1,15 +1,16 @@
+import mimetypes
 from datetime import timedelta
 from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.core.exceptions import ValidationError
+from django.core.exceptions import FieldDoesNotExist, ValidationError
 from django.core.paginator import Paginator
 from django.db import IntegrityError, transaction
-from django.db.models import Count, F, Max, Prefetch, Q, Sum
+from django.db.models import Count, F, ImageField, Max, Prefetch, Q, Sum
 from django.db.models.deletion import ProtectedError, RestrictedError
 from django.forms import inlineformset_factory, modelform_factory
-from django.http import Http404, HttpResponse, JsonResponse, QueryDict
+from django.http import FileResponse, Http404, HttpResponse, JsonResponse, QueryDict
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -2874,6 +2875,41 @@ def _form_class(config):
     if "form" in config:
         return config["form"]
     return modelform_factory(config["model"], form=StyledModelForm, fields=config["form_fields"])
+
+
+@login_required
+@require_GET
+def entity_image(request, entity, pk, field_name):
+    """Serve one form-visible ImageField through the entity permission boundary."""
+    config = _config(entity)
+    model = config["model"]
+    if not _can(request.user, "view", model, entity):
+        raise Http404
+
+    form_class = _form_class(config)
+    if field_name not in form_class.base_fields:
+        raise Http404
+    try:
+        model_field = model._meta.get_field(field_name)
+    except FieldDoesNotExist as error:
+        raise Http404 from error
+    if not isinstance(model_field, ImageField):
+        raise Http404
+
+    instance = get_object_or_404(_scope_queryset(request.user, entity, model.objects.all()), pk=pk)
+    image = getattr(instance, field_name, None)
+    if not image or not image.name:
+        raise Http404
+    try:
+        image.open("rb")
+    except (FileNotFoundError, OSError) as error:
+        raise Http404 from error
+
+    content_type = mimetypes.guess_type(image.name)[0] or "application/octet-stream"
+    response = FileResponse(image, content_type=content_type)
+    response["Content-Disposition"] = content_disposition_header(False, image.name.rsplit("/", 1)[-1])
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 def _document_context(request, entity, config, instance=None, mode="Create"):

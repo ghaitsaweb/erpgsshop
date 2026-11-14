@@ -255,6 +255,7 @@ MODEL_COMPANY_LOOKUPS = {
     "vendorperformancetemplateline": "template__company_id",
     "vendorperformanceevaluationline": "evaluation__company_id",
     "vendorperformancescorehistory": "vendor__company_id",
+    "vendortransactionhistory": "vendor__company_id",
     "purchaseteammember": "team__company_id",
     "purchasekpitarget": "company_id",
     "purchasekpitemplateline": "template__company_id",

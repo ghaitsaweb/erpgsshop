@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase
 
@@ -5,9 +7,12 @@ from core.models import Company, Contact
 from core.smart_actions import (
     EXPLICIT_SMART_ACTIONS,
     SmartActionDefinition,
+    SMART_ACTION_PREPARERS,
     _children_on,
     build_standard_smart_actions,
     get_smart_action,
+    prepare_smart_action,
+    register_smart_action_preparer,
 )
 from core.views import ENTITY_CONFIG  # noqa: F401 - configures installed entity actions
 
@@ -78,3 +83,18 @@ class StandardSmartActionDiscoveryTests(SimpleTestCase):
         for key in generated_keys:
             self.assertNotIn(key, explicit_keys)
             self.assertIsNotNone(get_smart_action(key))
+
+    def test_module_owned_preparer_is_idempotent_and_collision_safe(self):
+        calls = []
+
+        def prepare(source):
+            calls.append(source)
+
+        with patch.dict(SMART_ACTION_PREPARERS, {}, clear=True):
+            register_smart_action_preparer("vendors.history", prepare)
+            register_smart_action_preparer("vendors.history", prepare)
+            prepare_smart_action("vendors.history", self)
+
+            self.assertEqual(calls, [self])
+            with self.assertRaisesMessage(ImproperlyConfigured, "already registered"):
+                register_smart_action_preparer("vendors.history", lambda _source: None)

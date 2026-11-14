@@ -20,10 +20,18 @@ from .forms import (
     PurchaseTenderDocumentForm,
     PurchaseTenderLineDocumentForm,
 )
-from .models import BlanketOrder, PurchaseRequest, PurchaseSetting, PurchaseTender
+from .models import (
+    BlanketOrder,
+    PurchaseRequest,
+    PurchaseSetting,
+    PurchaseTender,
+    TenderAuditLog,
+)
 from .services import (
+    apply_tender_award_strategy_action,
     auto_route_purchase_order_action,
     auto_route_purchase_request_action,
+    purchase_tender_document_context,
     update_blanket_order_prices_action,
 )
 
@@ -37,6 +45,53 @@ def purchase_revision_action_available(order):
     if not enabled:
         return False
     return not order.lines.filter(received_quantity__gt=0).exists()
+
+
+def purchase_tender_action_available(tender, action_key):
+    if tender.status != PurchaseTender.Status.AWARDED:
+        return True
+    actions_by_decision_status = {
+        PurchaseTender.DecisionStatus.DRAFT: {
+            "apply-award-strategy",
+            "submit-decision",
+            "reopen-award",
+        },
+        PurchaseTender.DecisionStatus.WAITING_APPROVAL: {
+            "approve-decision",
+            "reject-decision",
+        },
+        PurchaseTender.DecisionStatus.APPROVED: {
+            "close",
+            "reset-decision",
+        },
+        PurchaseTender.DecisionStatus.REJECTED: {
+            "apply-award-strategy",
+            "submit-decision",
+            "reopen-award",
+        },
+    }
+    return action_key in actions_by_decision_status.get(
+        tender.decision_approval_status,
+        set(),
+    )
+
+
+def purchase_tender_action_audit(tender, action, actor, previous_status):
+    details = dict(getattr(tender, "_tender_audit_details", {}))
+    details.update(
+        {
+            "award_cycle": tender.award_cycle,
+            "decision_approval_status": tender.decision_approval_status,
+        }
+    )
+    TenderAuditLog.objects.create(
+        tender=tender,
+        action=action,
+        previous_status=previous_status or "",
+        new_status=tender.status,
+        actor=actor,
+        details=details,
+    )
 
 
 def register_purchase_document_extensions():
@@ -80,6 +135,26 @@ def register_purchase_document_extensions():
         "purchase-tenders",
         "line_form",
         PurchaseTenderLineDocumentForm,
+    )
+    register_document_option(
+        "purchase-tenders",
+        "summary_template",
+        "purchase/tender_scoring_summary.html",
+    )
+    register_document_option(
+        "purchase-tenders",
+        "context_builder",
+        purchase_tender_document_context,
+    )
+    register_document_option(
+        "purchase-tenders",
+        "available_action_filter",
+        purchase_tender_action_available,
+    )
+    register_document_option(
+        "purchase-tenders",
+        "action_audit_logger",
+        purchase_tender_action_audit,
     )
     register_document_option(
         "blanket-orders",
@@ -214,6 +289,17 @@ def register_purchase_document_extensions():
             "to": None,
             "preserve_status": True,
             "handler": update_blanket_order_prices_action,
+        },
+    )
+    register_document_action(
+        "purchase-tenders",
+        "apply-award-strategy",
+        {
+            "label": "Apply Award Strategy",
+            "from": [PurchaseTender.Status.AWARDED],
+            "to": None,
+            "preserve_status": True,
+            "handler": apply_tender_award_strategy_action,
         },
     )
     register_document_action(

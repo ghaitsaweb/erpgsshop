@@ -71,6 +71,7 @@ from .models import (
     TenderAwardAllocation,
     TenderAwardResponse,
     TenderBid,
+    TenderBidLine,
     TenderDocument,
     TenderDocumentCompletionLine,
     TenderDocumentCompletionMatrix,
@@ -100,6 +101,7 @@ from .three_way_match import sync_purchase_three_way_match
 from .vendor_credit import enforce_vendor_purchase_limit
 from .vendor_pricelist_eligibility import validate_vendor_pricelist_product_eligibility
 from .purchase_revision import revise_purchase_order
+from .vendor_performance_scoring import VendorPerformanceScoringService
 
 
 ZERO = Decimal("0")
@@ -6303,10 +6305,6 @@ def _vendor_performance_qualitative_score(lines, score_scale):
     return ZERO
 
 
-def _clamped_score(value, score_scale):
-    return min(max(value, ZERO), max(score_scale, ZERO)).quantize(Decimal("0.01"))
-
-
 @transaction.atomic
 def recalculate_vendor_performance(
     vendor,
@@ -6351,53 +6349,91 @@ def recalculate_vendor_performance(
 
     evidence_rows = _require_bounded(
         list(
-            GoodsReceiptLine.objects.filter(
-                receipt__company_id=locked_vendor.company_id,
-                receipt__order__vendor_id=locked_vendor.partner_id,
-                receipt__status=GoodsReceipt.Status.RECEIVED,
-                receipt__receipt_date__range=(period_start, period_end),
+            PurchaseOrderLine.objects.filter(
+                order__company_id=locked_vendor.company_id,
+                order__vendor_id=locked_vendor.partner_id,
+                order__status__in=[
+                    PurchaseOrder.Status.CONFIRMED,
+                    PurchaseOrder.Status.COMPLETED,
+                    PurchaseOrder.Status.CLOSED,
+                ],
             )
-            .values("order_line_id", "order_line__quantity")
+            .values(
+                "id",
+                "quantity",
+                "purchase_pricing_provenance__expected_date",
+                "order__purchase_control__expected_date",
+            )
             .annotate(
-                received_quantity=Sum("received_quantity"),
-                accepted_quantity=Sum("accepted_quantity"),
-                rejected_quantity=Sum("rejected_quantity"),
-                actual_receipt_date=Max("receipt__receipt_date"),
-                late_receipt_count=Count(
-                    "receipt_id",
-                    filter=Q(receipt__delivery_status=GoodsReceipt.DeliveryStatus.LATE),
-                    distinct=True,
+                delivery_received_quantity=Sum(
+                    "receipt_lines__received_quantity",
+                    filter=Q(receipt_lines__receipt__status=GoodsReceipt.Status.RECEIVED),
+                ),
+                received_quantity=Sum(
+                    "receipt_lines__received_quantity",
+                    filter=Q(
+                        receipt_lines__receipt__status=GoodsReceipt.Status.RECEIVED,
+                        receipt_lines__receipt__receipt_date__range=(period_start, period_end),
+                    ),
+                ),
+                rejected_quantity=Sum(
+                    "receipt_lines__rejected_quantity",
+                    filter=Q(
+                        receipt_lines__receipt__status=GoodsReceipt.Status.RECEIVED,
+                        receipt_lines__receipt__receipt_date__range=(period_start, period_end),
+                    ),
+                ),
+                actual_receipt_date=Max(
+                    "receipt_lines__receipt__receipt_date",
+                    filter=Q(receipt_lines__receipt__status=GoodsReceipt.Status.RECEIVED),
                 ),
             )
-            .order_by("order_line_id")[: MAX_VENDOR_PERFORMANCE_EVIDENCE_LINES + 1]
+            .order_by("id")[: MAX_VENDOR_PERFORMANCE_EVIDENCE_LINES + 1]
         ),
         limit=MAX_VENDOR_PERFORMANCE_EVIDENCE_LINES,
         label="Vendor Performance receipt evidence",
     )
-    completed_rows = [
-        row
-        for row in evidence_rows
-        if (row["accepted_quantity"] or ZERO) >= (row["order_line__quantity"] or ZERO) > ZERO
-    ]
-    completed_count = len(completed_rows)
-    on_time_count = sum(1 for row in completed_rows if not row["late_receipt_count"])
+    delivery_evidence = VendorPerformanceScoringService.delivery_evidence(
+        [
+            {
+                "id": row["id"],
+                "expected_date": (
+                    row["purchase_pricing_provenance__expected_date"]
+                    or row["order__purchase_control__expected_date"]
+                ),
+                "actual_date": row["actual_receipt_date"],
+                "fully_received": (
+                    (row["delivery_received_quantity"] or ZERO)
+                    >= (row["quantity"] or ZERO)
+                    > ZERO
+                ),
+            }
+            for row in evidence_rows
+        ],
+        period_start,
+        period_end,
+    )
+    completed_count = delivery_evidence["completed_count"]
+    on_time_count = delivery_evidence["on_time_count"]
     received_quantity = sum((row["received_quantity"] or ZERO for row in evidence_rows), ZERO)
     rejected_quantity = sum((row["rejected_quantity"] or ZERO for row in evidence_rows), ZERO)
     score_scale = template.score_scale
-    delivery_accuracy_score = (
-        _clamped_score(Decimal(on_time_count) / Decimal(completed_count) * score_scale, score_scale)
-        if completed_count
-        else ZERO
+    delivery_accuracy_score = VendorPerformanceScoringService.delivery_accuracy_score(
+        completed_count,
+        on_time_count,
+        score_scale,
     )
-    rejection_rate_score = (
-        _clamped_score((Decimal("1") - min(rejected_quantity / received_quantity, Decimal("1"))) * score_scale, score_scale)
-        if received_quantity > 0
-        else score_scale.quantize(Decimal("0.01"))
+    rejection_rate_score = VendorPerformanceScoringService.rejection_rate_score(
+        received_quantity,
+        rejected_quantity,
+        score_scale,
     )
-    quantitative_score = (
-        delivery_accuracy_score * template.delivery_accuracy_weight / HUNDRED
-        + rejection_rate_score * template.rejection_rate_weight / HUNDRED
-    ).quantize(Decimal("0.01"))
+    quantitative_score = VendorPerformanceScoringService.quantitative_score(
+        delivery_accuracy_score,
+        rejection_rate_score,
+        template.delivery_accuracy_weight,
+        template.rejection_rate_weight,
+    )
 
     qualitative_evaluation = (
         VendorPerformanceEvaluation.objects.filter(
@@ -6419,10 +6455,12 @@ def recalculate_vendor_performance(
     qualitative_score = (
         qualitative_evaluation.qualitative_score if qualitative_evaluation is not None else ZERO
     )
-    final_score = (
-        qualitative_score * template.qualitative_weight / HUNDRED
-        + quantitative_score * template.quantitative_weight / HUNDRED
-    ).quantize(Decimal("0.01"))
+    final_score = VendorPerformanceScoringService.final_score(
+        qualitative_score,
+        quantitative_score,
+        template.qualitative_weight,
+        template.quantitative_weight,
+    )
     score_status = VendorPerformanceScoreHistory.Status.CALCULATED
     if completed_count < template.minimum_transaction_threshold:
         if template.partial_scoring_rule == VendorPerformanceTemplate.PartialScoringRule.QUALITATIVE_ONLY:
@@ -6446,12 +6484,14 @@ def recalculate_vendor_performance(
         final_score=final_score,
         status=score_status,
         source_transaction_summary={
-            "completed_count": completed_count,
-            "on_time_count": on_time_count,
-            "received_quantity": str(received_quantity),
-            "rejected_quantity": str(rejected_quantity),
-            "source_order_line_ids": [row["order_line_id"] for row in evidence_rows[:100]],
-            "source_order_line_ids_truncated": len(evidence_rows) > 100,
+            "delivery": delivery_evidence,
+            "rejection": {
+                "received_quantity": str(received_quantity),
+                "rejected_quantity": str(rejected_quantity),
+                "source": "goods_receipt",
+            },
+            "rejection_source": "goods_receipt",
+            "transaction_count": completed_count,
         },
         template_snapshot={
             "id": template.pk,
@@ -6776,6 +6816,388 @@ def transition_direct_purchase(direct_purchase, action, actor=None):
     return locked
 
 
+def _clamp_tender_score(value):
+    return min(max(Decimal(value or 0), ZERO), HUNDRED).quantize(Decimal("0.01"))
+
+
+def _tender_payment_term_days(value):
+    digits = "".join(character if character.isdigit() else " " for character in str(value or ""))
+    return max((int(token) for token in digits.split()), default=0)
+
+
+def _tender_vendor_history_score(profile):
+    if profile is None:
+        return HUNDRED
+    if profile.latest_performance_score_date and profile.latest_performance_score_template_id:
+        scale = profile.latest_performance_score_template.score_scale
+        if scale and scale > 0:
+            return _clamp_tender_score(profile.latest_performance_score / scale * HUNDRED)
+    if profile.rating and profile.rating > 0:
+        return _clamp_tender_score(profile.rating / Decimal("5") * HUNDRED)
+    return HUNDRED
+
+
+def _score_purchase_tender_bids_locked(locked, *, require_candidates=True):
+    if locked.evaluation_weight_total != 100:
+        raise ValidationError("Tender evaluation criteria weights must total exactly 100%.")
+    tender_lines = _require_bounded(
+        list(
+            PurchaseTenderLine.objects.filter(tender_id=locked.pk)
+            .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="Tender evaluation",
+    )
+    bids = _require_bounded(
+        list(
+            TenderBid.objects.select_for_update(of=("self",))
+            .filter(
+                tender_id=locked.pk,
+                status__in=[
+                    TenderBid.Status.SUBMITTED,
+                    TenderBid.Status.SHORTLISTED,
+                    TenderBid.Status.AWARDED,
+                ],
+            )
+            .select_related("vendor")
+            .order_by("pk")[: MAX_RFQ_VENDORS + 1]
+        ),
+        limit=MAX_RFQ_VENDORS,
+        label="Tender evaluation vendors",
+    )
+    bid_lines = _require_bounded(
+        list(
+            TenderBidLine.objects.filter(bid_id__in=[bid.pk for bid in bids])
+            .select_related("bid", "tender_line")
+            .order_by("tender_line_id", "bid_id", "pk")[: MAX_TENDER_AWARD_ALLOCATIONS + 1]
+        ),
+        limit=MAX_TENDER_AWARD_ALLOCATIONS,
+        label="Tender evaluation bid lines",
+    )
+    tender_line_by_id = {line.pk: line for line in tender_lines}
+    for line in bid_lines:
+        if line.tender_line_id not in tender_line_by_id:
+            raise ValidationError("Every Tender Bid line must belong to the evaluated Tender.")
+
+    valid_lines = [
+        line
+        for line in bid_lines
+        if not line.no_bid and line.offered_quantity > 0 and line.unit_price > 0
+    ]
+    if require_candidates and not valid_lines:
+        raise ValidationError("At least one valid submitted Tender Bid line is required.")
+
+    vendor_ids = [bid.vendor_id for bid in bids]
+    profiles = list(
+        VendorProfile.objects.filter(
+            company_id=locked.company_id,
+            partner_id__in=vendor_ids,
+            active=True,
+        ).select_related("latest_performance_score_template")
+    )
+    profile_by_partner_id = {profile.partner_id: profile for profile in profiles}
+    approved_profile_ids = set()
+    if locked.method == PurchaseTender.Method.PQTE and profiles:
+        approved_profile_ids = set(
+            VendorPrequalification.objects.filter(
+                tender_id=locked.pk,
+                vendor_id__in=[profile.pk for profile in profiles],
+                status=VendorPrequalification.Status.APPROVED,
+            ).values_list("vendor_id", flat=True)
+        )
+
+    lines_by_tender_line_id = defaultdict(list)
+    lines_by_bid_id = defaultdict(list)
+    for line in valid_lines:
+        lines_by_tender_line_id[line.tender_line_id].append(line)
+        lines_by_bid_id[line.bid_id].append(line)
+
+    reference_date = locked.bid_start_date or locked.publish_date or timezone.localdate()
+    lowest_price_by_line_id = {
+        tender_line_id: min(line.unit_price for line in lines)
+        for tender_line_id, lines in lines_by_tender_line_id.items()
+    }
+    required_days_by_line_id = {}
+    for tender_line in tender_lines:
+        required_days = 0
+        if tender_line.delivery_date and tender_line.delivery_date > reference_date:
+            required_days = (tender_line.delivery_date - reference_date).days
+        if not required_days:
+            positive_days = [
+                line.delivery_days
+                for line in lines_by_tender_line_id.get(tender_line.pk, ())
+                if line.delivery_days > 0
+            ]
+            required_days = min(positive_days, default=0)
+        required_days_by_line_id[tender_line.pk] = required_days
+
+    term_days_by_bid_id = {
+        bid.pk: _tender_payment_term_days(
+            profile_by_partner_id.get(bid.vendor_id).payment_terms
+            if profile_by_partner_id.get(bid.vendor_id)
+            else ""
+        )
+        for bid in bids
+    }
+    best_term_days = max(term_days_by_bid_id.values(), default=0)
+    weights = [
+        Decimal(locked.evaluation_price_weight),
+        Decimal(locked.evaluation_delivery_weight),
+        Decimal(locked.evaluation_compliance_weight),
+        Decimal(locked.evaluation_term_weight),
+        Decimal(locked.evaluation_history_weight),
+    ]
+    now = timezone.now()
+    scored_bids = []
+    scored_bid_lines = []
+    for bid in bids:
+        lines = lines_by_bid_id.get(bid.pk, [])
+        component_rows = []
+        profile = profile_by_partner_id.get(bid.vendor_id)
+        prequalified = (
+            locked.method != PurchaseTender.Method.PQTE
+            or (profile is not None and profile.pk in approved_profile_ids)
+        )
+        payment_score = (
+            Decimal(term_days_by_bid_id[bid.pk]) / Decimal(best_term_days) * HUNDRED
+            if best_term_days > 0
+            else HUNDRED
+        )
+        term_score = _clamp_tender_score(payment_score * Decimal("0.60") + Decimal("40"))
+        history_score = _tender_vendor_history_score(profile)
+        for line in lines:
+            lowest_price = lowest_price_by_line_id[line.tender_line_id]
+            price_score = _clamp_tender_score(lowest_price / line.unit_price * HUNDRED)
+            required_days = required_days_by_line_id[line.tender_line_id]
+            if line.delivery_days <= 0:
+                delivery_score = HUNDRED if required_days <= 0 else ZERO
+            elif required_days <= 0:
+                delivery_score = HUNDRED
+            else:
+                delivery_score = _clamp_tender_score(
+                    Decimal(required_days) / Decimal(line.delivery_days) * HUNDRED
+                )
+            compliance_score = HUNDRED if line.compliant and prequalified else ZERO
+            components = (
+                price_score,
+                delivery_score,
+                compliance_score,
+                term_score,
+                history_score,
+            )
+            component_rows.append(components)
+            line.price_score = price_score
+            line.delivery_score = delivery_score
+            line.compliance_score = compliance_score
+            line.term_score = term_score
+            line.history_score = history_score
+            line.total_score = (
+                sum(
+                    (score * weight for score, weight in zip(components, weights)),
+                    ZERO,
+                )
+                / HUNDRED
+            ).quantize(Decimal("0.01"))
+            line.scored_at = now
+            line.updated_at = now
+            scored_bid_lines.append(line)
+
+        divisor = Decimal(len(component_rows) or 1)
+        averages = [
+            (sum((row[index] for row in component_rows), ZERO) / divisor).quantize(Decimal("0.01"))
+            if component_rows
+            else ZERO
+            for index in range(5)
+        ]
+        total_score = (
+            sum((score * weight for score, weight in zip(averages, weights)), ZERO) / HUNDRED
+        ).quantize(Decimal("0.01"))
+        technical_weight = sum(weights[1:], ZERO)
+        technical_score = (
+            sum((score * weight for score, weight in zip(averages[1:], weights[1:])), ZERO)
+            / technical_weight
+        ).quantize(Decimal("0.01")) if technical_weight else ZERO
+        bid.bid_amount = sum((line.offered_quantity * line.unit_price for line in lines), ZERO)
+        bid.price_score = averages[0]
+        bid.delivery_score = averages[1]
+        bid.compliance_score = averages[2]
+        bid.term_score = averages[3]
+        bid.history_score = averages[4]
+        bid.commercial_score = averages[0]
+        bid.technical_score = technical_score
+        bid.total_score = total_score
+        bid.scored_at = now
+        bid.updated_at = now
+        scored_bids.append(bid)
+
+    ranked = sorted(scored_bids, key=lambda bid: (-bid.total_score, bid.bid_amount, bid.pk))
+    for rank, bid in enumerate(ranked, start=1):
+        bid.rank = rank
+    for _tender_line_id, lines in lines_by_tender_line_id.items():
+        ranked_lines = sorted(
+            lines,
+            key=lambda line: (
+                -line.total_score,
+                line.unit_price,
+                line.created_at,
+                line.pk,
+            ),
+        )
+        for rank, line in enumerate(ranked_lines, start=1):
+            line.rank = rank
+    if scored_bids:
+        TenderBid.objects.bulk_update(
+            scored_bids,
+            [
+                "bid_amount",
+                "price_score",
+                "delivery_score",
+                "compliance_score",
+                "term_score",
+                "history_score",
+                "commercial_score",
+                "technical_score",
+                "total_score",
+                "rank",
+                "scored_at",
+                "updated_at",
+            ],
+            batch_size=100,
+        )
+    if scored_bid_lines:
+        TenderBidLine.objects.bulk_update(
+            scored_bid_lines,
+            [
+                "price_score",
+                "delivery_score",
+                "compliance_score",
+                "term_score",
+                "history_score",
+                "total_score",
+                "rank",
+                "scored_at",
+                "updated_at",
+            ],
+            batch_size=500,
+        )
+    return {
+        "tender": locked,
+        "tender_lines": tender_lines,
+        "bids": bids,
+        "bid_lines": bid_lines,
+        "valid_lines": valid_lines,
+    }
+
+
+@transaction.atomic
+def score_purchase_tender_bids(tender, actor=None, *, require_candidates=True):
+    del actor
+    locked = (
+        PurchaseTender.objects.select_for_update(of=("self",))
+        .select_related("award_strategy")
+        .get(pk=_pk(tender))
+    )
+    if locked.status not in {
+        PurchaseTender.Status.BID_SUBMISSION,
+        PurchaseTender.Status.SUBMISSION,
+        PurchaseTender.Status.BID_SELECTION,
+        PurchaseTender.Status.AWARDED,
+    }:
+        raise ValidationError("Tender Bids can only be scored during submission, selection, or award.")
+    _score_purchase_tender_bids_locked(locked, require_candidates=require_candidates)
+    return locked
+
+
+def purchase_tender_scoring_payload(tender):
+    tender_id = _pk(tender)
+    if isinstance(tender, PurchaseTender):
+        weights = {
+            "price": tender.evaluation_price_weight,
+            "delivery": tender.evaluation_delivery_weight,
+            "compliance": tender.evaluation_compliance_weight,
+            "term": tender.evaluation_term_weight,
+            "history": tender.evaluation_history_weight,
+        }
+    else:
+        weights = PurchaseTender.objects.filter(pk=tender_id).values(
+            "evaluation_price_weight",
+            "evaluation_delivery_weight",
+            "evaluation_compliance_weight",
+            "evaluation_term_weight",
+            "evaluation_history_weight",
+        ).get()
+        weights = {
+            key: weights[f"evaluation_{key}_weight"]
+            for key in ("price", "delivery", "compliance", "term", "history")
+        }
+    bids = list(
+        TenderBid.objects.filter(tender_id=tender_id)
+        .select_related("vendor")
+        .order_by("rank", "pk")[: MAX_RFQ_VENDORS]
+    )
+    bid_lines = _require_bounded(
+        list(
+            TenderBidLine.objects.filter(bid__tender_id=tender_id)
+            .select_related("bid__vendor", "tender_line__product")
+            .order_by("tender_line_id", "rank", "unit_price", "pk")[
+                : MAX_TENDER_AWARD_ALLOCATIONS + 1
+            ]
+        ),
+        limit=MAX_TENDER_AWARD_ALLOCATIONS,
+        label="Tender scoring display",
+    )
+    return {
+        "criteria": [
+            {"key": key, "label": label, "weight": weights[key]}
+            for key, label in (
+                ("price", "Pricing"),
+                ("delivery", "Delivery"),
+                ("compliance", "Compliance"),
+                ("term", "Terms"),
+                ("history", "History"),
+            )
+        ],
+        "rows": [
+            {
+                "vendor": bid.vendor,
+                "rank": bid.rank,
+                "price_score": bid.price_score,
+                "delivery_score": bid.delivery_score,
+                "compliance_score": bid.compliance_score,
+                "term_score": bid.term_score,
+                "history_score": bid.history_score,
+                "total_score": bid.total_score,
+                "status": bid.get_status_display(),
+            }
+            for bid in bids
+        ],
+        "line_rows": [
+            {
+                "line": bid_line.tender_line,
+                "vendor": bid_line.bid.vendor,
+                "quantity": bid_line.offered_quantity,
+                "unit_price": bid_line.unit_price,
+                "delivery_days": bid_line.delivery_days,
+                "compliant": bid_line.compliant,
+                "no_bid": bid_line.no_bid,
+                "price_score": bid_line.price_score,
+                "delivery_score": bid_line.delivery_score,
+                "compliance_score": bid_line.compliance_score,
+                "term_score": bid_line.term_score,
+                "history_score": bid_line.history_score,
+                "total_score": bid_line.total_score,
+                "rank": bid_line.rank,
+            }
+            for bid_line in bid_lines
+        ],
+    }
+
+
+def purchase_tender_document_context(instance, actor):
+    del actor
+    return {"tender_scoring": purchase_tender_scoring_payload(instance)}
+
+
 def _load_tender_award_data(locked):
     allocations = _require_bounded(
         list(
@@ -6898,6 +7320,152 @@ def _ensure_tender_award_responses(locked, winning_bids):
         )
         .order_by("vendor_id")[: MAX_RFQ_VENDORS + 1]
     )
+
+
+@transaction.atomic
+def apply_tender_award_strategy(tender, actor=None):
+    del actor
+    locked = (
+        PurchaseTender.objects.select_for_update(of=("self",))
+        .select_related("award_strategy")
+        .get(pk=_pk(tender))
+    )
+    if locked.status != PurchaseTender.Status.AWARDED:
+        raise ValidationError("Award strategies can only be applied during Awarded status.")
+    if locked.decision_approval_status not in {
+        PurchaseTender.DecisionStatus.DRAFT,
+        PurchaseTender.DecisionStatus.REJECTED,
+    }:
+        raise ValidationError("Reset the Tender decision before changing its award strategy.")
+
+    strategy = locked.award_strategy.strategy
+    if strategy == AwardStrategy.Strategy.MANUAL:
+        winning_bids, allocations, _tender_lines = _load_tender_award_data(locked)
+        _ensure_tender_award_responses(locked, winning_bids)
+        locked._applied_award_strategy = TenderAwardAllocation.Strategy.MANUAL
+        locked._tender_audit_details = {
+            "award_strategy": TenderAwardAllocation.Strategy.MANUAL,
+            "allocation_count": len(allocations),
+            "winning_vendor_ids": sorted({bid.vendor_id for bid in winning_bids}),
+        }
+        return locked
+
+    scoring = _score_purchase_tender_bids_locked(locked, require_candidates=True)
+    bid_by_id = {bid.pk: bid for bid in scoring["bids"]}
+    candidates_by_tender_line_id = defaultdict(list)
+    for bid_line in scoring["valid_lines"]:
+        if not bid_line.compliant:
+            continue
+        candidates_by_tender_line_id[bid_line.tender_line_id].append(bid_line)
+    for candidates in candidates_by_tender_line_id.values():
+        candidates.sort(
+            key=lambda line: (
+                line.rank or MAX_RFQ_VENDORS + 1,
+                line.unit_price,
+                line.bid_id,
+                line.pk,
+            )
+        )
+
+    allocation_strategy = (
+        TenderAwardAllocation.Strategy.SINGLE_RANK
+        if strategy == AwardStrategy.Strategy.SINGLE
+        else TenderAwardAllocation.Strategy.SPLIT_RATIO
+    )
+    ratios = [
+        Decimal(locked.award_strategy.split_rank_1_ratio),
+        Decimal(locked.award_strategy.split_rank_2_ratio),
+        Decimal(locked.award_strategy.split_rank_3_ratio),
+    ]
+    quantity_quantum = Decimal("0.001")
+    allocation_specs = []
+    for tender_line in scoring["tender_lines"]:
+        candidates = candidates_by_tender_line_id.get(tender_line.pk, [])
+        if not candidates:
+            raise ValidationError(
+                f"Tender line {tender_line.pk} has no compliant submitted bid quantity."
+            )
+        required_quantity = tender_line.quantity
+        remaining = required_quantity
+        allocated_by_bid_line_id = defaultdict(lambda: ZERO)
+        if strategy == AwardStrategy.Strategy.SPLIT_RATIO:
+            for index, bid_line in enumerate(candidates[:3]):
+                target = (required_quantity * ratios[index] / HUNDRED).quantize(quantity_quantum)
+                quantity = min(target, bid_line.offered_quantity, remaining)
+                if quantity > 0:
+                    allocated_by_bid_line_id[bid_line.pk] += quantity
+                    remaining -= quantity
+        for bid_line in candidates:
+            if remaining <= 0:
+                break
+            available = bid_line.offered_quantity - allocated_by_bid_line_id[bid_line.pk]
+            if available <= 0:
+                continue
+            quantity = min(available, remaining)
+            allocated_by_bid_line_id[bid_line.pk] += quantity
+            remaining -= quantity
+        if remaining > 0:
+            raise ValidationError(
+                f"Submitted capacity for Tender line {tender_line.pk} is short by {remaining}."
+            )
+        for bid_line in candidates:
+            quantity = allocated_by_bid_line_id[bid_line.pk]
+            if quantity <= 0:
+                continue
+            bid = bid_by_id[bid_line.bid_id]
+            allocation_specs.append(
+                TenderAwardAllocation(
+                    tender=locked,
+                    tender_line=tender_line,
+                    bid_line=bid_line,
+                    allocated_quantity=quantity,
+                    unit_price=bid_line.unit_price,
+                    award_strategy=allocation_strategy,
+                    score=bid_line.total_score,
+                    rank=bid_line.rank,
+                )
+            )
+    if len(allocation_specs) > MAX_TENDER_AWARD_ALLOCATIONS:
+        raise ValidationError(
+            f"Tender award exceeds the operational limit of {MAX_TENDER_AWARD_ALLOCATIONS} allocations."
+        )
+
+    TenderAwardAllocation.objects.filter(tender_id=locked.pk).delete()
+    TenderAwardAllocation.objects.bulk_create(allocation_specs, batch_size=500)
+    allocated_by_bid_id = defaultdict(lambda: ZERO)
+    for allocation in allocation_specs:
+        allocated_by_bid_id[allocation.bid_line.bid_id] += allocation.allocated_quantity
+    total_required = sum((line.quantity for line in scoring["tender_lines"]), ZERO)
+    now = timezone.now()
+    winning_bids = []
+    for bid in scoring["bids"]:
+        allocated = allocated_by_bid_id[bid.pk]
+        if allocated > 0:
+            bid.status = TenderBid.Status.AWARDED
+            winning_bids.append(bid)
+        else:
+            bid.status = TenderBid.Status.SHORTLISTED
+        bid.allocation_percent = (
+            allocated / total_required * HUNDRED
+        ).quantize(Decimal("0.01")) if total_required > 0 else ZERO
+        bid.updated_at = now
+    TenderBid.objects.bulk_update(
+        scoring["bids"],
+        ["status", "allocation_percent", "updated_at"],
+        batch_size=100,
+    )
+    _ensure_tender_award_responses(locked, winning_bids)
+    locked._applied_award_strategy = allocation_strategy
+    locked._tender_audit_details = {
+        "award_strategy": allocation_strategy,
+        "allocation_count": len(allocation_specs),
+        "winning_vendor_ids": sorted({bid.vendor_id for bid in winning_bids}),
+    }
+    return locked
+
+
+def apply_tender_award_strategy_action(instance, actor):
+    return apply_tender_award_strategy(instance, actor)
 
 
 def _generate_tender_purchase_orders(locked, winning_bids, allocations, tender_lines):
@@ -7061,7 +7629,11 @@ def transition_tender_award_response(response, action, actor=None):
 
 @transaction.atomic
 def transition_purchase_tender(tender, action, actor=None, *, reason=""):
-    locked = PurchaseTender.objects.select_for_update(of=("self",)).get(pk=_pk(tender))
+    locked = (
+        PurchaseTender.objects.select_for_update(of=("self",))
+        .select_related("award_strategy")
+        .get(pk=_pk(tender))
+    )
     transitions = {
         "submit": ({PurchaseTender.Status.DRAFT}, PurchaseTender.Status.WAITING_APPROVAL),
         "approve": ({PurchaseTender.Status.WAITING_APPROVAL}, PurchaseTender.Status.CONFIRMED),
@@ -7095,6 +7667,8 @@ def transition_purchase_tender(tender, action, actor=None, *, reason=""):
         sources, target = transitions[action]
         if locked.status not in sources:
             raise ValidationError("That Tender action is not available in the current state.")
+        if action == "submit" and locked.evaluation_weight_total != 100:
+            raise ValidationError("Tender evaluation criteria weights must total exactly 100%.")
         if action == "open-bids":
             if locked.method != PurchaseTender.Method.PQTE:
                 raise ValidationError(
@@ -7113,12 +7687,27 @@ def transition_purchase_tender(tender, action, actor=None, *, reason=""):
             locked.save(update_fields=["status", "updated_at"])
         if action == "open-submission" and locked.method == PurchaseTender.Method.PQTE:
             sync_tender_document_completion(locked)
+        if action == "evaluate":
+            _score_purchase_tender_bids_locked(locked, require_candidates=False)
         return locked
     if action == "award":
         if locked.status != PurchaseTender.Status.BID_SELECTION:
             raise ValidationError("Tender can only be awarded during Bid Selection.")
-        winning_bids, allocations, tender_lines = _load_tender_award_data(locked)
-        _ensure_tender_award_responses(locked, winning_bids)
+        has_allocations = TenderAwardAllocation.objects.filter(tender_id=locked.pk).exists()
+        has_selected_winner = TenderBid.objects.filter(
+            tender_id=locked.pk,
+            status=TenderBid.Status.AWARDED,
+        ).exists()
+        if has_allocations or has_selected_winner:
+            winning_bids, _allocations, _tender_lines = _load_tender_award_data(locked)
+            _ensure_tender_award_responses(locked, winning_bids)
+        elif locked.award_strategy.strategy in {
+            AwardStrategy.Strategy.SINGLE,
+            AwardStrategy.Strategy.SPLIT_RATIO,
+        }:
+            _score_purchase_tender_bids_locked(locked, require_candidates=True)
+        else:
+            raise ValidationError("Select at least one winning Tender bid before award.")
         locked.status = PurchaseTender.Status.AWARDED
         locked.decision_approval_status = PurchaseTender.DecisionStatus.DRAFT
         locked.decision_rejection_reason = ""

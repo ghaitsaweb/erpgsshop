@@ -628,6 +628,14 @@ def _build_config(entity, model):
     elif entity == "purchase-tenders":
         config["workflow"] = TENDER_WORKFLOW
         config["workflow_locked_statuses"] = {"closed", "cancelled"}
+    elif entity == "tender-bids":
+        config["columns"] = [
+            ("tender", "Tender"),
+            ("vendor", "Vendor"),
+            ("rank", "Rank"),
+            ("total_score", "Total Score"),
+            ("status", "Status"),
+        ]
     elif entity == "direct-purchases":
         config["workflow"] = {
             key: {**definition, "service_controls_state": True}
@@ -894,6 +902,77 @@ def _build_config(entity, model):
     if entity == "vendor-performance-evaluation-lines":
         config.update({"creatable": False, "deletable": False})
         config["form_fields"] = ["assessment", "officer_comment", "score"]
+    if entity == "vendor-performance-score-history":
+        config["columns"] = [
+            ("vendor", "Vendor"),
+            ("template", "Template"),
+            ("period_end", "Period End"),
+            ("final_score", "Final Score"),
+            ("status", "Status"),
+            ("calculated_at", "Calculated At"),
+        ]
+        config["form_fields"] = [
+            "vendor",
+            "template",
+            "evaluator",
+            "qualitative_evaluation",
+            "period_start",
+            "period_end",
+            "calculated_at",
+            "qualitative_score",
+            "delivery_accuracy_score",
+            "rejection_rate_score",
+            "quantitative_score",
+            "final_score",
+            "status",
+            "source_transaction_summary",
+            "template_snapshot",
+        ]
+    if entity == "vendor-transaction-history":
+        config["columns"] = [
+            ("transaction_date", "Transaction Date"),
+            ("transaction_type", "Transaction Type"),
+            ("source_document", "Source Document"),
+            ("product", "Product"),
+            ("value", "Value"),
+            ("delivery_status", "Delivery Status"),
+            ("rejection_indicator", "Rejected"),
+        ]
+        config["form_fields"] = [
+            "vendor",
+            "transaction_date",
+            "transaction_type",
+            "source_document",
+            "product",
+            "summary",
+            "value",
+            "currency",
+            "ordered_quantity",
+            "received_quantity",
+            "remaining_quantity",
+            "expected_date",
+            "actual_delivery_date",
+            "delivery_status",
+            "lead_time_variance",
+            "rejection_indicator",
+            "rejection_reason",
+            "company_snapshot",
+            "branch_snapshot",
+        ]
+        config["search"] = [
+            "transaction_type",
+            "source_document",
+            "summary",
+            "delivery_status",
+            "rejection_reason",
+        ]
+        config["select_related"] = [
+            "vendor",
+            "order",
+            "product",
+            "company_snapshot",
+            "branch_snapshot",
+        ]
     if entity == "service-work-orders":
         config.update({"creatable": False, "deletable": False})
         config["form_fields"] = []

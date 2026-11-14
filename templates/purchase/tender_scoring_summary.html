@@ -1,0 +1,88 @@
+<section class="sales-accounting-card" aria-labelledby="tender-scoring-title">
+  <div>
+    <p class="eyebrow">Tender evaluation</p>
+    <h3 id="tender-scoring-title">Vendor ranking and award criteria</h3>
+    <p>
+      {% for criterion in tender_scoring.criteria %}
+        <strong>{{ criterion.label }}</strong> {{ criterion.weight }}%{% if not forloop.last %} · {% endif %}
+      {% endfor %}
+    </p>
+    {% if tender_scoring.rows %}
+      <div class="line-table-wrap">
+        <table class="line-table">
+          <thead>
+            <tr>
+              <th>Rank</th>
+              <th>Vendor</th>
+              <th>Pricing</th>
+              <th>Delivery</th>
+              <th>Compliance</th>
+              <th>Terms</th>
+              <th>History</th>
+              <th>Total</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in tender_scoring.rows %}
+              <tr>
+                <td>{% if row.rank %}{{ row.rank }}{% else %}—{% endif %}</td>
+                <td>{{ row.vendor }}</td>
+                <td>{{ row.price_score }}</td>
+                <td>{{ row.delivery_score }}</td>
+                <td>{{ row.compliance_score }}</td>
+                <td>{{ row.term_score }}</td>
+                <td>{{ row.history_score }}</td>
+                <td><strong>{{ row.total_score }}</strong></td>
+                <td>{{ row.status }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p>Submitted vendor bids will be scored when Bid Selection starts.</p>
+    {% endif %}
+    {% if tender_scoring.line_rows %}
+      <h4>Product-line comparison</h4>
+      <div class="line-table-wrap">
+        <table class="line-table">
+          <thead>
+            <tr>
+              <th>Scope line</th>
+              <th>Rank</th>
+              <th>Vendor</th>
+              <th>Quantity</th>
+              <th>Unit price</th>
+              <th>Delivery days</th>
+              <th>Pricing</th>
+              <th>Delivery</th>
+              <th>Compliance</th>
+              <th>Terms</th>
+              <th>History</th>
+              <th>Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in tender_scoring.line_rows %}
+              <tr>
+                <td>{{ row.line.product|default:row.line.description }}</td>
+                <td>{% if row.rank %}{{ row.rank }}{% else %}—{% endif %}</td>
+                <td>{{ row.vendor }}</td>
+                <td>{% if row.no_bid %}No bid{% else %}{{ row.quantity }}{% endif %}</td>
+                <td>{{ row.unit_price }}</td>
+                <td>{{ row.delivery_days }}</td>
+                <td>{{ row.price_score }}</td>
+                <td>{{ row.delivery_score }}</td>
+                <td>{{ row.compliance_score }}</td>
+                <td>{{ row.term_score }}</td>
+                <td>{{ row.history_score }}</td>
+                <td><strong>{{ row.total_score }}</strong></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
+  </div>
+</section>

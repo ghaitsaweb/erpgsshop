@@ -14,12 +14,14 @@ class PurchaseConfig(AppConfig):
         from .line_merge import register_purchase_line_merge
         from .security import ensure_purchase_roles
         from .services import register_purchase_workflow_hooks
+        from .smart_action_extensions import register_purchase_smart_action_extensions
         from .workflow_extensions import register_purchase_document_extensions
 
         register_purchase_approval_adapter()
         register_purchase_invoice_extension()
         register_purchase_line_merge()
         register_purchase_workflow_hooks()
+        register_purchase_smart_action_extensions()
         register_purchase_document_extensions()
 
         post_migrate.connect(

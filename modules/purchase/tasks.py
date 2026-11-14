@@ -9,6 +9,7 @@ from .services import (
     recalculate_vendor_performance,
     refresh_vendor_legal_document_expiry_statuses,
 )
+from .vendor_transaction_history import sync_vendor_transaction_history_page
 
 
 MAX_EXPIRY_BATCHES_PER_TASK = 20
@@ -61,6 +62,25 @@ def recalculate_vendor_performance_task(*, after_id=0):
 def recalculate_single_vendor_performance_task(*, vendor_id):
     recalculate_vendor_performance(vendor_id)
     return vendor_id
+
+
+@shared_task(name="purchase.sync_vendor_transaction_history", ignore_result=True)
+def sync_vendor_transaction_history_task(*, vendor_id, source, before_id=None):
+    result = sync_vendor_transaction_history_page(
+        vendor_id,
+        source,
+        before_id=before_id,
+    )
+    if result["has_more"]:
+        sync_vendor_transaction_history_task.apply_async(
+            kwargs={
+                "vendor_id": vendor_id,
+                "source": source,
+                "before_id": result["next_before_id"],
+            },
+            countdown=2,
+        )
+    return result
 
 
 @shared_task(name="purchase.refresh_vendor_legal_document_expiry", ignore_result=True)

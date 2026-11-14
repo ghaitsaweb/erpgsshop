@@ -8,7 +8,9 @@ from django.db.models import Q, QuerySet
 
 SmartActionFilter = Callable[[QuerySet, object], QuerySet]
 SmartActionAvailability = Callable[[object], bool]
+SmartActionPreparer = Callable[[object], None]
 SMART_ACTION_EXISTS_BATCH_SIZE = 50
+SMART_ACTION_PREPARERS: dict[str, SmartActionPreparer] = {}
 
 
 @dataclass(frozen=True)
@@ -1311,6 +1313,8 @@ EXPLICIT_SMART_ACTIONS = (
         label="Transactions",
         icon="↻",
         filter_queryset=_vendor_transaction_history,
+        show_count=False,
+        hide_when_empty=False,
     ),
     SmartActionDefinition(
         key="vendor-transaction-history.vendor",
@@ -2446,6 +2450,21 @@ def smart_actions_for_source(entity):
 
 def get_smart_action(key):
     return SMART_ACTIONS_BY_KEY.get(key)
+
+
+def register_smart_action_preparer(key, callback):
+    """Register one module-owned bounded preparation step for an exceptional action."""
+
+    existing = SMART_ACTION_PREPARERS.get(key)
+    if existing is not None and existing is not callback:
+        raise ImproperlyConfigured(f"Smart action preparer '{key}' is already registered.")
+    SMART_ACTION_PREPARERS[key] = callback
+
+
+def prepare_smart_action(key, source):
+    preparer = SMART_ACTION_PREPARERS.get(key)
+    if preparer is not None:
+        preparer(source)
 
 
 def existing_smart_action_keys(keyed_querysets, *, batch_size=SMART_ACTION_EXISTS_BATCH_SIZE):

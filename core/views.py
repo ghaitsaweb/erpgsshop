@@ -42,6 +42,7 @@ from .smart_actions import (
     configure_standard_smart_actions,
     existing_smart_action_keys,
     get_smart_action,
+    prepare_smart_action,
     smart_actions_for_source,
 )
 from .models import (
@@ -331,7 +332,6 @@ from modules.purchase.models import (
     PurchaseTenderLine,
     ServiceWorkOrder,
     ServiceWorkOrderLine,
-    TenderAuditLog,
 )
 from modules.purchase.services import (
     MAX_PURCHASE_DOCUMENT_LINES,
@@ -2743,6 +2743,7 @@ def _apply_smart_action_scope(request, target_entity, queryset, config):
         ),
         pk=int(source_id),
     )
+    prepare_smart_action(action_key, source)
     scoped_queryset = definition.filter_queryset(queryset, source)
     scoped_config = {
         **config,
@@ -3113,24 +3114,17 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
         href_builder = action_item.pop("href_builder", None)
         if href_builder is not None:
             action_item["href"] = href_builder(instance)
-    if entity == "purchase-tenders" and instance and current_status == PurchaseTender.Status.AWARDED:
-        decision_actions = {
-            PurchaseTender.DecisionStatus.DRAFT: {"submit-decision", "reopen-award"},
-            PurchaseTender.DecisionStatus.WAITING_APPROVAL: {
-                "approve-decision",
-                "reject-decision",
-            },
-            PurchaseTender.DecisionStatus.APPROVED: {
-                "close",
-                "reset-decision",
-            },
-            PurchaseTender.DecisionStatus.REJECTED: {
-                "submit-decision",
-                "reopen-award",
-            },
-        }
-        allowed_keys = decision_actions.get(instance.decision_approval_status, set())
-        available_actions = [item for item in available_actions if item["key"] in allowed_keys]
+    available_action_filter = document.get("available_action_filter")
+    if instance and available_action_filter is not None:
+        if not callable(available_action_filter):
+            raise ImproperlyConfigured(
+                f"Document '{entity}' available_action_filter must be callable."
+            )
+        available_actions = [
+            item
+            for item in available_actions
+            if available_action_filter(instance, item["key"])
+        ]
     totals = []
     if instance:
         totals = [{"label": label, "value": getattr(instance, field)} for label, field in document.get("total_fields", [])]
@@ -3151,6 +3145,14 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
         "developer_meta": developer_metadata(model, entity=entity, instance=instance),
     }
     context.update(_approval_transaction_context(instance, request.user, pending=document_approval))
+    context_builder = document.get("context_builder")
+    if instance and context_builder is not None:
+        if not callable(context_builder):
+            raise ImproperlyConfigured(f"Document '{entity}' context_builder must be callable.")
+        extra_context = context_builder(instance, request.user)
+        if not isinstance(extra_context, dict):
+            raise ImproperlyConfigured(f"Document '{entity}' context_builder must return a dict.")
+        context.update(extra_context)
     if entity == "invoices" and instance:
         context["invoice_payment_state"] = instance.payment_state
         context["invoice_payment_state_choices"] = list(Invoice.PaymentState.choices)
@@ -5104,13 +5106,17 @@ def document_action(request, entity, pk, action):
             instance.save(update_fields=[workflow_field, "updated_at"])
         else:
             instance.save(update_fields=update_fields)
-        if entity == "purchase-tenders":
-            TenderAuditLog.objects.create(
-                tender=instance,
-                action=action,
-                previous_status=previous_status,
-                new_status=instance.status,
-                actor=request.user,
+        action_audit_logger = document.get("action_audit_logger")
+        if action_audit_logger is not None:
+            if not callable(action_audit_logger):
+                raise ImproperlyConfigured(
+                    f"Document '{entity}' action_audit_logger must be callable."
+                )
+            action_audit_logger(
+                instance,
+                action,
+                request.user,
+                previous_status,
             )
     display_method = getattr(instance, f"get_{workflow_field}_display", None)
     display_status = display_method() if display_method else str(getattr(instance, workflow_field, target_status)).replace("_", " ").title()

@@ -634,6 +634,22 @@ class AwardStrategy(TimeStampedModel):
     name = models.CharField(max_length=120)
     strategy = models.CharField(max_length=20, choices=Strategy.choices, default=Strategy.SINGLE)
     scoring_method = models.CharField(max_length=160, blank=True)
+    split_rank_1_ratio = models.PositiveSmallIntegerField(
+        default=60,
+        validators=[MaxValueValidator(100)],
+    )
+    split_rank_2_ratio = models.PositiveSmallIntegerField(
+        default=30,
+        validators=[MaxValueValidator(100)],
+    )
+    split_rank_3_ratio = models.PositiveSmallIntegerField(
+        default=10,
+        validators=[MaxValueValidator(100)],
+    )
+    capacity_fill_limit_percent = models.PositiveSmallIntegerField(
+        default=100,
+        validators=[MinValueValidator(1), MaxValueValidator(100)],
+    )
     active = models.BooleanField(default=True)
 
     class Meta:
@@ -642,6 +658,19 @@ class AwardStrategy(TimeStampedModel):
 
     def __str__(self):
         return self.name
+
+    def clean(self):
+        super().clean()
+        if self.strategy == self.Strategy.SPLIT_RATIO and (
+            self.split_rank_1_ratio + self.split_rank_2_ratio + self.split_rank_3_ratio
+        ) != 100:
+            raise ValidationError(
+                {"split_rank_1_ratio": "Split strategy ratios must total 100%."}
+            )
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
 
 class PurchaseTender(PurchaseCostCenterStructuredFields, TimeStampedModel):
@@ -714,6 +743,26 @@ class PurchaseTender(PurchaseCostCenterStructuredFields, TimeStampedModel):
     close_date = models.DateField(blank=True)
     validity_days = models.PositiveIntegerField(default=30)
     budget_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    evaluation_price_weight = models.PositiveSmallIntegerField(
+        default=50,
+        validators=[MaxValueValidator(100)],
+    )
+    evaluation_delivery_weight = models.PositiveSmallIntegerField(
+        default=20,
+        validators=[MaxValueValidator(100)],
+    )
+    evaluation_compliance_weight = models.PositiveSmallIntegerField(
+        default=15,
+        validators=[MaxValueValidator(100)],
+    )
+    evaluation_term_weight = models.PositiveSmallIntegerField(
+        default=5,
+        validators=[MaxValueValidator(100)],
+    )
+    evaluation_history_weight = models.PositiveSmallIntegerField(
+        default=10,
+        validators=[MaxValueValidator(100)],
+    )
     status = models.CharField(max_length=24, choices=Status.choices, default=Status.DRAFT)
     decision_approval_status = models.CharField(
         max_length=24,
@@ -733,6 +782,18 @@ class PurchaseTender(PurchaseCostCenterStructuredFields, TimeStampedModel):
     def __str__(self):
         return self.number
 
+    @property
+    def evaluation_weight_total(self):
+        return sum(
+            (
+                self.evaluation_price_weight,
+                self.evaluation_delivery_weight,
+                self.evaluation_compliance_weight,
+                self.evaluation_term_weight,
+                self.evaluation_history_weight,
+            )
+        )
+
     def clean(self):
         self.apply_expiry_default()
         errors = {}
@@ -743,6 +804,8 @@ class PurchaseTender(PurchaseCostCenterStructuredFields, TimeStampedModel):
             errors["close_date"] = "Close date must be on or after bid start date."
         if self.warehouse_id and self.warehouse.company_id != self.company_id:
             errors["warehouse"] = "Warehouse must belong to the selected company."
+        if self.evaluation_weight_total != 100:
+            errors["evaluation_price_weight"] = "Evaluation criteria weights must total exactly 100%."
         if errors:
             raise ValidationError(errors)
 
@@ -778,6 +841,14 @@ class TenderBid(TimeStampedModel):
     bid_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     technical_score = models.DecimalField(max_digits=5, decimal_places=2, default=0, validators=[MaxValueValidator(100)])
     commercial_score = models.DecimalField(max_digits=5, decimal_places=2, default=0, validators=[MaxValueValidator(100)])
+    price_score = models.DecimalField(max_digits=5, decimal_places=2, default=0, editable=False)
+    delivery_score = models.DecimalField(max_digits=5, decimal_places=2, default=0, editable=False)
+    compliance_score = models.DecimalField(max_digits=5, decimal_places=2, default=0, editable=False)
+    term_score = models.DecimalField(max_digits=5, decimal_places=2, default=0, editable=False)
+    history_score = models.DecimalField(max_digits=5, decimal_places=2, default=0, editable=False)
+    total_score = models.DecimalField(max_digits=5, decimal_places=2, default=0, editable=False)
+    rank = models.PositiveIntegerField(default=0, editable=False)
+    scored_at = models.DateTimeField(blank=True, null=True, editable=False)
     allocation_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0, validators=[MaxValueValidator(100)])
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
     notes = models.TextField(blank=True)
@@ -4106,6 +4177,14 @@ class TenderBidLine(TimeStampedModel):
     delivery_days = models.PositiveIntegerField(default=0)
     compliant = models.BooleanField(default=True)
     no_bid = models.BooleanField(default=False)
+    price_score = models.DecimalField(max_digits=5, decimal_places=2, default=0, editable=False)
+    delivery_score = models.DecimalField(max_digits=5, decimal_places=2, default=0, editable=False)
+    compliance_score = models.DecimalField(max_digits=5, decimal_places=2, default=0, editable=False)
+    term_score = models.DecimalField(max_digits=5, decimal_places=2, default=0, editable=False)
+    history_score = models.DecimalField(max_digits=5, decimal_places=2, default=0, editable=False)
+    total_score = models.DecimalField(max_digits=5, decimal_places=2, default=0, editable=False)
+    rank = models.PositiveIntegerField(default=0, editable=False)
+    scored_at = models.DateTimeField(blank=True, null=True, editable=False)
     notes = models.TextField(blank=True)
 
     class Meta:
@@ -4629,13 +4708,76 @@ class VendorTransactionHistory(TimeStampedModel):
     amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     status = models.CharField(max_length=40, blank=True)
     notes = models.TextField(blank=True)
+    source_document = models.CharField(max_length=255, blank=True, editable=False)
+    source_model = models.CharField(max_length=128, blank=True, editable=False)
+    source_record_id = models.PositiveBigIntegerField(blank=True, null=True, editable=False)
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="vendor_transaction_history",
+        editable=False,
+    )
+    summary = models.TextField(blank=True, editable=False)
+    value = models.DecimalField(max_digits=20, decimal_places=6, blank=True, null=True, editable=False)
+    currency = models.CharField(max_length=3, blank=True, editable=False)
+    ordered_quantity = models.DecimalField(
+        max_digits=20,
+        decimal_places=6,
+        blank=True,
+        null=True,
+        editable=False,
+    )
+    received_quantity = models.DecimalField(
+        max_digits=20,
+        decimal_places=6,
+        blank=True,
+        null=True,
+        editable=False,
+    )
+    remaining_quantity = models.DecimalField(
+        max_digits=20,
+        decimal_places=6,
+        blank=True,
+        null=True,
+        editable=False,
+    )
+    expected_date = models.DateField(blank=True, null=True, editable=False)
+    actual_delivery_date = models.DateField(blank=True, null=True, editable=False)
+    delivery_status = models.CharField(max_length=64, blank=True, editable=False)
+    lead_time_variance = models.IntegerField(blank=True, null=True, editable=False)
+    rejection_indicator = models.BooleanField(default=False, editable=False)
+    rejection_reason = models.TextField(blank=True, editable=False)
+    company_snapshot = models.ForeignKey(
+        Company,
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="vendor_transaction_history",
+        editable=False,
+    )
+    branch_snapshot = models.ForeignKey(
+        "organization.Branch",
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="vendor_transaction_history",
+        editable=False,
+    )
 
     class Meta:
         ordering = ["-transaction_date", "-id"]
         constraints = [models.UniqueConstraint(fields=["vendor", "transaction_type", "reference"], name="unique_vendor_transaction_reference")]
+        indexes = [
+            models.Index(
+                fields=["vendor", "-transaction_date", "-id"],
+                name="vendor_history_date_idx",
+            )
+        ]
 
     def __str__(self):
-        return self.reference
+        return self.source_document or self.reference
 
 
 class PurchaseOrderCommunication(TimeStampedModel):

@@ -5,8 +5,8 @@
 - Designated HMX source: `/home/yusufmjt/hmx-human-resources-port8000-latest`
   on `192.168.0.108`.
 - Resolved module root: `hmx/module`.
-- Git commit: `NOT VERIFIED`. The designated snapshot is readable but contains
-  no Git metadata, so the resolver returned `commit: null`.
+- Git commit: `b59d2b9d743799729ca969e559ae992fea8b19f0`, resolved from
+  the designated read-only worktree on 14 November 2026.
 - Runtime: the HMX process listening on server port `8000` resolves its working
   directory to the designated `hmx` directory and returned HTTP 200 during the
   13 November 2026 audit.
@@ -31,15 +31,99 @@ was changed by this audit.
 | Blanket pricing and tax interaction | `core_purchase.blanketorderline` | `modules.purchase.BlanketOrderLine`, quotation-line trace fields, and `PurchaseOrderLinePricingProvenance` | ADAPTED | Tier pricing, draft price refresh, manual-price preservation, discount-formula traceability, generated free-product synchronization, tax-inclusive RFQ/PO propagation, and immutable approval/confirmation tax snapshots are covered. ERP adapts HMX's multi-tax relation to the local percentage-tax model; exact multi-tax, global-discount, and client-side onchange behavior remains deferred. |
 | Purchase Request conversion | `core_purchase.purchaserequest` + conversion wizards | `modules.purchase.services`, forms, and views | ADAPTED | RFQ, Blanket, Tender, Direct Purchase, line decisions, re-request paths, header/line timeline defaults, and structured cost-center propagation exist with bounded line handling. PR estimated cost takes precedence during RFQ creation; zero estimated cost falls back to the vendor tier with price trace and free-product benefit. The complete HMX client-side onchange matrix is not yet verified. |
 | RFQ and Purchase Order lifecycle | `core_purchase.purchaseorder` | `PurchaseQuotation`, core `PurchaseOrder`, and `PurchaseOrderControl` | ADAPTED | Draft RFQ through selected PO, approval, revision, receiving, vendor limits, cancellation effects, bounded multi-vendor RFQ comparison, direct-PO price refresh, rental controls, header/line timeline propagation, commercial-term snapshots, cost-center accounting propagation, editable Standard/Urgent/Follow-up RFQ mail, immutable delivery evidence, PDF attachment, and scoped Purchase prints are covered. |
-| Tender and award | `core_purchase.tender` / `tenderaward` | `PurchaseTender`, bids, allocations, and responses | ADAPTED | Core sourcing and award workflow exists. The complete HMX evaluation-weight UI and every split-award/onchange case are not verified. |
+| Tender and award | `core_purchase.tender` / `tenderaward` | `PurchaseTender`, bids, allocations, and responses | ADAPTED | The 50/20/15/5/10 evaluation criteria, persisted component scores and vendor rank, detailed scoring UI, separate Apply Award Strategy action, single-rank allocation, 60/30/10 split allocation with capacity fill, manual-allocation preservation, response creation, rollback, and bounded fixed-query scoring now match the HMX contract. HMX's complete bid-comparison workspace, every client-side onchange, audit-log detail, and all extension-module Tender behavior remain to be verified. |
 | Vendor onboarding and legal documents | `core_purchase` vendor models | Purchase vendor profile/legal/prequalification/change-proposal models | ADAPTED | Blocking documents, expiry, review, prequalification, blacklist restoration, company-safe similar-vendor detection, parent-vendor validation, and approval-gated data changes are covered. HMX address subrecords and bank-account master records remain adapted to local Contact/Profile fields. |
 | Vendor pricelist | `core_purchase.vendorpricelist*` | Purchase pricelist, tier, amendment, import, and eligibility services | ADAPTED | Approval, tier lookup, eligibility, import, amendment, initial Blanket free-product synchronization, and bounded price traceability exist. The complete HMX edit-time/onchange behavior remains deferred. |
-| Vendor performance | `core_purchase.vendorperformance*` | Purchase performance models/services | ADAPTED | Templates, evaluations, scoring history, and approval exist. Scheduled scoring and every HMX scoring source are not fully verified. |
+| Vendor performance and transaction history | `core_purchase.vendorperformance*`, `vendortransactionhistory` | Purchase performance models/services/tasks and materialized transaction history | ADAPTED | Template validation, qualitative approval, pure scoring formulas, fully-received expected-versus-actual delivery evidence, immutable HMX-shaped score history, latest-vendor score, read-only history UI, daily bounded recalculation, and Vendor-scoped PO/Tender/receipt/return history are covered. HMX transient collection is adapted to idempotent materialization with immediate 100-row pages and keyset background backfill. HMX quality-control evidence remains adapted to local Goods Receipt quantities; additional extension-owned sources remain to be audited. |
 | Purchase Team and auto-routing | `core_purchase.purchaseteam*`, PR/PO `_auto_route_to_buyer` | Purchase team models, bounded routing services, and document action extensions | ADAPTED | Product-category, order-type, and vendor-category matching; active/company scope; newest-first conflict handling; one-team-per-batch; existing-team preservation; Team Lead membership; manual PR/PO actions; and automatic PO-confirm routing are covered. ERP stores PO metadata in `PurchaseOrderControl` and uses bounded bulk writes. HMX branch-specific team behavior, dashboard tiles, and multi-record list-action UI remain deferred. |
 | Purchase settings and document configuration | `core_purchase.purchasesettings` | `PurchaseSetting`, order type/template/remark/milestone models | ADAPTED | Major configuration records exist. PO Template duplication, immutable Remark Template snapshots, vendor-default payment-term toggle, vendor/billing-address snapshots, module-owned PO control fields, and required structured cost-center guards are covered. Every HMX UI dependency is not yet verified. |
 | Purchase Intelligence dashboards and analysis | `core_purchase` intelligence/report services | Purchase dashboard, AppHub dashboards, and `purchase_analysis` | ADAPTED | Bounded dashboards plus HMX-shaped PO and PR product-by-month analysis contracts exist. Confirmed/approved filters, real quantity/discount/tax/received measures, organization scope, and report endpoints are covered; every spend/risk/vendor insight visualization is not yet verified. |
 | Accounting and inventory extensions | `core_purchase_accounting`, `core_purchase_inventory`, `core_inventory_purchase` | Purchase accounting, receiving, transfer, return, and three-way-match services | ADAPTED | Core bill/receipt/return effects are covered. Every HMX extension view, consignment, procurement-planning, and stock-demand workflow is not verified. |
 | Budget, construction, manufacturing, intercompany, localization, PH/SG, MCP | extension modules listed above | Multiple ERP modules | NOT VERIFIED | Presence of similarly named records is not behavioral parity. Each extension requires its own owner, workflow, security, side-effect, UI, and rollback audit. |
+
+## Tender evaluation and award-strategy slice completed in this audit
+
+- Added the HMX default evaluation weights: Pricing 50%, Delivery 20%,
+  Compliance 15%, Terms 5%, and History 10%, with an exact 100% validation
+  before Tender submission and evaluation.
+- Scores submitted bids in bounded batches, persists every component plus the
+  weighted total and rank at both vendor-average and product-line level, and
+  exposes the detailed vendor and line comparison in the Tender workspace.
+- Matches HMX price and delivery normalization, adapts compliance to the local
+  compliant-bid and approved-prequalification records, and reuses the latest
+  bounded Vendor Performance score for history instead of scanning purchase
+  history per vendor.
+- Keeps Award and Apply Award Strategy as separate workflow actions. Single
+  Rank fills each product line in its own score order; Split Ratio applies
+  60/30/10 before filling remaining capacity in per-line rank order; Manual
+  preserves user allocations.
+- Creates award responses only for actual winners and wraps automatic
+  reallocation in one transaction so insufficient capacity leaves allocations,
+  bid statuses, and responses unchanged.
+- Keeps Purchase-specific action visibility, context, and summary UI in the
+  module-owned document extension registry; core now exposes generic action
+  filtering, context-builder, and action-audit extension points. Applying a
+  strategy records the strategy, allocation count, and winning vendors in the
+  Tender audit details.
+- Bounds evaluation at 500 Tender lines, 50 submitted vendors, and 5,000 bid
+  lines/allocations. The 2-versus-12-vendor fixture confirms that query count
+  does not grow with vendor count.
+- Verification: 9 focused Tender scoring/strategy tests, 11 existing Tender
+  workflow/document-completion tests, the Tender approval-cycle regression,
+  and 3 generic document-registry tests passed on an isolated reusable test
+  database. Native Scale Guard reported zero new SG001-SG004 findings.
+
+## Vendor Performance scoring slice completed in this audit
+
+- Extracted the HMX delivery, rejection, quantitative, and final-score formulas
+  into an ORM-independent service so the scoring contract runs as true unit
+  tests without Django or a database.
+- Replaced the manually selected Goods Receipt delivery-status label as the
+  scoring source. Delivery accuracy now compares the immutable PO-line expected
+  date (with header fallback) to the actual completed receipt date and excludes
+  partially received lines, matching HMX behavior.
+- Retained local-native Goods Receipt quantities for rejection scoring and
+  records the source explicitly as `goods_receipt` rather than claiming the HMX
+  quality-control model exists locally.
+- Stores the HMX-shaped nested delivery/rejection evidence, transaction count,
+  and template snapshot in immutable score history; the Purchase registry
+  exposes final score and status while keeping history create/edit/delete
+  actions disabled.
+- Verified the existing daily scheduler and its keyset fan-out: only companies
+  with scoring and automatic recalculation enabled participate, at most 100
+  vendors are queued per task, and the next page continues after the last
+  scheduled primary key.
+- Keeps template evaluation at 500 lines and transaction evidence at 5,000 PO
+  lines. The 1-versus-20-receipt-line fixture confirms non-growing query count.
+- Verification: 6 ORM-free formula/evidence unit tests and 7 focused Django
+  integration tests pass on the reusable isolated test database.
+
+## Vendor Transaction History slice completed in this audit
+
+- The Vendor `Transactions` smart action is now always visible and prepares
+  history only after the user opens the scoped action. The generic smart-action
+  layer exposes a preparer extension point while all Purchase behavior remains
+  registered and implemented inside `modules.purchase`.
+- Materializes HMX-shaped Purchase Order line, Tender participation, Goods
+  Receipt, and Vendor Return rows with product, value, ordered/received/
+  remaining quantities, expected/actual dates, delivery variance, rejection
+  evidence, company, and branch snapshots.
+- Keeps the history list and details read-only, company/vendor scoped, and
+  idempotent through the existing vendor/type/reference uniqueness contract.
+  Reopening the action refreshes changed source values without duplicating
+  history.
+- The request path reads at most 100 recent rows from each fixed source. Older
+  rows are completed with retry-safe keyset tasks at 100 rows per invocation,
+  preserving complete history without an unbounded interactive query.
+- The list uses joined Product/Company/Branch reads and a vendor/date ordering
+  index. An estimated `EXPLAIN` on the empty reusable test table selected a
+  sequential scan because the table had no retained fixture rows; a
+  representative production-scale plan remains `NOT RUN`.
+- Verification: 6 ORM-free delivery-contract unit tests and 6 Django
+  integration tests pass, including all four sources, smart-action behavior,
+  idempotency, company isolation, 100-row pagination/continuation, and a
+  non-growing 1-versus-21-line query-count fixture. Native Scale Guard reports
+  zero SG001-SG004 findings for the changed history path.
 
 ## Blanket Order slice completed in this audit
 

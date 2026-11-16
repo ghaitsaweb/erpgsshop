@@ -17,6 +17,7 @@ from django.utils import timezone
 
 from core.models import Invoice, InvoiceLine, Product, StockMove
 from modules.finance.models import JournalEntry, JournalLine
+from modules.inventory.services import apply_stock_moves_to_balances
 from modules.purchase.models import PurchaseRequest, PurchaseRequestLine
 
 from .models import (
@@ -435,6 +436,7 @@ def post_inventory_transfer(transfer_id, user):
             ),
         ])
     StockMove.objects.bulk_create(moves)
+    apply_stock_moves_to_balances(moves)
     for index, line in enumerate(lines):
         line.stock_move_out = moves[index * 2]
         line.stock_move_in = moves[index * 2 + 1]

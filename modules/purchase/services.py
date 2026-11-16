@@ -21,6 +21,7 @@ from django.utils.html import strip_tags
 from django.utils import timezone
 
 from core.models import Contact, Invoice, InvoiceLine, Product, PurchaseOrder, PurchaseOrderLine, StockMove, Warehouse
+from modules.inventory.services import apply_stock_moves_to_balances
 
 from .access import PURCHASE_MANAGER
 from .models import (
@@ -10521,6 +10522,7 @@ def receive_goods_receipt(receipt, actor):
         products[product_id].current_stock += quantity
         products[product_id].updated_at = now
     StockMove.objects.bulk_create(stock_moves)
+    apply_stock_moves_to_balances(stock_moves)
     Product.objects.bulk_update(
         [products[product_id] for product_id in accepted_by_product],
         ["current_stock", "updated_at"],
@@ -10701,6 +10703,7 @@ def complete_purchase_inventory_transfer(transfer, actor):
             ]
         )
     StockMove.objects.bulk_create(stock_moves)
+    apply_stock_moves_to_balances(stock_moves)
     now = timezone.now()
     for index, line in enumerate(lines):
         line.source_stock_move_id = stock_moves[index * 2].pk
@@ -10878,6 +10881,7 @@ def cancel_purchase_order(order, actor, *, acknowledge_received_return=False):
         for line, quantity in return_lines
     ]
     StockMove.objects.bulk_create(return_moves)
+    apply_stock_moves_to_balances(return_moves)
 
     now = timezone.now()
     for product_id, quantity in return_by_product.items():

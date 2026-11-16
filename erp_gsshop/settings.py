@@ -28,6 +28,7 @@ INSTALLED_APPS = [
     "modules.organization.apps.OrganizationConfig",
     "modules.apphub.apps.AppHubConfig",
     "modules.approval_workflow.apps.ApprovalWorkflowConfig",
+    "modules.inventory.apps.InventoryConfig",
     "modules.hr.apps.HRConfig",
     "modules.purchase.apps.PurchaseConfig",
     "modules.construction.apps.ConstructionConfig",

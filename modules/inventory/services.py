@@ -3,17 +3,21 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 
-from core.models import StockMove, Warehouse
+from core.models import Product, StockMove, Warehouse
 
 from .models import (
     InventoryBalanceEvent,
     InventoryLocation,
+    InventoryLotSerial,
     InventoryReorderRule,
     InventoryReplenishmentSnapshot,
+    InventoryStockCount,
+    InventoryStockCountLine,
+    InventoryStockFreeze,
     InventoryStockBalance,
 )
 
@@ -21,8 +25,24 @@ from .models import (
 ZERO = Decimal("0")
 MAX_STOCK_MOVE_SYNC_BATCH = 1000
 MAX_REPLENISHMENT_RULE_BATCH = 250
+MAX_STOCK_COUNT_LINES = 1000
+MAX_STOCK_COUNT_LOCATIONS = 100
+MAX_STOCK_COUNT_PRODUCTS = 1000
 DEFAULT_LOCATION_ROOT = "Stock"
 DEFAULT_LOCATION_NAME = "Main Stock"
+
+
+def _assert_warehouses_not_frozen(warehouse_ids):
+    frozen = list(
+        InventoryStockFreeze.objects.filter(warehouse_id__in=sorted(set(warehouse_ids)))
+        .select_related("stock_count", "warehouse")
+        .order_by("warehouse_id")[:1]
+    )
+    if frozen:
+        lock = frozen[0]
+        raise ValidationError(
+            f"Warehouse {lock.warehouse} is locked by Stock Count {lock.stock_count}."
+        )
 
 
 def _require_bounded_moves(stock_moves):
@@ -159,6 +179,8 @@ def apply_stock_moves_to_balances(stock_moves, *, allow_negative=False):
     if not pending:
         return 0
 
+    frozen_warehouse_ids = {move.warehouse_id for move in pending}
+    _assert_warehouses_not_frozen(frozen_warehouse_ids)
     locations = ensure_default_internal_locations(move.warehouse_id for move in pending)
     keys = {(move.product_id, locations[move.warehouse_id].pk) for move in pending}
     product_ids = sorted({key[0] for key in keys})
@@ -207,6 +229,10 @@ def apply_stock_moves_to_balances(stock_moves, *, allow_negative=False):
                 owner_vendor__isnull=True,
             )
         }
+
+    # Recheck after balance locks. A Stock Count can freeze the warehouse while
+    # this transaction waits for a balance row held by another writer.
+    _assert_warehouses_not_frozen(frozen_warehouse_ids)
 
     deltas = defaultdict(Decimal)
     latest_move = {}
@@ -260,6 +286,509 @@ def apply_stock_moves_to_balances(stock_moves, *, allow_negative=False):
         batch_size=500,
     )
     return len(pending)
+
+
+def _bounded_stock_count_locations(stock_count):
+    locations = list(
+        stock_count.locations.select_related("warehouse")
+        .order_by("pk")[: MAX_STOCK_COUNT_LOCATIONS + 1]
+    )
+    if len(locations) > MAX_STOCK_COUNT_LOCATIONS:
+        raise ValidationError(
+            f"A Stock Count supports at most {MAX_STOCK_COUNT_LOCATIONS} selected locations."
+        )
+    invalid = [
+        location
+        for location in locations
+        if location.warehouse_id != stock_count.warehouse_id
+        or location.company_id != stock_count.company_id
+    ]
+    if invalid:
+        raise ValidationError("Every selected location must belong to the Stock Count warehouse.")
+    return locations
+
+
+def _bounded_stock_count_products(stock_count):
+    product_ids = list(
+        stock_count.products.order_by("pk").values_list("pk", flat=True)[
+            : MAX_STOCK_COUNT_PRODUCTS + 1
+        ]
+    )
+    if len(product_ids) > MAX_STOCK_COUNT_PRODUCTS:
+        raise ValidationError(
+            f"A Stock Count supports at most {MAX_STOCK_COUNT_PRODUCTS} selected products."
+        )
+    if stock_count.inventoried_product == InventoryStockCount.ProductScope.SELECTED:
+        if not product_ids:
+            raise ValidationError("Select at least one product for a Specific Products Stock Count.")
+        company_product_count = Product.objects.filter(
+            pk__in=product_ids,
+            company_id=stock_count.company_id,
+            product_type=Product.ProductType.STOCKABLE,
+        ).count()
+        if company_product_count != len(product_ids):
+            raise ValidationError(
+                "Every selected product must be a stockable product in the Stock Count company."
+            )
+    return product_ids
+
+
+def _location_scope_filter(locations):
+    if not locations:
+        return Q()
+    scope = Q(pk__in=[])
+    for location in locations:
+        scope |= Q(location_id=location.pk) | Q(
+            location__ancestor_ids__contains=[location.pk]
+        )
+    return scope
+
+
+def _zero_stock_anchor(stock_count, locations):
+    if len(locations) == 1 and locations[0].usage == InventoryLocation.Usage.INTERNAL:
+        return locations[0]
+    if locations:
+        scope = Q(pk__in=[])
+        for location in locations:
+            scope |= Q(pk=location.pk) | Q(ancestor_ids__contains=[location.pk])
+        anchor = (
+            InventoryLocation.objects.filter(
+                scope,
+                warehouse_id=stock_count.warehouse_id,
+                usage=InventoryLocation.Usage.INTERNAL,
+                active=True,
+            )
+            .order_by("sequence", "pk")
+            .first()
+        )
+        if anchor:
+            return anchor
+    return ensure_default_internal_locations([stock_count.warehouse_id])[
+        stock_count.warehouse_id
+    ]
+
+
+@transaction.atomic
+def confirm_stock_count(stock_count, actor):
+    """Freeze one warehouse and create a bounded physical-count snapshot."""
+    if actor is None:
+        raise ValidationError("A user is required to confirm a Stock Count.")
+    stock_count_id = getattr(stock_count, "pk", stock_count)
+    locked = (
+        InventoryStockCount.objects.select_for_update(of=("self",))
+        .select_related("company", "branch", "warehouse")
+        .get(pk=stock_count_id)
+    )
+    if locked.status != InventoryStockCount.Status.DRAFT:
+        raise ValidationError("Only Draft Stock Counts can be confirmed.")
+    Warehouse.objects.select_for_update(of=("self",)).get(pk=locked.warehouse_id)
+    if InventoryStockFreeze.objects.filter(warehouse_id=locked.warehouse_id).exists():
+        raise ValidationError("This warehouse is already locked by another Stock Count.")
+
+    locations = _bounded_stock_count_locations(locked)
+    product_ids = _bounded_stock_count_products(locked)
+    InventoryStockFreeze.objects.create(
+        company_id=locked.company_id,
+        warehouse_id=locked.warehouse_id,
+        stock_count=locked,
+        location_ids=[location.pk for location in locations],
+        product_ids=(
+            product_ids
+            if locked.inventoried_product == InventoryStockCount.ProductScope.SELECTED
+            else []
+        ),
+    )
+
+    balances = InventoryStockBalance.objects.select_for_update(of=("self",)).filter(
+        company_id=locked.company_id,
+        warehouse_id=locked.warehouse_id,
+        location__usage=InventoryLocation.Usage.INTERNAL,
+        ownership_type=InventoryStockBalance.OwnershipType.COMPANY,
+        owner_vendor__isnull=True,
+    ).exclude(qty_on_hand=ZERO)
+    if locations:
+        balances = balances.filter(_location_scope_filter(locations))
+    if locked.inventoried_product == InventoryStockCount.ProductScope.SELECTED:
+        balances = balances.filter(product_id__in=product_ids)
+    snapshot_balances = list(
+        balances.select_related("product", "location", "lot")
+        .order_by("product_id", "location_id", "lot_id", "pk")[: MAX_STOCK_COUNT_LINES + 1]
+    )
+    if len(snapshot_balances) > MAX_STOCK_COUNT_LINES:
+        raise ValidationError(
+            f"This Stock Count would create more than {MAX_STOCK_COUNT_LINES} lines. "
+            "Narrow the location or product scope."
+        )
+
+    lines = []
+    for balance in snapshot_balances:
+        counted = (
+            ZERO
+            if locked.counted_qty_default == InventoryStockCount.CountedDefault.ZERO
+            else balance.qty_on_hand
+        )
+        lines.append(
+            InventoryStockCountLine(
+                stock_count=locked,
+                product_id=balance.product_id,
+                location_id=balance.location_id,
+                lot_id=balance.lot_id,
+                system_qty=balance.qty_on_hand,
+                counted_qty=counted,
+                difference_qty=counted - balance.qty_on_hand,
+                line_source=InventoryStockCountLine.LineSource.BALANCE,
+            )
+        )
+
+    if locked.include_zero_stock_product:
+        remaining_capacity = MAX_STOCK_COUNT_LINES - len(lines)
+        present_product_ids = {balance.product_id for balance in snapshot_balances}
+        zero_products = Product.objects.filter(
+            company_id=locked.company_id,
+            product_type=Product.ProductType.STOCKABLE,
+            active=True,
+        ).exclude(pk__in=present_product_ids)
+        if locked.inventoried_product == InventoryStockCount.ProductScope.SELECTED:
+            zero_products = zero_products.filter(pk__in=product_ids)
+        zero_product_ids = list(
+            zero_products.order_by("pk").values_list("pk", flat=True)[
+                : remaining_capacity + 1
+            ]
+        )
+        if len(zero_product_ids) > remaining_capacity:
+            raise ValidationError(
+                f"This Stock Count would create more than {MAX_STOCK_COUNT_LINES} lines. "
+                "Narrow the product scope."
+            )
+        anchor = _zero_stock_anchor(locked, locations)
+        lines.extend(
+            InventoryStockCountLine(
+                stock_count=locked,
+                product_id=product_id,
+                location_id=anchor.pk,
+                system_qty=ZERO,
+                counted_qty=ZERO,
+                difference_qty=ZERO,
+                line_source=InventoryStockCountLine.LineSource.NO_STOCK,
+            )
+            for product_id in zero_product_ids
+        )
+
+    if not lines:
+        raise ValidationError("The selected Stock Count scope contains no countable products.")
+    InventoryStockCountLine.objects.bulk_create(lines, batch_size=500)
+    now = timezone.now()
+    locked.status = InventoryStockCount.Status.IN_PROGRESS
+    locked.confirmed_by = actor
+    locked.confirmed_at = now
+    locked.save(
+        update_fields=["status", "confirmed_by", "confirmed_at", "updated_at"]
+    )
+    return locked
+
+
+@transaction.atomic
+def complete_stock_count(stock_count, actor):
+    if actor is None:
+        raise ValidationError("A user is required to complete a Stock Count.")
+    stock_count_id = getattr(stock_count, "pk", stock_count)
+    locked = InventoryStockCount.objects.select_for_update(of=("self",)).get(
+        pk=stock_count_id
+    )
+    if locked.status != InventoryStockCount.Status.IN_PROGRESS:
+        raise ValidationError("Only In Progress Stock Counts can be completed.")
+    if not InventoryStockFreeze.objects.filter(stock_count=locked).exists():
+        raise ValidationError("The Stock Count warehouse freeze is missing.")
+    lines = list(
+        locked.lines.select_related("lot")
+        .order_by("pk")[: MAX_STOCK_COUNT_LINES + 1]
+    )
+    if not lines:
+        raise ValidationError("Add counting lines before completing the Stock Count.")
+    if len(lines) > MAX_STOCK_COUNT_LINES:
+        raise ValidationError("The Stock Count exceeds the supported line limit.")
+    for line in lines:
+        if line.counted_qty < ZERO:
+            raise ValidationError("Counted quantity cannot be negative.")
+        if (
+            line.lot_id
+            and line.lot.tracking_type == InventoryLotSerial.TrackingType.SERIAL
+            and line.counted_qty > 1
+        ):
+            raise ValidationError("A serial-number count cannot exceed one unit.")
+    now = timezone.now()
+    locked.status = InventoryStockCount.Status.COMPLETED
+    locked.completed_by = actor
+    locked.completed_at = now
+    locked.save(
+        update_fields=["status", "completed_by", "completed_at", "updated_at"]
+    )
+    return locked
+
+
+def _stock_count_position_filter(lines):
+    position_filter = Q(pk__in=[])
+    for line in lines:
+        lot_filter = Q(lot_id=line.lot_id) if line.lot_id else Q(lot__isnull=True)
+        position_filter |= Q(
+            product_id=line.product_id,
+            location_id=line.location_id,
+        ) & lot_filter
+    return position_filter
+
+
+@transaction.atomic
+def validate_stock_count(stock_count, actor):
+    """Post exact location/lot variances once and release the warehouse freeze."""
+    if actor is None:
+        raise ValidationError("A user is required to validate a Stock Count.")
+    stock_count_id = getattr(stock_count, "pk", stock_count)
+    locked = (
+        InventoryStockCount.objects.select_for_update(of=("self",))
+        .select_related("warehouse")
+        .get(pk=stock_count_id)
+    )
+    if locked.status != InventoryStockCount.Status.COMPLETED:
+        raise ValidationError("Only Completed Stock Counts can be validated.")
+    Warehouse.objects.select_for_update(of=("self",)).get(pk=locked.warehouse_id)
+    freeze = InventoryStockFreeze.objects.select_for_update(of=("self",)).filter(
+        stock_count=locked,
+        warehouse_id=locked.warehouse_id,
+    ).first()
+    if freeze is None:
+        raise ValidationError("The Stock Count warehouse freeze is missing.")
+    lines = list(
+        locked.lines.select_for_update(of=("self",))
+        .select_related("product", "location", "lot")
+        .order_by("pk")[: MAX_STOCK_COUNT_LINES + 1]
+    )
+    if not lines:
+        raise ValidationError("The Stock Count has no counting lines.")
+    if len(lines) > MAX_STOCK_COUNT_LINES:
+        raise ValidationError("The Stock Count exceeds the supported line limit.")
+    if any(line.adjustment_stock_move_id for line in lines):
+        raise ValidationError("This Stock Count already contains posted adjustments.")
+
+    position_filter = _stock_count_position_filter(lines)
+    balance_queryset = InventoryStockBalance.objects.select_for_update(of=("self",)).filter(
+        position_filter,
+        company_id=locked.company_id,
+        warehouse_id=locked.warehouse_id,
+        ownership_type=InventoryStockBalance.OwnershipType.COMPANY,
+        owner_vendor__isnull=True,
+    )
+    balances = {
+        (row.product_id, row.location_id, row.lot_id): row
+        # scale-guard: allow SG002 — exact positions are bounded by 1,000 Stock Count lines
+        for row in balance_queryset.order_by("pk")
+    }
+    missing = []
+    for line in lines:
+        key = (line.product_id, line.location_id, line.lot_id)
+        if key in balances:
+            continue
+        if line.system_qty != ZERO:
+            raise ValidationError(
+                f"Stock changed after the snapshot for {line.product} at {line.location}."
+            )
+        missing.append(
+            InventoryStockBalance(
+                company_id=locked.company_id,
+                product_id=line.product_id,
+                warehouse_id=locked.warehouse_id,
+                location_id=line.location_id,
+                lot_id=line.lot_id,
+                qty_on_hand=ZERO,
+                qty_reserved=ZERO,
+                qty_available=ZERO,
+            )
+        )
+    if missing:
+        InventoryStockBalance.objects.bulk_create(
+            missing,
+            ignore_conflicts=True,
+            batch_size=500,
+        )
+        balances = {
+            (row.product_id, row.location_id, row.lot_id): row
+            # scale-guard: allow SG002 — exact positions are bounded by 1,000 Stock Count lines
+            for row in InventoryStockBalance.objects.select_for_update(of=("self",))
+            .filter(
+                position_filter,
+                company_id=locked.company_id,
+                warehouse_id=locked.warehouse_id,
+                ownership_type=InventoryStockBalance.OwnershipType.COMPANY,
+                owner_vendor__isnull=True,
+            )
+            .order_by("pk")
+        }
+
+    adjustment_lines = []
+    for line in lines:
+        balance = balances[(line.product_id, line.location_id, line.lot_id)]
+        if balance.qty_on_hand != line.system_qty:
+            raise ValidationError(
+                f"Stock changed after the snapshot for {line.product} at {line.location}."
+            )
+        if line.counted_qty < balance.qty_reserved:
+            raise ValidationError(
+                f"Counted quantity for {line.product} cannot be lower than its reserved quantity."
+            )
+        line.difference_qty = line.counted_qty - line.system_qty
+        if line.difference_qty != ZERO:
+            adjustment_lines.append(line)
+
+    product_ids = sorted({line.product_id for line in adjustment_lines})
+    products = Product.objects.select_for_update(of=("self",)).filter(
+        pk__in=product_ids
+    ).in_bulk()
+    product_deltas = defaultdict(Decimal)
+    for line in adjustment_lines:
+        product_deltas[line.product_id] += line.difference_qty
+    for product_id, delta in product_deltas.items():
+        resulting = products[product_id].current_stock + delta
+        if resulting < ZERO:
+            raise ValidationError(
+                f"Stock Count would make global stock negative for {products[product_id]}."
+            )
+        products[product_id].current_stock = resulting
+
+    stock_moves = [
+        StockMove(
+            company_id=locked.company_id,
+            product_id=line.product_id,
+            warehouse_id=locked.warehouse_id,
+            direction=(
+                StockMove.Direction.IN
+                if line.difference_qty > ZERO
+                else StockMove.Direction.OUT
+            ),
+            quantity=abs(line.difference_qty),
+            reference=locked.name,
+            movement_date=timezone.localdate(),
+            note=f"Physical Stock Count adjustment for {line.location}.",
+            created_by=actor,
+        )
+        for line in adjustment_lines
+    ]
+    if stock_moves:
+        StockMove.objects.bulk_create(stock_moves, batch_size=500)
+
+    now = timezone.now()
+    for product in products.values():
+        product.updated_at = now
+    changed_balances = []
+    balance_by_move_id = {}
+    for line, move in zip(adjustment_lines, stock_moves):
+        balance = balances[(line.product_id, line.location_id, line.lot_id)]
+        balance.qty_on_hand = line.counted_qty
+        balance.qty_available = line.counted_qty - balance.qty_reserved
+        balance.last_move_id = move.pk
+        balance.updated_at = now
+        line.adjustment_stock_move_id = move.pk
+        line.updated_at = now
+        changed_balances.append(balance)
+        balance_by_move_id[move.pk] = balance
+    if changed_balances:
+        InventoryStockBalance.objects.bulk_update(
+            changed_balances,
+            ["qty_on_hand", "qty_available", "last_move", "updated_at"],
+            batch_size=500,
+        )
+        Product.objects.bulk_update(
+            list(products.values()),
+            ["current_stock", "updated_at"],
+            batch_size=500,
+        )
+        InventoryBalanceEvent.objects.bulk_create(
+            [
+                InventoryBalanceEvent(
+                    stock_move=move,
+                    balance=balance_by_move_id[move.pk],
+                    direction=move.direction,
+                    quantity=move.quantity,
+                )
+                for move in stock_moves
+            ],
+            batch_size=500,
+        )
+    InventoryStockCountLine.objects.bulk_update(
+        lines,
+        ["difference_qty", "adjustment_stock_move", "updated_at"],
+        batch_size=500,
+    )
+
+    affected_lot_ids = sorted({line.lot_id for line in adjustment_lines if line.lot_id})
+    if affected_lot_ids:
+        lot_totals = {
+            row["lot_id"]: row["quantity"] or ZERO
+            for row in InventoryStockBalance.objects.filter(lot_id__in=affected_lot_ids)
+            .order_by()
+            .values("lot_id")
+            .annotate(quantity=Sum("qty_on_hand"))
+        }
+        lots = list(
+            InventoryLotSerial.objects.select_for_update(of=("self",))
+            .filter(pk__in=affected_lot_ids)
+            .order_by("pk")
+        )
+        for lot in lots:
+            lot.quantity = lot_totals.get(lot.pk, ZERO)
+            lot.updated_at = now
+        InventoryLotSerial.objects.bulk_update(
+            lots,
+            ["quantity", "updated_at"],
+            batch_size=500,
+        )
+
+    freeze.delete()
+    locked.status = InventoryStockCount.Status.VALIDATED
+    locked.validated_by = actor
+    locked.validated_at = now
+    locked.save(
+        update_fields=["status", "validated_by", "validated_at", "updated_at"]
+    )
+    return locked
+
+
+@transaction.atomic
+def cancel_stock_count(stock_count, actor):
+    if actor is None:
+        raise ValidationError("A user is required to cancel a Stock Count.")
+    stock_count_id = getattr(stock_count, "pk", stock_count)
+    locked = InventoryStockCount.objects.select_for_update(of=("self",)).get(
+        pk=stock_count_id
+    )
+    if locked.status not in {
+        InventoryStockCount.Status.IN_PROGRESS,
+        InventoryStockCount.Status.COMPLETED,
+    }:
+        raise ValidationError("Only In Progress or Completed Stock Counts can be cancelled.")
+    InventoryStockFreeze.objects.filter(stock_count=locked).delete()
+    now = timezone.now()
+    locked.status = InventoryStockCount.Status.CANCELLED
+    locked.cancelled_by = actor
+    locked.cancelled_at = now
+    locked.save(
+        update_fields=["status", "cancelled_by", "cancelled_at", "updated_at"]
+    )
+    return locked
+
+
+def confirm_stock_count_action(instance, actor):
+    return confirm_stock_count(instance.pk, actor)
+
+
+def complete_stock_count_action(instance, actor):
+    return complete_stock_count(instance.pk, actor)
+
+
+def validate_stock_count_action(instance, actor):
+    return validate_stock_count(instance.pk, actor)
+
+
+def cancel_stock_count_action(instance, actor):
+    return cancel_stock_count(instance.pk, actor)
 
 
 def _require_bounded_reorder_rules(reorder_rules):

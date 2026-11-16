@@ -4835,6 +4835,23 @@ def document_action(request, entity, pk, action):
                     instance = locked
                     actual_status = locked.status
                     updated = 1
+            elif definition.get("handler") is not None:
+                handler = definition["handler"]
+                if not callable(handler):
+                    raise ImproperlyConfigured(
+                        f"Workflow handler '{entity}.{action}' must be callable."
+                    )
+                locked = get_object_or_404(scoped_queryset.select_for_update(), pk=pk)
+                if getattr(locked, workflow_field) != current_status:
+                    updated = 0
+                else:
+                    try:
+                        instance = handler(locked, request.user)
+                    except ValidationError as exc:
+                        messages.error(request, "; ".join(exc.messages))
+                        return redirect("entity_edit", entity=entity, pk=pk)
+                    actual_status = getattr(instance, workflow_field, definition["to"])
+                    updated = 1
             elif definition.get("service_controls_state") and model._meta.app_label in {
                 "gsshop_construction", "gsshop_finance", "gsshop_pos", "gsshop_hr", "gsshop_purchase"
             }:

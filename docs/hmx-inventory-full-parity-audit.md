@@ -4,8 +4,11 @@
 
 - Designated HMX source: `/home/yusufmjt/hmx-human-resources-port8000-latest`
   on `192.168.0.108`.
-- Read-only HMX commit verified on 16 November 2026:
-  `eed14195cc2b8710bb49e6a4a02cff2315d09742`.
+- Read-only HMX commit re-verified for the Stock Count continuation on 16
+  November 2026: `af5184484b17fd08b4e201e0c66065254a6b379c`.
+  The earlier foundation inspection recorded
+  `eed14195cc2b8710bb49e6a4a02cff2315d09742`; the reference advanced between
+  the two read-only inspections.
 - Base owner inspected: `core_inventory` version `1.0.1.0.83`.
 - The base manifest, security groups, menu tree, location, lot/serial, stock
   balance, principal views, and related tests were inspected. The source has
@@ -44,8 +47,8 @@ second parallel transfer implementation.
 | Reordering rules | HMX replenishment policy | `InventoryReorderRule` | ADAPTED | Per-product/warehouse minimum, maximum, fixed-or-up-to-max quantity, Buy/Internal route, source warehouse, vendor, lead time, branch scope, and active state exist. |
 | Replenishment review | HMX replenishment planning | `InventoryReplenishmentSnapshot` | ADAPTED | Bounded evaluation materializes Due/Healthy/Inactive, available quantity, suggested quantity, route, source/vendor, and need-by date. Purchase Request or transfer generation from a suggestion remains deferred. |
 | Inventory roles | HMX Administrator/Manager/Supervisor/User | `modules.inventory.security` | ADAPTED | Four corresponding groups are provisioned after migration with Inventory, shared ledger/master, and adapted transfer permissions. Exact HMX record-rule semantics remain deferred. |
-| Workspace and mobile shell | HMX menu/views | module-owned entity/workspace registries | ADAPTED | Stock Balance, Replenishment Review, Reordering Rules, Internal Transfers, Locations, and Lot/Serial are exposed without central menu hardcoding and inherit the responsive generic ERP shell. Specialized barcode/mobile picking screens remain deferred. |
-| Counts and adjustments | HMX stock count/adjustment | — | DEFERRED | No operator-safe count session, variance approval, posting, or reversal contract yet. |
+| Workspace and mobile shell | HMX menu/views | module-owned entity/workspace registries | ADAPTED | Stock Balance, Stock Counts, paginated Counting Lines, Replenishment Review, Reordering Rules, Internal Transfers, Locations, and Lot/Serial are exposed without central menu hardcoding and inherit the responsive generic ERP shell. Specialized barcode/mobile picking screens remain deferred. |
+| Counts and adjustments | HMX `stock_count`, `stock_count_line`, and warehouse freeze | `InventoryStockCount`, `InventoryStockCountLine`, `InventoryStockFreeze` | ADAPTED | Draft → Confirm → In Progress → Complete → Validate and In Progress/Completed → Cancel are implemented. Confirm freezes the warehouse and creates a bounded balance snapshot; Validate posts exact location/lot gains or losses as immutable Stock Moves, updates product/balance/lot snapshots, records idempotency events, and releases the freeze atomically. Other stock writes fail while frozen. The local freeze conservatively locks the whole warehouse instead of permitting non-overlapping scopes. HMX approval, background generation above 1,000 lines, valuation review/accounting, CSV/barcode count, and reversal remain deferred. |
 | Reservations, picking, packing, delivery | HMX operational flows | — | DEFERRED | No reservation allocator, picking batches/waves, package hierarchy, or delivery execution yet. |
 | Routes and put-away | HMX routes/rules | — | DEFERRED | Location policy is present, but automated put-away, pull/push routes, cross-dock, and multi-step receipt/delivery are not implemented. |
 | Valuation and accounting | Inventory accounting extensions | existing Finance inventory accounting records | NOT VERIFIED | Similar records are not parity evidence. Cost layers, landed cost, valuation posting, reconciliation, rollback, and extension ownership need a separate audit. |
@@ -64,6 +67,12 @@ second parallel transfer implementation.
   and bulk-creates or bulk-updates the latest snapshots.
 - `evaluate_inventory_replenishment` performs complete evaluation by bounded
   keyset batches.
+- Stock Count confirmation and validation accept at most 1,000 lines, 100
+  selected locations, and 1,000 selected products. Snapshot and adjustment
+  writes are bulk operations. Larger counts fail explicitly and remain
+  complete-data background-workflow work, rather than silently dropping lines.
+- Counting Lines use the shared 25-row paginated entity list and exact-record
+  edits instead of rendering an unbounded inline formset.
 - Interactive lists continue through the shared scoped, searched, paginated
   entity view; no Inventory service returns an unbounded result set.
 
@@ -77,20 +86,25 @@ second parallel transfer implementation.
   with movement count.
 - The 2-versus-12 rule fixture proves replenishment-evaluation query count does
   not grow with rule count.
+- Six PostgreSQL Stock Count tests pass: full variance lifecycle, freeze and
+  cancel behavior, stale-snapshot rollback, exact manual-line editing, generic
+  entity action dispatch, and 2-versus-12 line query-growth checks for both
+  Confirm and Validate.
 - Six directly affected Purchase receipt, return, and transfer regressions pass,
   including their existing query-growth fixtures.
 - Python compilation, Django system check, migration drift (`No changes
   detected`), and `git diff --check` pass.
 - Native Scale Guard passes with zero new SG001-SG004 findings. It reports the
-  replenishment aggregate as an allowed SG002 because its grouped output is
-  bounded by the validated 250-rule transaction limit, plus the pre-existing
-  allowed fixed-three-template Purchase SG003. The pre-commit executable is
-  unavailable, so configured pre-commit is **NOT RUN**.
+  replenishment aggregate as one allowed SG002 because its grouped output is
+  bounded by the validated 250-rule transaction limit, and the two Stock Count
+  exact-position reads as allowed SG002 findings bounded by the validated
+  1,000-line limit. The pre-commit executable is unavailable, so configured
+  pre-commit is **NOT RUN**.
 
 ## Deployment state
 
-Purchase commit `c5eaab4` is deployed. Inventory migrations `0001` and `0002`
-are currently implementation artifacts in the same repository/worktree and
-have only been applied to the isolated reusable test database. Production
+Purchase commit `c5eaab4` is deployed. Inventory foundation commit `e253611`
+and migrations `0001` through `0003` are in the same repository/worktree;
+Inventory migrations have only been applied to the isolated reusable test database. Production
 Inventory migration, legacy replay, replenishment evaluation, and smoke tests
 remain pending; this document does not claim Inventory is deployed or 1:1.

@@ -13,6 +13,9 @@ INVENTORY_MODELS = {
     "inventorybalanceevent",
     "inventoryreorderrule",
     "inventoryreplenishmentsnapshot",
+    "inventorystockcount",
+    "inventorystockcountline",
+    "inventorystockfreeze",
 }
 CORE_INVENTORY_MODELS = {"product", "warehouse", "stockmove"}
 PURCHASE_INVENTORY_MODELS = {

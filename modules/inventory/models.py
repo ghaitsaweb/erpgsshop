@@ -1,5 +1,6 @@
 from datetime import timedelta
 from decimal import Decimal
+from uuid import uuid4
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -714,3 +715,351 @@ class InventoryReplenishmentSnapshot(TimeStampedModel):
 
     def __str__(self):
         return f"{self.product} · {self.warehouse} · {self.get_status_display()}"
+
+
+class InventoryStockCount(TimeStampedModel):
+    """Physical-count document with a frozen warehouse snapshot."""
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        IN_PROGRESS = "in_progress", "In Progress"
+        COMPLETED = "completed", "Completed"
+        VALIDATED = "validated", "Validated"
+        CANCELLED = "cancelled", "Cancelled"
+
+    class ProductScope(models.TextChoices):
+        ALL = "all_product", "All Products"
+        SELECTED = "product", "Specific Products"
+
+    class CountedDefault(models.TextChoices):
+        ZERO = "zero", "Default To Zero"
+        SYSTEM = "system_qty", "Based on System Quantity"
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.PROTECT,
+        related_name="inventory_stock_counts",
+    )
+    branch = models.ForeignKey(
+        Branch,
+        on_delete=models.PROTECT,
+        related_name="inventory_stock_counts",
+        blank=True,
+        null=True,
+    )
+    warehouse = models.ForeignKey(
+        Warehouse,
+        on_delete=models.PROTECT,
+        related_name="inventory_stock_counts",
+    )
+    name = models.CharField(max_length=80)
+    locations = models.ManyToManyField(
+        InventoryLocation,
+        related_name="stock_counts",
+        blank=True,
+    )
+    inventoried_product = models.CharField(
+        max_length=20,
+        choices=ProductScope.choices,
+        default=ProductScope.ALL,
+    )
+    products = models.ManyToManyField(
+        Product,
+        related_name="inventory_stock_counts",
+        blank=True,
+    )
+    include_zero_stock_product = models.BooleanField(default=False)
+    counted_qty_default = models.CharField(
+        max_length=20,
+        choices=CountedDefault.choices,
+        default=CountedDefault.SYSTEM,
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.DRAFT,
+        db_index=True,
+    )
+    notes = models.TextField(blank=True)
+    confirmed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="confirmed_inventory_stock_counts",
+        blank=True,
+        null=True,
+        editable=False,
+    )
+    confirmed_at = models.DateTimeField(blank=True, null=True, editable=False)
+    completed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="completed_inventory_stock_counts",
+        blank=True,
+        null=True,
+        editable=False,
+    )
+    completed_at = models.DateTimeField(blank=True, null=True, editable=False)
+    validated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="validated_inventory_stock_counts",
+        blank=True,
+        null=True,
+        editable=False,
+    )
+    validated_at = models.DateTimeField(blank=True, null=True, editable=False)
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="cancelled_inventory_stock_counts",
+        blank=True,
+        null=True,
+        editable=False,
+    )
+    cancelled_at = models.DateTimeField(blank=True, null=True, editable=False)
+
+    organization_branch_lookup = "branch"
+
+    class Meta:
+        ordering = ["-created_at", "-pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "name"],
+                name="unique_inventory_stock_count_name",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["company", "branch", "warehouse", "status"],
+                name="inventory_count_scope_idx",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.warehouse_id:
+            if self.warehouse.company_id != self.company_id:
+                errors["warehouse"] = "Stock Count warehouse must belong to the selected company."
+            if self.warehouse.branch_id != self.branch_id:
+                errors["branch"] = "Stock Count branch must match its warehouse branch."
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        if self.warehouse_id:
+            self.company_id = self.warehouse.company_id
+            self.branch_id = self.warehouse.branch_id
+        if not self.name:
+            self.name = f"SC-{timezone.localdate():%Y%m%d}-{uuid4().hex[:8].upper()}"
+        self.full_clean(exclude={"locations", "products"})
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.status != self.Status.DRAFT:
+            raise ValidationError("Only Draft Stock Counts can be deleted.")
+        return super().delete(*args, **kwargs)
+
+    def __str__(self):
+        return self.name
+
+
+class InventoryStockCountLine(TimeStampedModel):
+    class LineSource(models.TextChoices):
+        BALANCE = "balance", "Balance"
+        NO_STOCK = "no_stock", "No Stock"
+        MANUAL = "manual", "Manual"
+
+    stock_count = models.ForeignKey(
+        InventoryStockCount,
+        on_delete=models.CASCADE,
+        related_name="lines",
+    )
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.PROTECT,
+        related_name="inventory_stock_count_lines",
+    )
+    location = models.ForeignKey(
+        InventoryLocation,
+        on_delete=models.PROTECT,
+        related_name="stock_count_lines",
+    )
+    lot = models.ForeignKey(
+        InventoryLotSerial,
+        on_delete=models.PROTECT,
+        related_name="stock_count_lines",
+        blank=True,
+        null=True,
+    )
+    system_qty = models.DecimalField(max_digits=18, decimal_places=3, default=0)
+    counted_qty = models.DecimalField(max_digits=18, decimal_places=3, default=0)
+    difference_qty = models.DecimalField(
+        max_digits=18,
+        decimal_places=3,
+        default=0,
+        editable=False,
+    )
+    line_source = models.CharField(
+        max_length=16,
+        choices=LineSource.choices,
+        default=LineSource.BALANCE,
+        editable=False,
+    )
+    adjustment_stock_move = models.OneToOneField(
+        StockMove,
+        on_delete=models.PROTECT,
+        related_name="inventory_stock_count_line",
+        blank=True,
+        null=True,
+        editable=False,
+    )
+
+    organization_branch_lookup = "stock_count__branch"
+
+    class Meta:
+        ordering = ["product__name", "location__complete_name", "lot__name", "pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["stock_count", "product", "location", "lot"],
+                name="unique_inventory_stock_count_position",
+                nulls_distinct=False,
+            ),
+            models.CheckConstraint(
+                condition=models.Q(counted_qty__gte=0),
+                name="inventory_counted_qty_nonnegative",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["stock_count", "product", "location"],
+                name="inventory_count_line_scope_idx",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        stock_count = self.stock_count if self.stock_count_id else None
+        stock_count_status = (
+            InventoryStockCount.objects.filter(pk=self.stock_count_id)
+            .values_list("status", flat=True)
+            .first()
+            if self.stock_count_id
+            else None
+        )
+        if stock_count and stock_count_status != InventoryStockCount.Status.IN_PROGRESS:
+            errors["stock_count"] = (
+                "Counting lines can only be edited while the Stock Count is In Progress."
+            )
+        if self.product_id and self.stock_count_id:
+            if self.product.company_id != self.stock_count.company_id:
+                errors["product"] = "Counting-line product must belong to the Stock Count company."
+        if self.location_id and self.stock_count_id:
+            if self.location.warehouse_id != self.stock_count.warehouse_id:
+                errors["location"] = "Counting-line location must belong to the Stock Count warehouse."
+            if self.location.usage != InventoryLocation.Usage.INTERNAL:
+                errors["location"] = "Counting lines require an Internal location."
+        if self.lot_id:
+            if self.lot.product_id != self.product_id or self.lot.company_id != self.stock_count.company_id:
+                errors["lot"] = "Lot/serial must belong to the same company and product."
+            if (
+                self.lot.tracking_type == InventoryLotSerial.TrackingType.SERIAL
+                and self.counted_qty > 1
+            ):
+                errors["counted_qty"] = "A serial-number count cannot exceed one unit."
+        if self.counted_qty < 0:
+            errors["counted_qty"] = "Counted quantity cannot be negative."
+        if stock_count and self.location_id and self.product_id:
+            freeze_scope = (
+                InventoryStockFreeze.objects.filter(stock_count_id=stock_count.pk)
+                .values("location_ids", "product_ids")
+                .first()
+            )
+            if not freeze_scope:
+                errors["stock_count"] = "The Stock Count warehouse freeze is missing."
+            else:
+                location_ids = set(freeze_scope["location_ids"] or [])
+                if location_ids and not (
+                    self.location_id in location_ids
+                    or bool(location_ids & set(self.location.ancestor_ids or []))
+                ):
+                    errors["location"] = "Counting-line location is outside the Stock Count scope."
+                product_ids = set(freeze_scope["product_ids"] or [])
+                if product_ids and self.product_id not in product_ids:
+                    errors["product"] = "Counting-line product is outside the Stock Count scope."
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            persisted = type(self).objects.filter(pk=self.pk).values(
+                "stock_count_id",
+                "product_id",
+                "location_id",
+                "lot_id",
+                "system_qty",
+                "line_source",
+            ).first()
+            immutable_fields = (
+                "stock_count_id",
+                "product_id",
+                "location_id",
+                "lot_id",
+                "system_qty",
+                "line_source",
+            )
+            if persisted and any(
+                persisted[field_name] != getattr(self, field_name)
+                for field_name in immutable_fields
+            ):
+                raise ValidationError(
+                    "Counting-line snapshot identity and System Qty are immutable."
+                )
+        self.difference_qty = self.counted_qty - self.system_qty
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        stock_count_status = InventoryStockCount.objects.filter(
+            pk=self.stock_count_id
+        ).values_list("status", flat=True).first()
+        if stock_count_status != InventoryStockCount.Status.IN_PROGRESS:
+            raise ValidationError(
+                "Counting lines can only be deleted while the Stock Count is In Progress."
+            )
+        if self.adjustment_stock_move_id:
+            raise ValidationError("A posted counting line cannot be deleted.")
+        return super().delete(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.stock_count} · {self.product} · {self.location}"
+
+
+class InventoryStockFreeze(models.Model):
+    """Conservative warehouse lock while one Stock Count is being processed."""
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.PROTECT,
+        related_name="inventory_stock_freezes",
+    )
+    warehouse = models.OneToOneField(
+        Warehouse,
+        on_delete=models.PROTECT,
+        related_name="inventory_stock_freeze",
+    )
+    stock_count = models.OneToOneField(
+        InventoryStockCount,
+        on_delete=models.CASCADE,
+        related_name="freeze",
+    )
+    location_ids = models.JSONField(default=list, blank=True)
+    product_ids = models.JSONField(default=list, blank=True)
+    frozen_at = models.DateTimeField(default=timezone.now, db_index=True)
+
+    class Meta:
+        ordering = ["warehouse_id"]
+
+    def __str__(self):
+        return f"{self.warehouse} locked by {self.stock_count}"

@@ -1,11 +1,59 @@
-from .forms import InventoryLocationForm, InventoryLotSerialForm, InventoryReorderRuleForm
+from .forms import (
+    InventoryLocationForm,
+    InventoryLotSerialForm,
+    InventoryReorderRuleForm,
+    InventoryStockCountForm,
+    InventoryStockCountLineForm,
+)
 from .models import (
     InventoryLocation,
     InventoryLotSerial,
     InventoryReorderRule,
     InventoryReplenishmentSnapshot,
     InventoryStockBalance,
+    InventoryStockCount,
+    InventoryStockCountLine,
 )
+from .services import (
+    cancel_stock_count_action,
+    complete_stock_count_action,
+    confirm_stock_count_action,
+    validate_stock_count_action,
+)
+
+
+STOCK_COUNT_WORKFLOW = {
+    "confirm": {
+        "label": "Confirm",
+        "from": [InventoryStockCount.Status.DRAFT],
+        "to": InventoryStockCount.Status.IN_PROGRESS,
+        "primary": True,
+        "handler": confirm_stock_count_action,
+    },
+    "complete": {
+        "label": "Complete Count",
+        "from": [InventoryStockCount.Status.IN_PROGRESS],
+        "to": InventoryStockCount.Status.COMPLETED,
+        "primary": True,
+        "handler": complete_stock_count_action,
+    },
+    "validate": {
+        "label": "Validate",
+        "from": [InventoryStockCount.Status.COMPLETED],
+        "to": InventoryStockCount.Status.VALIDATED,
+        "primary": True,
+        "handler": validate_stock_count_action,
+    },
+    "cancel": {
+        "label": "Cancel",
+        "from": [
+            InventoryStockCount.Status.IN_PROGRESS,
+            InventoryStockCount.Status.COMPLETED,
+        ],
+        "to": InventoryStockCount.Status.CANCELLED,
+        "handler": cancel_stock_count_action,
+    },
+}
 
 
 ENTITY_CONFIG = {
@@ -142,5 +190,70 @@ ENTITY_CONFIG = {
         "editable": False,
         "readonly_detail": True,
         "deletable": False,
+    },
+    "inventory-stock-counts": {
+        "model": InventoryStockCount,
+        "form": InventoryStockCountForm,
+        "title": "Stock Counts",
+        "singular": "Stock Count",
+        "columns": [
+            ("name", "Reference"),
+            ("warehouse", "Warehouse"),
+            ("inventoried_product", "Product Scope"),
+            ("counted_qty_default", "Counted Default"),
+            ("status", "Status"),
+            ("confirmed_at", "Confirmed"),
+        ],
+        "search": ["name", "warehouse__code", "warehouse__name", "notes"],
+        "select_related": [
+            "company",
+            "branch",
+            "warehouse",
+            "confirmed_by",
+            "completed_by",
+            "validated_by",
+            "cancelled_by",
+        ],
+        "workflow": STOCK_COUNT_WORKFLOW,
+        "workflow_locked_statuses": {
+            InventoryStockCount.Status.IN_PROGRESS,
+            InventoryStockCount.Status.COMPLETED,
+            InventoryStockCount.Status.VALIDATED,
+            InventoryStockCount.Status.CANCELLED,
+        },
+    },
+    "inventory-stock-count-lines": {
+        "model": InventoryStockCountLine,
+        "form": InventoryStockCountLineForm,
+        "title": "Stock Count Lines",
+        "singular": "Stock Count Line",
+        "columns": [
+            ("stock_count", "Stock Count"),
+            ("product", "Product"),
+            ("location", "Location"),
+            ("lot", "Lot / Serial"),
+            ("system_qty", "System Qty"),
+            ("counted_qty", "Counted Qty"),
+            ("difference_qty", "Difference"),
+            ("line_source", "Source"),
+        ],
+        "search": [
+            "stock_count__name",
+            "product__sku",
+            "product__name",
+            "location__complete_name",
+            "lot__name",
+            "lot__barcode",
+        ],
+        "select_related": [
+            "stock_count",
+            "stock_count__company",
+            "stock_count__branch",
+            "stock_count__warehouse",
+            "product",
+            "location",
+            "lot",
+            "adjustment_stock_move",
+        ],
     },
 }

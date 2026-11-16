@@ -2,6 +2,7 @@ from .forms import (
     InventoryLocationForm,
     InventoryLotSerialForm,
     InventoryReorderRuleForm,
+    InventoryReservationForm,
     InventoryStockCountForm,
     InventoryStockCountLineForm,
 )
@@ -9,6 +10,8 @@ from .models import (
     InventoryLocation,
     InventoryLotSerial,
     InventoryReorderRule,
+    InventoryReservation,
+    InventoryReservationAllocation,
     InventoryReplenishmentSnapshot,
     InventoryStockBalance,
     InventoryStockCount,
@@ -19,6 +22,10 @@ from .services import (
     complete_stock_count_action,
     confirm_stock_count_action,
     validate_stock_count_action,
+    cancel_inventory_reservation_action,
+    consume_inventory_reservation_action,
+    release_inventory_reservation_action,
+    reserve_inventory_action,
 )
 
 
@@ -52,6 +59,46 @@ STOCK_COUNT_WORKFLOW = {
         ],
         "to": InventoryStockCount.Status.CANCELLED,
         "handler": cancel_stock_count_action,
+    },
+}
+
+
+RESERVATION_WORKFLOW = {
+    "reserve": {
+        "label": "Reserve",
+        "from": [InventoryReservation.Status.DRAFT],
+        "to": InventoryReservation.Status.RESERVED,
+        "success_statuses": [
+            InventoryReservation.Status.RESERVED,
+            InventoryReservation.Status.PARTIAL,
+        ],
+        "primary": True,
+        "handler": reserve_inventory_action,
+    },
+    "release": {
+        "label": "Release",
+        "from": [
+            InventoryReservation.Status.RESERVED,
+            InventoryReservation.Status.PARTIAL,
+        ],
+        "to": InventoryReservation.Status.RELEASED,
+        "handler": release_inventory_reservation_action,
+    },
+    "consume": {
+        "label": "Consume",
+        "from": [
+            InventoryReservation.Status.RESERVED,
+            InventoryReservation.Status.PARTIAL,
+        ],
+        "to": InventoryReservation.Status.CONSUMED,
+        "primary": True,
+        "handler": consume_inventory_reservation_action,
+    },
+    "cancel": {
+        "label": "Cancel",
+        "from": [InventoryReservation.Status.DRAFT],
+        "to": InventoryReservation.Status.CANCELLED,
+        "handler": cancel_inventory_reservation_action,
     },
 }
 
@@ -221,6 +268,81 @@ ENTITY_CONFIG = {
             InventoryStockCount.Status.VALIDATED,
             InventoryStockCount.Status.CANCELLED,
         },
+    },
+    "inventory-reservations": {
+        "model": InventoryReservation,
+        "form": InventoryReservationForm,
+        "title": "Inventory Reservations",
+        "singular": "Inventory Reservation",
+        "columns": [
+            ("reference", "Reference"),
+            ("product", "Product"),
+            ("warehouse", "Warehouse"),
+            ("requested_quantity", "Requested"),
+            ("reserved_quantity", "Reserved"),
+            ("status", "Status"),
+        ],
+        "search": [
+            "reference",
+            "product__sku",
+            "product__name",
+            "warehouse__code",
+            "warehouse__name",
+            "location__complete_name",
+            "lot__name",
+            "notes",
+        ],
+        "select_related": [
+            "company",
+            "branch",
+            "warehouse",
+            "product",
+            "location",
+            "lot",
+            "reserved_by",
+            "released_by",
+            "consumed_by",
+            "cancelled_by",
+        ],
+        "workflow": RESERVATION_WORKFLOW,
+        "workflow_locked_statuses": {
+            InventoryReservation.Status.RESERVED,
+            InventoryReservation.Status.PARTIAL,
+            InventoryReservation.Status.RELEASED,
+            InventoryReservation.Status.CONSUMED,
+            InventoryReservation.Status.CANCELLED,
+        },
+    },
+    "inventory-reservation-allocations": {
+        "model": InventoryReservationAllocation,
+        "title": "Reservation Allocations",
+        "singular": "Reservation Allocation",
+        "columns": [
+            ("reservation", "Reservation"),
+            ("balance", "Stock Position"),
+            ("quantity", "Allocated Quantity"),
+            ("stock_move", "Consumption Move"),
+            ("allocated_at", "Allocated At"),
+        ],
+        "search": [
+            "reservation__reference",
+            "balance__product__sku",
+            "balance__product__name",
+            "balance__location__complete_name",
+            "balance__lot__name",
+        ],
+        "select_related": [
+            "reservation",
+            "reservation__branch",
+            "balance",
+            "balance__product",
+            "balance__location",
+            "balance__lot",
+            "stock_move",
+        ],
+        "editable": False,
+        "readonly_detail": True,
+        "deletable": False,
     },
     "inventory-stock-count-lines": {
         "model": InventoryStockCountLine,

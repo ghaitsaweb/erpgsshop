@@ -1063,3 +1063,265 @@ class InventoryStockFreeze(models.Model):
 
     def __str__(self):
         return f"{self.warehouse} locked by {self.stock_count}"
+
+
+class InventoryReservation(TimeStampedModel):
+    """Outbound stock reservation with immutable balance allocations."""
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        RESERVED = "reserved", "Reserved"
+        PARTIAL = "partially_reserved", "Partially Reserved"
+        RELEASED = "released", "Released"
+        CONSUMED = "consumed", "Consumed"
+        CANCELLED = "cancelled", "Cancelled"
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.PROTECT,
+        related_name="inventory_reservations",
+    )
+    branch = models.ForeignKey(
+        Branch,
+        on_delete=models.PROTECT,
+        related_name="inventory_reservations",
+        blank=True,
+        null=True,
+    )
+    warehouse = models.ForeignKey(
+        Warehouse,
+        on_delete=models.PROTECT,
+        related_name="inventory_reservations",
+    )
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.PROTECT,
+        related_name="inventory_reservations",
+    )
+    location = models.ForeignKey(
+        InventoryLocation,
+        on_delete=models.PROTECT,
+        related_name="inventory_reservations",
+        blank=True,
+        null=True,
+        help_text="Leave blank to allocate across active internal locations by priority.",
+    )
+    lot = models.ForeignKey(
+        InventoryLotSerial,
+        on_delete=models.PROTECT,
+        related_name="inventory_reservations",
+        blank=True,
+        null=True,
+    )
+    reference = models.CharField(max_length=80)
+    requested_quantity = models.DecimalField(max_digits=18, decimal_places=3)
+    reserved_quantity = models.DecimalField(
+        max_digits=18,
+        decimal_places=3,
+        default=0,
+        editable=False,
+    )
+    allow_partial = models.BooleanField(default=False)
+    status = models.CharField(
+        max_length=24,
+        choices=Status.choices,
+        default=Status.DRAFT,
+        db_index=True,
+    )
+    notes = models.TextField(blank=True)
+    reserved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="reserved_inventory_reservations",
+        blank=True,
+        null=True,
+        editable=False,
+    )
+    reserved_at = models.DateTimeField(blank=True, null=True, editable=False)
+    released_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="released_inventory_reservations",
+        blank=True,
+        null=True,
+        editable=False,
+    )
+    released_at = models.DateTimeField(blank=True, null=True, editable=False)
+    consumed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="consumed_inventory_reservations",
+        blank=True,
+        null=True,
+        editable=False,
+    )
+    consumed_at = models.DateTimeField(blank=True, null=True, editable=False)
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="cancelled_inventory_reservations",
+        blank=True,
+        null=True,
+        editable=False,
+    )
+    cancelled_at = models.DateTimeField(blank=True, null=True, editable=False)
+
+    organization_branch_lookup = "branch"
+
+    class Meta:
+        ordering = ["-created_at", "-pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "reference"],
+                name="unique_inventory_reservation_reference",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(requested_quantity__gt=0),
+                name="inventory_reservation_requested_positive",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(reserved_quantity__gte=0),
+                name="inventory_reservation_reserved_nonnegative",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["company", "branch", "warehouse", "status"],
+                name="inv_reservation_scope_idx",
+            ),
+            models.Index(
+                fields=["company", "product", "status"],
+                name="inv_reservation_product_idx",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.warehouse_id:
+            if self.warehouse.company_id != self.company_id:
+                errors["warehouse"] = "Reservation warehouse must belong to the selected company."
+            if self.warehouse.branch_id != self.branch_id:
+                errors["branch"] = "Reservation branch must match its warehouse branch."
+        if self.product_id and self.product.company_id != self.company_id:
+            errors["product"] = "Reservation product must belong to the selected company."
+        elif self.product_id and self.product.product_type != Product.ProductType.STOCKABLE:
+            errors["product"] = "Only stockable products can be reserved."
+        if self.location_id:
+            if self.location.warehouse_id != self.warehouse_id:
+                errors["location"] = "Reservation location must belong to the selected warehouse."
+            if self.location.usage != InventoryLocation.Usage.INTERNAL:
+                errors["location"] = "Reservations require an Internal location."
+            if (
+                self.status == self.Status.DRAFT
+                and (not self.location.active or self.location.is_expired_location)
+            ):
+                errors["location"] = "Reservations require an active, non-expired location."
+        if self.lot_id:
+            if self.lot.company_id != self.company_id or self.lot.product_id != self.product_id:
+                errors["lot"] = "Reservation lot/serial must match the selected company and product."
+            if (
+                self.status == self.Status.DRAFT
+                and (
+                    self.lot.status != InventoryLotSerial.Status.ACTIVE
+                    or self.lot.is_expired
+                )
+            ):
+                errors["lot"] = "Reservations require an active, non-expired lot/serial."
+            if (
+                self.lot.tracking_type == InventoryLotSerial.TrackingType.SERIAL
+                and self.requested_quantity > 1
+            ):
+                errors["requested_quantity"] = "A serial-number reservation cannot exceed one unit."
+        if self.requested_quantity is not None and self.requested_quantity <= ZERO:
+            errors["requested_quantity"] = "Requested quantity must be greater than zero."
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        if self.warehouse_id:
+            self.company_id = self.warehouse.company_id
+            self.branch_id = self.warehouse.branch_id
+        if not self.reference:
+            self.reference = f"RSV-{timezone.localdate():%Y%m%d}-{uuid4().hex[:8].upper()}"
+        if self.pk:
+            persisted = type(self).objects.filter(pk=self.pk).values(
+                "company_id",
+                "branch_id",
+                "warehouse_id",
+                "product_id",
+                "location_id",
+                "lot_id",
+                "reference",
+                "requested_quantity",
+                "allow_partial",
+            ).first()
+            immutable_fields = (
+                "company_id",
+                "branch_id",
+                "warehouse_id",
+                "product_id",
+                "location_id",
+                "lot_id",
+                "reference",
+                "requested_quantity",
+                "allow_partial",
+            )
+            if persisted and self.status != self.Status.DRAFT and any(
+                persisted[field_name] != getattr(self, field_name)
+                for field_name in immutable_fields
+            ):
+                raise ValidationError("Reserved request scope and quantity are immutable.")
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.status != self.Status.DRAFT:
+            raise ValidationError("Only Draft Reservations can be deleted.")
+        return super().delete(*args, **kwargs)
+
+    def __str__(self):
+        return self.reference
+
+
+class InventoryReservationAllocation(models.Model):
+    reservation = models.ForeignKey(
+        InventoryReservation,
+        on_delete=models.PROTECT,
+        related_name="allocations",
+    )
+    balance = models.ForeignKey(
+        InventoryStockBalance,
+        on_delete=models.PROTECT,
+        related_name="reservation_allocations",
+    )
+    quantity = models.DecimalField(max_digits=18, decimal_places=3)
+    stock_move = models.OneToOneField(
+        StockMove,
+        on_delete=models.PROTECT,
+        related_name="inventory_reservation_allocation",
+        blank=True,
+        null=True,
+    )
+    allocated_at = models.DateTimeField(default=timezone.now)
+
+    organization_branch_lookup = "reservation__branch"
+
+    class Meta:
+        ordering = ["reservation_id", "balance_id", "pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["reservation", "balance"],
+                name="unique_inventory_reservation_balance",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(quantity__gt=0),
+                name="inventory_reservation_allocation_positive",
+            ),
+        ]
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Reservation allocations are immutable.")
+
+    def __str__(self):
+        return f"{self.reservation} · {self.balance} · {self.quantity}"

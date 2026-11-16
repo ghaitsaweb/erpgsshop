@@ -8,6 +8,8 @@ def register_inventory_workspace():
         group_icon="I",
         items=[
             {"entity": "inventory-stock-balances", "label": "Stock Balance"},
+            {"entity": "inventory-reservations", "label": "Reservations"},
+            {"entity": "inventory-reservation-allocations", "label": "Reservation Allocations"},
             {"entity": "inventory-stock-counts", "label": "Stock Counts"},
             {"entity": "inventory-stock-count-lines", "label": "Counting Lines"},
             {"entity": "inventory-replenishment", "label": "Replenishment Review"},

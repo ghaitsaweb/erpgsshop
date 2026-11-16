@@ -6,6 +6,7 @@ from .models import (
     InventoryLocation,
     InventoryLotSerial,
     InventoryReorderRule,
+    InventoryReservation,
     InventoryStockBalance,
     InventoryStockCount,
     InventoryStockCountLine,
@@ -85,6 +86,22 @@ class InventoryReorderRuleForm(StyledModelForm):
             "reorder_quantity",
             "lead_time_days",
             "active",
+        ]
+
+
+class InventoryReservationForm(StyledModelForm):
+    class Meta:
+        model = InventoryReservation
+        fields = [
+            "company",
+            "branch",
+            "warehouse",
+            "product",
+            "location",
+            "lot",
+            "requested_quantity",
+            "allow_partial",
+            "notes",
         ]
 
 

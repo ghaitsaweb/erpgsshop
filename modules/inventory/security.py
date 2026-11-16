@@ -13,6 +13,8 @@ INVENTORY_MODELS = {
     "inventorybalanceevent",
     "inventoryreorderrule",
     "inventoryreplenishmentsnapshot",
+    "inventoryreservation",
+    "inventoryreservationallocation",
     "inventorystockcount",
     "inventorystockcountline",
     "inventorystockfreeze",

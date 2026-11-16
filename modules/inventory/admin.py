@@ -6,6 +6,8 @@ from .models import (
     InventoryLotSerial,
     InventoryReorderRule,
     InventoryReplenishmentSnapshot,
+    InventoryReservation,
+    InventoryReservationAllocation,
     InventoryStockBalance,
     InventoryStockCount,
     InventoryStockCountLine,
@@ -19,6 +21,8 @@ admin.site.register(InventoryStockBalance)
 admin.site.register(InventoryBalanceEvent)
 admin.site.register(InventoryReorderRule)
 admin.site.register(InventoryReplenishmentSnapshot)
+admin.site.register(InventoryReservation)
+admin.site.register(InventoryReservationAllocation)
 admin.site.register(InventoryStockCount)
 admin.site.register(InventoryStockCountLine)
 admin.site.register(InventoryStockFreeze)

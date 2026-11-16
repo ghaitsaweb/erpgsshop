@@ -4919,7 +4919,10 @@ def document_action(request, entity, pk, action):
             messages.success(request, "Approval recorded and advanced to the next level.")
         elif actual_status is None and definition["to"] is None:
             messages.success(request, f"{config['singular']} action {definition['label']} completed.")
-        elif actual_status != definition["to"]:
+        elif (
+            actual_status != definition["to"]
+            and actual_status not in definition.get("success_statuses", [])
+        ):
             messages.error(request, f"{config['singular']} finished in {str(actual_status).replace('_', ' ').title()}; review the validation details.")
         else:
             messages.success(request, f"{config['singular']} moved to {str(actual_status).replace('_', ' ').title()}.")

@@ -2,6 +2,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.core.exceptions import ValidationError
 from django.db import connection
 from django.test import TestCase
@@ -9,7 +10,7 @@ from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 
-from core.models import Company, Contact, Product, PurchaseOrder, Warehouse
+from core.models import Company, Contact, Employee, Product, PurchaseOrder, Warehouse
 from core.views import DOCUMENT_CONFIG
 
 from .forms import PurchaseOrderDocumentForm, PurchaseRequestDocumentForm
@@ -30,6 +31,7 @@ from .models import (
     PurchaseRemarkTemplate,
     PurchaseSetting,
     PurchaseTender,
+    PurchaseTenderLine,
     VendorProfile,
     VendorCategory,
 )
@@ -252,13 +254,23 @@ class PurchaseConfigurationParityTests(TestCase):
             category=PurchaseTender.Category.OPEX,
             tender_type=PurchaseTender.TenderType.OPEN,
             award_strategy=strategy,
+            warehouse=self.warehouse,
         )
 
         self.assertEqual(request.expiry_date, today + timedelta(days=7))
         self.assertEqual(request_line.expiry_date, request.expiry_date)
         self.assertEqual(quotation.response_deadline, today + timedelta(days=9))
         self.assertEqual(quotation_line.expiry_date, quotation.response_deadline)
-        self.assertEqual(tender.close_date, today + timedelta(days=11))
+        self.assertIsNone(tender.close_date)
+        self.assertEqual(tender.expiry_date, today + timedelta(days=11))
+        tender_line = PurchaseTenderLine.objects.create(
+            tender=tender,
+            product=self.product,
+            description="",
+        )
+        self.assertEqual(tender_line.expiry_date, tender.expiry_date)
+        self.assertEqual(tender_line.destination_warehouse, self.warehouse)
+        self.assertEqual(tender_line.description, self.product.name)
 
         with self.assertRaisesMessage(ValidationError, "Vendor Code is required"):
             VendorProfile.objects.create(company=self.company, partner=self.vendor)
@@ -268,6 +280,74 @@ class PurchaseConfigurationParityTests(TestCase):
             registration_number="MANUAL-VENDOR",
         )
         self.assertEqual(profile.registration_number, "MANUAL-VENDOR")
+
+    def test_tender_template_and_product_onchange_are_scoped_and_bounded(self):
+        self.client.force_login(self.actor)
+
+        template_response = self.client.get(
+            reverse("purchase_tender_onchange"),
+            {
+                "order_template_id": self.order_template.pk,
+                "company_id": self.company.pk,
+            },
+        )
+        product_response = self.client.get(
+            reverse("purchase_tender_onchange"),
+            {
+                "product_id": self.product.pk,
+                "company_id": self.company.pk,
+            },
+        )
+
+        self.assertEqual(template_response.status_code, 200)
+        self.assertEqual(template_response.json()["order_type_id"], self.order_type.pk)
+        self.assertEqual(
+            template_response.json()["lines"],
+            [
+                {
+                    "product_id": self.product.pk,
+                    "description": self.product.name,
+                    "quantity": "2.000",
+                    "target_unit_price": "25.00",
+                    "unit": self.product.unit,
+                }
+            ],
+        )
+        self.assertEqual(product_response.status_code, 200)
+        self.assertEqual(product_response.json()["product"]["description"], self.product.name)
+        self.assertEqual(product_response.json()["product"]["unit"], self.product.unit)
+
+        create_page = self.client.get(reverse("entity_create", args=["purchase-tenders"]))
+        self.assertContains(create_page, "purchase/js/tender_onchange.js")
+        self.assertContains(create_page, reverse("purchase_tender_onchange"))
+
+        other_company = Company.objects.create(code="PCFG-OTHER", name="Other Configuration")
+        outsider = get_user_model().objects.create_user(
+            username="purchase-config-outsider",
+            password="test-password",
+        )
+        outsider.groups.add(Group.objects.get(name="Purchase Manager"))
+        Employee.objects.create(
+            company=other_company,
+            user=outsider,
+            employee_id="PCFG-OUTSIDER",
+            name="Configuration Outsider",
+        )
+        self.client.force_login(outsider)
+        self.assertEqual(
+            self.client.get(
+                reverse("purchase_tender_onchange"),
+                {"order_template_id": self.order_template.pk},
+            ).status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.get(
+                reverse("purchase_tender_onchange"),
+                {"product_id": self.product.pk},
+            ).status_code,
+            404,
+        )
 
     def test_vendor_category_crud_supports_description_and_generated_code(self):
         category = VendorCategory.objects.create(
@@ -545,3 +625,35 @@ class PurchaseConfigurationParityTests(TestCase):
             apply_purchase_order_template(grown_order, self.order_template, self.actor)
 
         self.assertLessEqual(len(grown), len(baseline) + 1)
+
+    def test_tender_template_onchange_query_count_does_not_grow_with_lines(self):
+        self.client.force_login(self.actor)
+        url = reverse("purchase_tender_onchange")
+        params = {
+            "order_template_id": self.order_template.pk,
+            "company_id": self.company.pk,
+        }
+        with CaptureQueriesContext(connection) as baseline:
+            baseline_response = self.client.get(url, params)
+
+        PurchaseOrderTemplateLine.objects.bulk_create(
+            [
+                PurchaseOrderTemplateLine(
+                    order_template=self.order_template,
+                    sequence=20 + index,
+                    product=self.product,
+                    description=f"Tender Configured Product {index}",
+                    quantity=Decimal("1"),
+                    uom="Unit",
+                    price=Decimal("25"),
+                )
+                for index in range(30)
+            ]
+        )
+        with CaptureQueriesContext(connection) as grown:
+            grown_response = self.client.get(url, params)
+
+        self.assertEqual(baseline_response.status_code, 200)
+        self.assertEqual(grown_response.status_code, 200)
+        self.assertEqual(len(grown_response.json()["lines"]), 31)
+        self.assertLessEqual(len(grown), len(baseline))

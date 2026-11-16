@@ -1,4 +1,9 @@
 from functools import lru_cache
+from functools import wraps
+
+from django.contrib import messages
+from django.db.utils import OperationalError, ProgrammingError
+from django.shortcuts import redirect
 
 from .workspaces import APP_WORKSPACES, ENTITY_APP_MAP
 
@@ -40,3 +45,28 @@ def can_access_app(user, app_slug):
         and _can(user, "view", ENTITY_CONFIG[entity]["model"], entity)
         for entity in app_entities(app_slug)
     )
+
+
+def is_app_enabled(app_slug):
+    """Return the current database's runtime installation state for one app."""
+    from .models import ERPApp
+
+    try:
+        return ERPApp.objects.filter(slug=app_slug, enabled=True).exists()
+    except (OperationalError, ProgrammingError):
+        return False
+
+
+def enabled_app_required(app_slug):
+    """Fail closed when a deployed add-on is not installed in this database."""
+    def decorator(view):
+        @wraps(view)
+        def wrapped(request, *args, **kwargs):
+            if is_app_enabled(app_slug):
+                return view(request, *args, **kwargs)
+            messages.info(request, f"Install {app_slug} from Apps before opening this feature.")
+            return redirect("app_workspace", slug=app_slug)
+
+        return wrapped
+
+    return decorator

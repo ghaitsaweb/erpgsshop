@@ -122,6 +122,8 @@ LINE_MERGE_CONFIGS = (
             "specification",
             "target_unit_price",
             "delivery_date",
+            "expiry_date",
+            "destination_warehouse_id",
             "cost_center",
             "cost_center_mode",
             "cost_center_distribution_ids",
@@ -362,6 +364,8 @@ def save_and_merge_purchase_document_lines(parent, formset):
     )
     with suspend_purchase_line_merge(), total_context:
         formset.save()
+    if isinstance(parent, PurchaseTender):
+        _sync_purchase_tender_line_defaults(parent)
     if isinstance(parent, PurchaseRequest):
         request_line_values = {}
         for form, is_new, changed_fields in purchase_request_forms:
@@ -465,6 +469,97 @@ def save_and_merge_purchase_document_lines(parent, formset):
         recalculate_purchase_quotation_total(parent)
     elif isinstance(parent, PurchaseOrder):
         recalculate_purchase_order_total(parent)
+
+
+def _sync_purchase_tender_line_defaults(tender):
+    """Synchronize HMX Tender header/line defaults with fixed-query updates."""
+    lines = PurchaseTenderLine.objects.filter(tender_id=tender.pk)
+    if tender.expiry_date:
+        lines.filter(expiry_date__isnull=True).update(expiry_date=tender.expiry_date)
+    else:
+        expiry_date = (
+            lines.exclude(expiry_date__isnull=True)
+            .order_by("pk")
+            .values_list("expiry_date", flat=True)
+            .first()
+        )
+        if expiry_date:
+            tender.expiry_date = expiry_date
+
+    if tender.warehouse_id:
+        lines.filter(destination_warehouse__isnull=True).update(
+            destination_warehouse_id=tender.warehouse_id
+        )
+    else:
+        warehouse_id = (
+            lines.exclude(destination_warehouse__isnull=True)
+            .order_by("pk")
+            .values_list("destination_warehouse_id", flat=True)
+            .first()
+        )
+        if warehouse_id:
+            tender.warehouse_id = warehouse_id
+
+    cost_center_values = {
+        "cost_center": tender.cost_center,
+        "cost_center_mode": tender.cost_center_mode,
+        "cost_center_distribution_ids": tender.cost_center_distribution_ids,
+        "cost_center_distribution_data": tender.cost_center_distribution_data,
+        "cost_center_analytic_tag_ids": tender.cost_center_analytic_tag_ids,
+    }
+    has_header_cost_center = bool(
+        tender.cost_center
+        or tender.cost_center_distribution_ids
+        or tender.cost_center_distribution_data
+        or tender.cost_center_analytic_tag_ids
+    )
+    if has_header_cost_center:
+        lines.filter(
+            cost_center="",
+            cost_center_distribution_ids=[],
+            cost_center_distribution_data=[],
+            cost_center_analytic_tag_ids=[],
+        ).update(**cost_center_values)
+    else:
+        line_cost_center = (
+            lines.exclude(
+                cost_center="",
+                cost_center_distribution_ids=[],
+                cost_center_distribution_data=[],
+                cost_center_analytic_tag_ids=[],
+            )
+            .order_by("pk")
+            .values(*cost_center_values)
+            .first()
+        )
+        if line_cost_center:
+            for field, value in line_cost_center.items():
+                setattr(tender, field, value)
+
+    persisted = PurchaseTender.objects.only(
+        "expiry_date",
+        "warehouse",
+        "cost_center",
+        "cost_center_mode",
+        "cost_center_distribution_ids",
+        "cost_center_distribution_data",
+        "cost_center_analytic_tag_ids",
+    ).get(pk=tender.pk)
+    changed_fields = []
+    for field in (
+        "expiry_date",
+        "warehouse",
+        "cost_center",
+        "cost_center_mode",
+        "cost_center_distribution_ids",
+        "cost_center_distribution_data",
+        "cost_center_analytic_tag_ids",
+    ):
+        comparison_field = field if field != "warehouse" else "warehouse_id"
+        if getattr(tender, comparison_field) != getattr(persisted, comparison_field):
+            changed_fields.append(field)
+    if changed_fields:
+        tender.save(update_fields=changed_fields)
 
 
 def _merge_saved_purchase_line(sender, instance, raw=False, **kwargs):

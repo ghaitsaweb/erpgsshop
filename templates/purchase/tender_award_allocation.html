@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}{{ title }} · ERP GSSHOP{% endblock %}
+{% block page_title %}Bid Allocation Matrix{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{% static 'purchase/css/tender_award_allocation.css' %}">{% endblock %}
+{% block content %}
+  <section class="tender-allocation" data-allocation-workspace data-currency="{{ allocation_matrix.currency }}">
+    <header class="tender-allocation__topbar">
+      <a href="{% url 'purchase_tender_bid_comparison' tender.pk %}" aria-label="Back to Bid Comparison">←</a>
+      <div>
+        <p class="eyebrow">Award decision · {{ allocation_matrix.code }}</p>
+        <h2>Bid Allocation Matrix</h2>
+        <span>{{ allocation_matrix.name }}</span>
+      </div>
+      <span class="tender-allocation__state">{{ allocation_matrix.status_display }}</span>
+    </header>
+
+    <div class="tender-allocation__metrics">
+      <article><span>Tender lines</span><strong>{{ allocation_matrix.line_count }}</strong></article>
+      <article><span>Eligible suppliers</span><strong>{{ allocation_matrix.vendor_count }}</strong></article>
+      <article><span>Bid candidates</span><strong>{{ allocation_matrix.candidate_count }}</strong></article>
+      <article><span>Configured strategy</span><strong>{{ allocation_matrix.strategy_display }}</strong></article>
+    </div>
+
+    {% if allocation_matrix.initial_defaults %}
+      <div class="tender-allocation__notice" role="status">
+        Initial HMX defaults use each supplier's full offered quantity. Adjust every line until Allocated equals Required before submitting.
+      </div>
+    {% endif %}
+
+    <form method="post" data-allocation-form>
+      {% csrf_token %}
+      <div class="tender-allocation__lines">
+        {% for row in allocation_matrix.line_rows %}
+          <section
+            class="tender-allocation-line{% if row.balanced %} is-balanced{% else %} is-unbalanced{% endif %}"
+            data-allocation-line
+            data-required="{{ row.required_quantity }}"
+          >
+            <header>
+              <div>
+                <p class="eyebrow">Line {{ forloop.counter }}{% if row.sku %} · {{ row.sku }}{% endif %}</p>
+                <h3>{{ row.product_name }}</h3>
+                {% if row.description and row.description != row.product_name %}<span>{{ row.description }}</span>{% endif %}
+              </div>
+              <dl>
+                <div><dt>Required</dt><dd>{{ row.required_quantity_display }}</dd></div>
+                <div><dt>Allocated</dt><dd data-line-allocated>{{ row.allocated_total_display }}</dd></div>
+                <div><dt>Status</dt><dd data-line-status>{% if row.balanced %}Balanced{% else %}Adjust allocation{% endif %}</dd></div>
+              </dl>
+            </header>
+            <div class="tender-allocation-line__table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Supplier</th>
+                    <th>Rank</th>
+                    <th>Score</th>
+                    <th>Offered Qty</th>
+                    <th>Unit Price</th>
+                    <th>Allocated Qty</th>
+                    <th>Subtotal</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for candidate in row.candidates %}
+                    <tr>
+                      <th>{{ candidate.vendor_name }}</th>
+                      <td><span class="tender-allocation__rank">#{{ candidate.rank|default:"—" }}</span></td>
+                      <td>{{ candidate.score_display }}</td>
+                      <td>{{ candidate.offered_quantity_display }}</td>
+                      <td>{{ candidate.unit_price_display }}</td>
+                      <td>
+                        <input
+                          type="number"
+                          name="allocation_{{ candidate.bid_line_id }}"
+                          value="{{ candidate.allocated_quantity }}"
+                          min="0"
+                          max="{{ candidate.offered_quantity }}"
+                          step="0.001"
+                          inputmode="decimal"
+                          data-allocation-input
+                          data-unit-price="{{ candidate.unit_price }}"
+                          aria-label="Allocated quantity for {{ candidate.vendor_name }}"
+                          required
+                        >
+                      </td>
+                      <td data-allocation-subtotal>{{ candidate.subtotal_display }}</td>
+                    </tr>
+                  {% empty %}
+                    <tr><td colspan="7" class="tender-allocation__empty">No compliant supplier bid is available for this line.</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        {% endfor %}
+      </div>
+      <footer class="tender-allocation__footer">
+        <a class="btn btn-secondary" href="{% url 'purchase_tender_bid_comparison' tender.pk %}">Cancel</a>
+        <p><strong data-balanced-count>0</strong> of {{ allocation_matrix.line_count }} lines balanced</p>
+        <button class="btn btn-primary" type="submit" data-allocation-submit>Submit Award Decision</button>
+      </footer>
+    </form>
+  </section>
+{% endblock %}
+{% block extra_js %}<script defer src="{% static 'purchase/js/tender_award_allocation.js' %}"></script>{% endblock %}

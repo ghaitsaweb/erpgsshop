@@ -819,7 +819,42 @@ def _header_story(entity, obj, config, styles, company_logo=None):
         ("TOPPADDING", (0, 0), (-1, -1), 7),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
     ]))
-    return [top, Spacer(1, 7 * mm), addresses, Spacer(1, 5 * mm)]
+    story = [top, Spacer(1, 7 * mm), addresses, Spacer(1, 5 * mm)]
+    metadata = getattr(obj, "_pdf_localization_metadata", None) or {}
+    if metadata:
+        legal_values = [
+            ("Taxpayer", metadata.get("taxpayer_name")),
+            ("Registered Address", metadata.get("address")),
+            ("VAT REG TIN", metadata.get("tin")),
+            ("Printed", " · ".join(filter(None, [metadata.get("printed_by"), metadata.get("printed_on")]))),
+        ]
+        story.extend(
+            [
+                Table(
+                    [
+                        [
+                            Paragraph(_safe(label).upper(), styles["label"]),
+                            Paragraph(_safe(value or "-"), styles["body"]),
+                        ]
+                        for label, value in legal_values
+                    ],
+                    colWidths=[38 * mm, 132 * mm],
+                    style=TableStyle(
+                        [
+                            ("BOX", (0, 0), (-1, -1), 0.5, LINE),
+                            ("INNERGRID", (0, 0), (-1, -1), 0.35, LINE),
+                            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                            ("TOPPADDING", (0, 0), (-1, -1), 4),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                        ]
+                    ),
+                ),
+                Spacer(1, 5 * mm),
+            ]
+        )
+    return story
 
 
 def _info_table(entity, obj, header_fields, styles):
@@ -1010,6 +1045,18 @@ def _footer(canvas, doc):
     canvas.setFont("Helvetica", 7)
     brand_name = getattr(doc, "brand_name", "ERP GSSHOP")
     canvas.drawString(20 * mm, y, f"Dibuat oleh {brand_name}")
+    localization_metadata = getattr(doc, "localization_metadata", None) or {}
+    software = " / ".join(
+        filter(
+            None,
+            [
+                localization_metadata.get("software_name"),
+                localization_metadata.get("software_version"),
+            ],
+        )
+    )
+    if software:
+        canvas.drawCentredString(width / 2, y, software)
     page_text = f"Halaman {doc.page}"
     canvas.drawString(width - 20 * mm - stringWidth(page_text, "Helvetica", 7), y, page_text)
     canvas.restoreState()
@@ -1042,6 +1089,7 @@ def render_document_pdf(entity, obj, lines, document_config):
         getattr(obj, "_show_paid_watermark", False)
     )
     document.brand_name = brand_name
+    document.localization_metadata = getattr(obj, "_pdf_localization_metadata", None) or {}
     story = _header_story(entity, obj, config, styles, company_logo=company_logo)
     info = _info_table(entity, obj, document_config["header_fields"], styles)
     if info:

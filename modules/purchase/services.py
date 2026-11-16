@@ -72,9 +72,11 @@ from .models import (
     TenderAwardResponse,
     TenderBid,
     TenderBidLine,
+    TenderAuditLog,
     TenderDocument,
     TenderDocumentCompletionLine,
     TenderDocumentCompletionMatrix,
+    TenderInvitation,
     VendorDocumentReview,
     VendorChangeProposal,
     VendorLegalDocument,
@@ -1478,6 +1480,237 @@ def _validate_rfq_vendors(company_id, vendor_ids):
                 f"Vendor prequalification is required before RFQ conversion: {', '.join(missing)}."
             )
     return [vendors[vendor_id] for vendor_id in vendor_ids]
+
+
+def resolve_purchase_tender_vendor_scope(tender):
+    """Map the existing GS Shop Tender configuration to HMX vendor scopes."""
+    if tender.method == PurchaseTender.Method.PQTE:
+        return "open_public"
+    if (
+        tender.tender_type == PurchaseTender.TenderType.INVITED
+        or tender.method == PurchaseTender.Method.ITE
+    ):
+        return "invited"
+    return "open_registered"
+
+
+def _purchase_tender_rfq_candidate_contacts(tender, *, sync_completion=False):
+    scope = resolve_purchase_tender_vendor_scope(tender)
+    if scope == "invited":
+        invitations = _require_bounded(
+            list(
+                TenderInvitation.objects.filter(tender_id=tender.pk)
+                .select_related("vendor")
+                .order_by("vendor__name", "vendor_id")[: MAX_RFQ_VENDORS + 1]
+            ),
+            limit=MAX_RFQ_VENDORS,
+            label="Tender invited vendors",
+        )
+        return scope, [invitation.vendor for invitation in invitations]
+
+    if scope == "open_public":
+        if sync_completion:
+            profile_ids = qualified_tender_document_completion_vendor_ids(tender)
+        else:
+            completion_lines = _require_bounded(
+                list(
+                    TenderDocumentCompletionLine.objects.filter(tender_id=tender.pk)
+                    .order_by("sequence", "pk")[: MAX_RFQ_VENDORS + 1]
+                ),
+                limit=MAX_RFQ_VENDORS,
+                label="Tender Document Completion vendors",
+            )
+            profile_ids = {
+                line.vendor_id
+                for line in completion_lines
+                if _tender_completion_line_is_qualified(line)
+            }
+        profiles = _require_bounded(
+            list(
+                VendorProfile.objects.filter(
+                    pk__in=profile_ids,
+                    company_id=tender.company_id,
+                    active=True,
+                )
+                .exclude(status__in=[VendorProfile.Status.BLACKLISTED, VendorProfile.Status.REJECTED])
+                .select_related("partner")
+                .order_by("partner__name", "pk")[: MAX_RFQ_VENDORS + 1]
+            ),
+            limit=MAX_RFQ_VENDORS,
+            label="Tender qualified vendors",
+        )
+        return scope, [profile.partner for profile in profiles]
+
+    profiles = _require_bounded(
+        list(
+            VendorProfile.objects.filter(
+                company_id=tender.company_id,
+                active=True,
+                status__in=[
+                    VendorProfile.Status.DRAFT,
+                    VendorProfile.Status.WAITING_APPROVAL,
+                    VendorProfile.Status.ACTIVE,
+                ],
+            )
+            .select_related("partner")
+            .order_by("partner__name", "pk")[: MAX_RFQ_VENDORS + 1]
+        ),
+        limit=MAX_RFQ_VENDORS,
+        label="Tender registered vendors",
+    )
+    return scope, [profile.partner for profile in profiles]
+
+
+def purchase_tender_rfq_candidates(tender):
+    """Return the HMX-equivalent vendor scope and bounded RFQ candidates."""
+    return _purchase_tender_rfq_candidate_contacts(tender, sync_completion=False)
+
+
+@transaction.atomic
+def create_purchase_tender_rfqs(tender, *, vendor_ids, actor=None):
+    """Create one linked draft RFQ per eligible Tender vendor as one atomic batch."""
+    locked = (
+        PurchaseTender.objects.select_for_update(of=("self",))
+        .select_related("company", "order_type", "order_template", "warehouse")
+        .get(pk=_pk(tender))
+    )
+    if locked.status != PurchaseTender.Status.BID_SUBMISSION:
+        raise ValidationError("Tender RFQs can only be created during Bid Submission.")
+    today = timezone.localdate()
+    start_date = locked.bid_start_date or locked.publish_date
+    if start_date and today < start_date:
+        raise ValidationError("Tender submission window has not started.")
+    if locked.close_date and today > locked.close_date:
+        raise ValidationError("Tender submission window has closed.")
+
+    try:
+        selected_vendor_ids = list(dict.fromkeys(int(value) for value in vendor_ids))
+    except (TypeError, ValueError):
+        raise ValidationError("Tender RFQ vendor selection is invalid.") from None
+    if any(value < 1 for value in selected_vendor_ids):
+        raise ValidationError("Tender RFQ vendor selection is invalid.")
+    if not selected_vendor_ids:
+        raise ValidationError("Select at least one eligible Tender vendor.")
+    if len(selected_vendor_ids) > MAX_RFQ_VENDORS:
+        raise ValidationError(
+            f"Tender RFQ vendor selection exceeds the operational limit of {MAX_RFQ_VENDORS} vendors."
+        )
+    scope, candidates = _purchase_tender_rfq_candidate_contacts(
+        locked,
+        sync_completion=True,
+    )
+    candidate_by_id = {vendor.pk: vendor for vendor in candidates}
+    if not set(selected_vendor_ids).issubset(candidate_by_id):
+        raise ValidationError("Selected vendors are not eligible for this Tender scope.")
+
+    existing_vendor_ids = set(
+        PurchaseQuotation.objects.filter(
+            tender_id=locked.pk,
+            vendor_id__in=selected_vendor_ids,
+            status__in=[
+                PurchaseQuotation.Status.DRAFT,
+                PurchaseQuotation.Status.SENT,
+                PurchaseQuotation.Status.RECEIVED,
+            ],
+        ).values_list("vendor_id", flat=True)
+    )
+    vendor_ids_to_create = [
+        vendor_id for vendor_id in selected_vendor_ids if vendor_id not in existing_vendor_ids
+    ]
+    if not vendor_ids_to_create:
+        raise ValidationError("All selected vendors already have an active RFQ for this Tender.")
+    if scope == "invited":
+        _validate_rfq_vendors(locked.company_id, vendor_ids_to_create)
+
+    lines = _require_bounded(
+        list(
+            PurchaseTenderLine.objects.select_for_update(of=("self",))
+            .filter(tender_id=locked.pk)
+            .select_related("product", "destination_warehouse")
+            .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="Tender",
+    )
+    if not lines:
+        raise ValidationError("Tender has no line items to create an RFQ from.")
+    for line in lines:
+        if line.quantity <= 0 or line.target_unit_price < 0:
+            raise ValidationError("Tender RFQ lines require positive quantity and non-negative target price.")
+        if line.product_id and line.product.company_id != locked.company_id:
+            raise ValidationError("Every Tender product must belong to the Tender company.")
+
+    allocated_numbers = (
+        allocate_purchase_document_numbers(
+            locked.order_type_id,
+            locked.company_id,
+            "rfq",
+            count=len(vendor_ids_to_create),
+        )
+        if locked.order_type_id
+        else [
+            f"RFQ-TNR-{today:%Y%m%d}-{uuid4().hex[:8].upper()}"
+            for _vendor_id in vendor_ids_to_create
+        ]
+    )
+    response_deadline = locked.expiry_date or locked.close_date or today
+    expected_date = locked.expiry_date or locked.close_date or locked.publish_date or today
+    quotations = [
+        PurchaseQuotation(
+            company_id=locked.company_id,
+            order_type_id=locked.order_type_id,
+            order_template_id=locked.order_template_id,
+            number=number,
+            tender=locked,
+            vendor=candidate_by_id[vendor_id],
+            warehouse_id=locked.warehouse_id,
+            issue_date=today,
+            response_deadline=response_deadline,
+            expected_date=expected_date,
+            currency=locked.currency,
+            quoted_amount=sum(
+                (line.quantity * line.target_unit_price for line in lines),
+                ZERO,
+            ),
+            status=PurchaseQuotation.Status.DRAFT,
+            notes=f"Created from Tender {locked.number}.",
+        )
+        for vendor_id, number in zip(vendor_ids_to_create, allocated_numbers)
+    ]
+    PurchaseQuotation.objects.bulk_create(quotations, batch_size=100)
+    quote_lines = [
+        PurchaseQuotationLine(
+            quotation=quotation,
+            tender_line=line,
+            product_id=line.product_id,
+            description=line.description,
+            specification=line.specification,
+            quantity=line.quantity,
+            unit_price=line.target_unit_price,
+            promised_date=line.delivery_date or expected_date,
+            expiry_date=line.expiry_date or response_deadline,
+            price_source=PurchaseQuotationLine.PriceSource.MANUAL,
+            price_source_note="Tender target price",
+        )
+        for quotation in quotations
+        for line in lines
+    ]
+    PurchaseQuotationLine.objects.bulk_create(quote_lines, batch_size=500)
+    if actor is not None:
+        TenderAuditLog.objects.create(
+            tender=locked,
+            action="create-rfq",
+            previous_status=locked.status,
+            new_status=locked.status,
+            actor=actor,
+            details={
+                "vendor_scope": scope,
+                "vendor_ids": vendor_ids_to_create,
+                "quotation_ids": [quotation.pk for quotation in quotations],
+                "skipped_existing_vendor_ids": sorted(existing_vendor_ids),
+            },
+        )
+    return quotations
 
 
 @transaction.atomic
@@ -4872,6 +5105,8 @@ def create_purchase_request_tender(
                 quantity=quantities[line.pk],
                 target_unit_price=line.estimated_unit_price,
                 delivery_date=locked.required_date,
+                expiry_date=tender.expiry_date,
+                destination_warehouse_id=locked.destination_warehouse_id,
                 **assignment_kwargs(line, parent=locked),
             )
             for line in lines
@@ -7322,9 +7557,333 @@ def _ensure_tender_award_responses(locked, winning_bids):
     )
 
 
+def _tender_award_allocation_audit_rows(tender_id):
+    rows = _require_bounded(
+        list(
+            TenderAwardAllocation.objects.filter(tender_id=tender_id)
+            .order_by("tender_line_id", "rank", "bid_line_id", "pk")
+            .values(
+                "tender_line_id",
+                "bid_line_id",
+                "bid_line__bid__vendor_id",
+                "allocated_quantity",
+                "unit_price",
+                "award_strategy",
+                "score",
+                "rank",
+            )[: MAX_TENDER_AWARD_ALLOCATIONS + 1]
+        ),
+        limit=MAX_TENDER_AWARD_ALLOCATIONS,
+        label="Tender award allocation audit",
+    )
+    return [
+        {
+            "tender_line_id": row["tender_line_id"],
+            "bid_line_id": row["bid_line_id"],
+            "vendor_id": row["bid_line__bid__vendor_id"],
+            "allocated_quantity": str(row["allocated_quantity"]),
+            "unit_price": str(row["unit_price"]),
+            "award_strategy": row["award_strategy"],
+            "score": str(row["score"]),
+            "rank": row["rank"],
+        }
+        for row in rows
+    ]
+
+
+def _tender_award_allocation_changes(previous_rows, current_rows):
+    previous_by_key = {
+        (row["tender_line_id"], row["bid_line_id"]): row
+        for row in previous_rows
+    }
+    current_by_key = {
+        (row["tender_line_id"], row["bid_line_id"]): row
+        for row in current_rows
+    }
+    changes = []
+    for key in sorted(set(previous_by_key) | set(current_by_key)):
+        previous = previous_by_key.get(key)
+        current = current_by_key.get(key)
+        if previous == current:
+            continue
+        source = current or previous
+        changes.append(
+            {
+                "action": "create" if previous is None else "unlink" if current is None else "write",
+                "tender_line_id": source["tender_line_id"],
+                "bid_line_id": source["bid_line_id"],
+                "vendor_id": source["vendor_id"],
+                "old_value": previous["allocated_quantity"] if previous else "",
+                "new_value": current["allocated_quantity"] if current else "",
+                "award_strategy": (
+                    current["award_strategy"] if current else previous["award_strategy"]
+                ),
+                "unit_price": current["unit_price"] if current else previous["unit_price"],
+                "score": current["score"] if current else previous["score"],
+                "rank": current["rank"] if current else previous["rank"],
+            }
+        )
+    return changes
+
+
+def _record_tender_award_allocation_changes(locked, actor, changes, *, source):
+    """Persist bounded, reconstructable allocation mutations for one Tender."""
+    if not actor or not changes:
+        return
+    if len(changes) > MAX_TENDER_AWARD_ALLOCATIONS:
+        raise ValidationError(
+            f"Tender award audit exceeds the operational limit of "
+            f"{MAX_TENDER_AWARD_ALLOCATIONS} allocation changes."
+        )
+    TenderAuditLog.objects.bulk_create(
+        [
+            TenderAuditLog(
+                tender=locked,
+                action=f"award-allocation-{change['action']}",
+                previous_status=locked.status,
+                new_status=locked.status,
+                actor=actor,
+                details={
+                    "source": source,
+                    "award_cycle": locked.award_cycle,
+                    **change,
+                },
+            )
+            for change in changes
+        ],
+        batch_size=500,
+    )
+
+
+@transaction.atomic
+def save_tender_award_allocations(tender, quantities_by_bid_line_id, actor):
+    """Replace one awarded Tender's manual allocation matrix with audited rows."""
+    locked = (
+        PurchaseTender.objects.select_for_update(of=("self",))
+        .select_related("award_strategy")
+        .get(pk=_pk(tender))
+    )
+    if locked.status != PurchaseTender.Status.AWARDED:
+        raise ValidationError("Bid Allocation Matrix is only available during Awarded status.")
+    if locked.decision_approval_status not in {
+        PurchaseTender.DecisionStatus.DRAFT,
+        PurchaseTender.DecisionStatus.REJECTED,
+    }:
+        raise ValidationError("Reset the Tender decision before changing its allocations.")
+    if PurchaseOrderControl.objects.filter(tender_id=locked.pk).exists():
+        raise ValidationError("Tender allocations cannot change after Purchase Orders are generated.")
+
+    tender_lines = _require_bounded(
+        list(
+            PurchaseTenderLine.objects.select_for_update(of=("self",))
+            .filter(tender_id=locked.pk)
+            .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="Tender allocation matrix lines",
+    )
+    bids = _require_bounded(
+        list(
+            TenderBid.objects.select_for_update(of=("self",))
+            .filter(
+                tender_id=locked.pk,
+                status__in=[
+                    TenderBid.Status.SUBMITTED,
+                    TenderBid.Status.SHORTLISTED,
+                    TenderBid.Status.AWARDED,
+                ],
+            )
+            .select_related("vendor")
+            .order_by("pk")[: MAX_RFQ_VENDORS + 1]
+        ),
+        limit=MAX_RFQ_VENDORS,
+        label="Tender allocation matrix vendors",
+    )
+    bid_lines = _require_bounded(
+        list(
+            TenderBidLine.objects.select_for_update(of=("self",))
+            .filter(bid_id__in=[bid.pk for bid in bids])
+            .select_related("bid", "bid__vendor", "tender_line")
+            .order_by("tender_line_id", "rank", "unit_price", "pk")[
+                : MAX_TENDER_AWARD_ALLOCATIONS + 1
+            ]
+        ),
+        limit=MAX_TENDER_AWARD_ALLOCATIONS,
+        label="Tender allocation matrix candidates",
+    )
+    tender_line_by_id = {line.pk: line for line in tender_lines}
+    candidates = [
+        bid_line
+        for bid_line in bid_lines
+        if (
+            bid_line.tender_line_id in tender_line_by_id
+            and not bid_line.no_bid
+            and bid_line.compliant
+            and bid_line.offered_quantity > 0
+            and bid_line.unit_price > 0
+        )
+    ]
+    if not candidates:
+        raise ValidationError("At least one compliant submitted Tender Bid line is required.")
+
+    candidate_ids = {candidate.pk for candidate in candidates}
+    if set(quantities_by_bid_line_id) != candidate_ids:
+        raise ValidationError("Submit every displayed allocation candidate without adding other Bid lines.")
+
+    normalized_quantities = {}
+    allocated_by_tender_line_id = defaultdict(lambda: ZERO)
+    for candidate in candidates:
+        try:
+            quantity = Decimal(quantities_by_bid_line_id[candidate.pk])
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValidationError("Allocated quantities must be valid numbers.") from exc
+        if not quantity.is_finite() or quantity < 0:
+            raise ValidationError("Allocated quantities cannot be negative.")
+        if quantity.as_tuple().exponent < -3:
+            raise ValidationError("Allocated quantities support at most three decimal places.")
+        if quantity > candidate.offered_quantity:
+            raise ValidationError(
+                f"Allocation for Bid line {candidate.pk} exceeds the vendor offered quantity."
+            )
+        normalized_quantities[candidate.pk] = quantity
+        allocated_by_tender_line_id[candidate.tender_line_id] += quantity
+
+    for tender_line in tender_lines:
+        allocated = allocated_by_tender_line_id[tender_line.pk]
+        if allocated != tender_line.quantity:
+            raise ValidationError(
+                f"Tender line {tender_line.pk} allocations must equal the required quantity "
+                f"of {tender_line.quantity}."
+            )
+
+    previous_rows = _tender_award_allocation_audit_rows(locked.pk)
+    existing_allocations = _require_bounded(
+        list(
+            TenderAwardAllocation.objects.select_for_update(of=("self",))
+            .filter(tender_id=locked.pk)
+            .order_by("pk")[: MAX_TENDER_AWARD_ALLOCATIONS + 1]
+        ),
+        limit=MAX_TENDER_AWARD_ALLOCATIONS,
+        label="Tender award allocation",
+    )
+    existing_by_bid_line_id = {
+        allocation.bid_line_id: allocation for allocation in existing_allocations
+    }
+    candidates_by_id = {candidate.pk: candidate for candidate in candidates}
+    delete_ids = []
+    update_rows = []
+    create_rows = []
+    now = timezone.now()
+    for allocation in existing_allocations:
+        quantity = normalized_quantities.get(allocation.bid_line_id, ZERO)
+        if quantity <= 0:
+            delete_ids.append(allocation.pk)
+    for bid_line_id, quantity in normalized_quantities.items():
+        if quantity <= 0:
+            continue
+        candidate = candidates_by_id[bid_line_id]
+        existing = existing_by_bid_line_id.get(bid_line_id)
+        if existing is None:
+            create_rows.append(
+                TenderAwardAllocation(
+                    tender=locked,
+                    tender_line_id=candidate.tender_line_id,
+                    bid_line=candidate,
+                    allocated_quantity=quantity,
+                    unit_price=candidate.unit_price,
+                    award_strategy=TenderAwardAllocation.Strategy.MANUAL,
+                    score=candidate.total_score,
+                    rank=candidate.rank,
+                )
+            )
+            continue
+        changed = (
+            existing.tender_line_id != candidate.tender_line_id
+            or existing.allocated_quantity != quantity
+            or existing.unit_price != candidate.unit_price
+            or existing.award_strategy != TenderAwardAllocation.Strategy.MANUAL
+            or existing.score != candidate.total_score
+            or existing.rank != candidate.rank
+        )
+        if changed:
+            existing.tender_line_id = candidate.tender_line_id
+            existing.allocated_quantity = quantity
+            existing.unit_price = candidate.unit_price
+            existing.award_strategy = TenderAwardAllocation.Strategy.MANUAL
+            existing.score = candidate.total_score
+            existing.rank = candidate.rank
+            existing.updated_at = now
+            update_rows.append(existing)
+
+    if delete_ids:
+        # The ids come only from the bounded, locked allocation rows for this exact Tender.
+        TenderAwardAllocation.objects.filter(
+            tender_id=locked.pk,
+            pk__in=delete_ids,
+        ).delete()
+    if update_rows:
+        TenderAwardAllocation.objects.bulk_update(
+            update_rows,
+            [
+                "tender_line",
+                "allocated_quantity",
+                "unit_price",
+                "award_strategy",
+                "score",
+                "rank",
+                "updated_at",
+            ],
+            batch_size=500,
+        )
+    if create_rows:
+        TenderAwardAllocation.objects.bulk_create(create_rows, batch_size=500)
+
+    allocated_by_bid_id = defaultdict(lambda: ZERO)
+    for candidate in candidates:
+        allocated_by_bid_id[candidate.bid_id] += normalized_quantities[candidate.pk]
+    total_required = sum((line.quantity for line in tender_lines), ZERO)
+    winning_bids = []
+    changed_bids = []
+    for bid in bids:
+        allocated = allocated_by_bid_id[bid.pk]
+        status = TenderBid.Status.AWARDED if allocated > 0 else TenderBid.Status.SHORTLISTED
+        allocation_percent = (
+            allocated / total_required * HUNDRED
+        ).quantize(Decimal("0.01")) if total_required > 0 else ZERO
+        if bid.status != status or bid.allocation_percent != allocation_percent:
+            bid.status = status
+            bid.allocation_percent = allocation_percent
+            bid.updated_at = now
+            changed_bids.append(bid)
+        if allocated > 0:
+            winning_bids.append(bid)
+    if changed_bids:
+        TenderBid.objects.bulk_update(
+            changed_bids,
+            ["status", "allocation_percent", "updated_at"],
+            batch_size=100,
+        )
+    _ensure_tender_award_responses(locked, winning_bids)
+
+    current_rows = _tender_award_allocation_audit_rows(locked.pk)
+    changes = _tender_award_allocation_changes(previous_rows, current_rows)
+    _record_tender_award_allocation_changes(
+        locked,
+        actor,
+        changes,
+        source="allocation-matrix",
+    )
+    locked._tender_audit_details = {
+        "award_strategy": TenderAwardAllocation.Strategy.MANUAL,
+        "allocation_count": len(current_rows),
+        "winning_vendor_ids": sorted({bid.vendor_id for bid in winning_bids}),
+        "allocation_changes": changes,
+    }
+    return locked
+
+
 @transaction.atomic
 def apply_tender_award_strategy(tender, actor=None):
-    del actor
     locked = (
         PurchaseTender.objects.select_for_update(of=("self",))
         .select_related("award_strategy")
@@ -7338,16 +7897,28 @@ def apply_tender_award_strategy(tender, actor=None):
     }:
         raise ValidationError("Reset the Tender decision before changing its award strategy.")
 
+    previous_allocation_rows = _tender_award_allocation_audit_rows(locked.pk)
     strategy = locked.award_strategy.strategy
     if strategy == AwardStrategy.Strategy.MANUAL:
         winning_bids, allocations, _tender_lines = _load_tender_award_data(locked)
         _ensure_tender_award_responses(locked, winning_bids)
+        current_allocation_rows = _tender_award_allocation_audit_rows(locked.pk)
         locked._applied_award_strategy = TenderAwardAllocation.Strategy.MANUAL
         locked._tender_audit_details = {
             "award_strategy": TenderAwardAllocation.Strategy.MANUAL,
             "allocation_count": len(allocations),
             "winning_vendor_ids": sorted({bid.vendor_id for bid in winning_bids}),
+            "allocation_changes": _tender_award_allocation_changes(
+                previous_allocation_rows,
+                current_allocation_rows,
+            ),
         }
+        _record_tender_award_allocation_changes(
+            locked,
+            actor,
+            locked._tender_audit_details["allocation_changes"],
+            source="apply-award-strategy",
+        )
         return locked
 
     scoring = _score_purchase_tender_bids_locked(locked, require_candidates=True)
@@ -7455,12 +8026,23 @@ def apply_tender_award_strategy(tender, actor=None):
         batch_size=100,
     )
     _ensure_tender_award_responses(locked, winning_bids)
+    current_allocation_rows = _tender_award_allocation_audit_rows(locked.pk)
     locked._applied_award_strategy = allocation_strategy
     locked._tender_audit_details = {
         "award_strategy": allocation_strategy,
         "allocation_count": len(allocation_specs),
         "winning_vendor_ids": sorted({bid.vendor_id for bid in winning_bids}),
+        "allocation_changes": _tender_award_allocation_changes(
+            previous_allocation_rows,
+            current_allocation_rows,
+        ),
     }
+    _record_tender_award_allocation_changes(
+        locked,
+        actor,
+        locked._tender_audit_details["allocation_changes"],
+        source="apply-award-strategy",
+    )
     return locked
 
 
@@ -7511,7 +8093,9 @@ def _generate_tender_purchase_orders(locked, winning_bids, allocations, tender_l
                 order=order,
                 product_id=tender_line.product_id,
                 description=tender_line.description,
-                warehouse_id=locked.warehouse_id,
+                warehouse_id=(
+                    tender_line.destination_warehouse_id or locked.warehouse_id
+                ),
                 quantity=allocation.allocated_quantity,
                 unit_price=allocation.unit_price,
             )
@@ -7528,7 +8112,7 @@ def _generate_tender_purchase_orders(locked, winning_bids, allocations, tender_l
                     order=order,
                     product_id=line.product_id,
                     description=line.description,
-                    warehouse_id=locked.warehouse_id,
+                    warehouse_id=(line.destination_warehouse_id or locked.warehouse_id),
                     quantity=(line.quantity * ratio).quantize(Decimal("0.001")),
                     unit_price=line.target_unit_price,
                 )
@@ -7707,7 +8291,9 @@ def transition_purchase_tender(tender, action, actor=None, *, reason=""):
         }:
             _score_purchase_tender_bids_locked(locked, require_candidates=True)
         else:
-            raise ValidationError("Select at least one winning Tender bid before award.")
+            # HMX enters Award before the manual allocation matrix is submitted.
+            # Keep the scored candidate set ready and let the matrix establish winners.
+            _score_purchase_tender_bids_locked(locked, require_candidates=True)
         locked.status = PurchaseTender.Status.AWARDED
         locked.decision_approval_status = PurchaseTender.DecisionStatus.DRAFT
         locked.decision_rejection_reason = ""
@@ -7828,13 +8414,158 @@ def _recompute_request_rfq_progress(request_line_ids):
     PurchaseRequestLine.objects.bulk_update(lines, ["rfq_quantity", "line_status", "updated_at"], batch_size=500)
 
 
+def _sync_tender_bid_from_received_rfq(quotation, actor=None):
+    tender = PurchaseTender.objects.select_for_update(of=("self",)).get(pk=quotation.tender_id)
+    if tender.status != PurchaseTender.Status.BID_SUBMISSION:
+        raise ValidationError("Tender quotations can only be received during Bid Submission.")
+    quote_lines = _require_bounded(
+        list(
+            PurchaseQuotationLine.objects.select_for_update(of=("self",))
+            .filter(quotation_id=quotation.pk)
+            .select_related("tender_line")
+            .order_by("tender_line_id", "pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="Tender RFQ",
+    )
+    tender_lines = _require_bounded(
+        list(
+            PurchaseTenderLine.objects.select_for_update(of=("self",))
+            .filter(tender_id=tender.pk)
+            .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="Tender",
+    )
+    if not quote_lines or not tender_lines:
+        raise ValidationError("Tender RFQ requires all Tender lines before it can be received.")
+    tender_line_ids = {line.pk for line in tender_lines}
+    quote_tender_line_ids = [line.tender_line_id for line in quote_lines]
+    if (
+        None in quote_tender_line_ids
+        or len(set(quote_tender_line_ids)) != len(quote_tender_line_ids)
+        or set(quote_tender_line_ids) != tender_line_ids
+    ):
+        raise ValidationError("Tender RFQ must contain exactly one response for every Tender line.")
+    if any(line.quantity <= 0 or line.unit_price <= 0 for line in quote_lines):
+        raise ValidationError("Tender RFQ responses require positive quantity and unit price.")
+
+    bid = (
+        TenderBid.objects.select_for_update(of=("self",))
+        .filter(tender_id=tender.pk, vendor_id=quotation.vendor_id)
+        .first()
+    )
+    if bid and bid.status not in {
+        TenderBid.Status.DRAFT,
+        TenderBid.Status.SUBMITTED,
+        TenderBid.Status.REJECTED,
+    }:
+        raise ValidationError("The linked Tender Bid is already in selection or award processing.")
+    submitted_at = timezone.now()
+    bid_amount = sum((line.quantity * line.unit_price for line in quote_lines), ZERO)
+    if bid is None:
+        bid = TenderBid.objects.create(
+            tender=tender,
+            vendor_id=quotation.vendor_id,
+            submitted_at=submitted_at,
+            bid_amount=bid_amount,
+            status=TenderBid.Status.SUBMITTED,
+            notes=f"Received from RFQ {quotation.number}.",
+        )
+    else:
+        bid.submitted_at = submitted_at
+        bid.bid_amount = bid_amount
+        bid.status = TenderBid.Status.SUBMITTED
+        bid.notes = f"Received from RFQ {quotation.number}."
+        bid.save(
+            update_fields=["submitted_at", "bid_amount", "status", "notes", "updated_at"]
+        )
+
+    existing_bid_lines = _require_bounded(
+        list(
+            TenderBidLine.objects.select_for_update(of=("self",))
+            .filter(bid_id=bid.pk)
+            .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="Tender Bid",
+    )
+    existing_by_tender_line_id = {
+        line.tender_line_id: line for line in existing_bid_lines
+    }
+    reference_date = tender.bid_start_date or tender.publish_date or timezone.localdate()
+    creates = []
+    updates = []
+    for quote_line in quote_lines:
+        delivery_days = (
+            max((quote_line.promised_date - reference_date).days, 0)
+            if quote_line.promised_date
+            else 0
+        )
+        bid_line = existing_by_tender_line_id.get(quote_line.tender_line_id)
+        if bid_line is None:
+            creates.append(
+                TenderBidLine(
+                    bid=bid,
+                    tender_line_id=quote_line.tender_line_id,
+                    offered_quantity=quote_line.quantity,
+                    unit_price=quote_line.unit_price,
+                    delivery_days=delivery_days,
+                    compliant=True,
+                    no_bid=False,
+                    notes=f"Received from RFQ line {quote_line.pk}.",
+                )
+            )
+            continue
+        bid_line.offered_quantity = quote_line.quantity
+        bid_line.unit_price = quote_line.unit_price
+        bid_line.delivery_days = delivery_days
+        bid_line.compliant = True
+        bid_line.no_bid = False
+        bid_line.notes = f"Received from RFQ line {quote_line.pk}."
+        bid_line.updated_at = submitted_at
+        updates.append(bid_line)
+    if creates:
+        TenderBidLine.objects.bulk_create(creates, batch_size=500)
+    if updates:
+        TenderBidLine.objects.bulk_update(
+            updates,
+            [
+                "offered_quantity",
+                "unit_price",
+                "delivery_days",
+                "compliant",
+                "no_bid",
+                "notes",
+                "updated_at",
+            ],
+            batch_size=500,
+        )
+    if actor is not None:
+        TenderAuditLog.objects.create(
+            tender=tender,
+            action="receive-rfq-bid",
+            previous_status=tender.status,
+            new_status=tender.status,
+            actor=actor,
+            details={
+                "quotation_id": quotation.pk,
+                "vendor_id": quotation.vendor_id,
+                "bid_id": bid.pk,
+                "bid_amount": str(bid_amount),
+                "line_count": len(quote_lines),
+            },
+        )
+    quotation.quoted_amount = bid_amount
+    return bid
+
+
 @transaction.atomic
 def transition_purchase_quotation(quotation, action, actor=None):
     """Run RFQ state transitions and create the selected vendor's draft PO."""
-    del actor
     locked = (
         PurchaseQuotation.objects.select_for_update(of=("self",))
-        .select_related("request", "blanket_order", "vendor", "warehouse")
+        .select_related("request", "blanket_order", "tender", "vendor", "warehouse")
         .get(pk=_pk(quotation))
     )
     transitions = {
@@ -7850,14 +8581,28 @@ def transition_purchase_quotation(quotation, action, actor=None):
         if locked.status not in sources:
             raise ValidationError("That RFQ action is not available in the current state.")
         locked.status = target
-        locked.save(update_fields=["status", "updated_at"])
+        if action == "receive" and locked.tender_id:
+            _sync_tender_bid_from_received_rfq(locked, actor)
+            locked.save(update_fields=["status", "quoted_amount", "updated_at"])
+        else:
+            locked.save(update_fields=["status", "updated_at"])
         if action == "cancel":
             request_line_ids = list(locked.lines.values_list("request_line_id", flat=True))
             _cancel_blanket_rfq_release(locked)
             _recompute_request_rfq_progress([value for value in request_line_ids if value])
+            if locked.tender_id:
+                TenderBid.objects.filter(
+                    tender_id=locked.tender_id,
+                    vendor_id=locked.vendor_id,
+                    status__in=[TenderBid.Status.DRAFT, TenderBid.Status.SUBMITTED],
+                ).update(status=TenderBid.Status.REJECTED, updated_at=timezone.now())
         return locked
     if action != "select":
         raise ValidationError("Unsupported RFQ workflow action.")
+    if locked.tender_id:
+        raise ValidationError(
+            "Tender RFQs must complete Bid Selection and Award; they cannot create a Purchase Order directly."
+        )
     if locked.status != PurchaseQuotation.Status.RECEIVED:
         raise ValidationError("Only a received vendor quotation can be selected.")
     existing = PurchaseOrderControl.objects.select_related("order").filter(quotation_id=locked.pk).first()

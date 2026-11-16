@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · ERP GSSHOP{% endblock %}
+{% block page_title %}Submit Quotation{% endblock %}
+{% block content %}
+  <section class="document-paper">
+    <div class="document-title-row">
+      <div>
+        <p class="eyebrow">Tender RFQ · {{ tender.number }}</p>
+        <h2>{{ tender.title }}</h2>
+        <p>{{ vendor_scope_display }} · {{ candidate_count }} eligible vendor{{ candidate_count|pluralize }}</p>
+      </div>
+    </div>
+
+    <form method="post" class="document-form">
+      {% csrf_token %}
+      {% if form.non_field_errors %}<div class="message error">{{ form.non_field_errors }}</div>{% endif %}
+      {% if candidate_count %}
+        <div class="field">
+          <label>{{ form.vendors.label }}<span class="required">*</span></label>
+          {% if vendor_scope != "open_registered" %}
+            <p>
+              {% if vendor_scope == "invited" %}
+                HMX invited scope submits RFQs to all vendors registered in Tender Invitations.
+              {% else %}
+                HMX prequalification scope submits RFQs to all vendors that passed Document Completion.
+              {% endif %}
+            </p>
+          {% endif %}
+          {{ form.vendors }}
+          {% for error in form.vendors.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+        </div>
+      {% else %}
+        <div class="message warning">
+          No eligible vendor is available. Configure Tender Invitations, registered Vendor Profiles, or completed prequalification documents for this Tender scope.
+        </div>
+      {% endif %}
+      <div class="document-actions">
+        <a class="btn btn-secondary" href="{% url 'entity_edit' 'purchase-tenders' tender.pk %}">Cancel</a>
+        <button class="btn btn-primary" type="submit"{% if not candidate_count %} disabled{% endif %}>Create Tender RFQs</button>
+      </div>
+    </form>
+  </section>
+{% endblock %}

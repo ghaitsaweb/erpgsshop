@@ -202,6 +202,7 @@ PRIVILEGED_WORKFLOW_ACTIONS = {
     "open-submission",
     "evaluate",
     "award",
+    "manage-award-allocation",
     "submit-decision",
     "approve-decision",
     "reject-decision",

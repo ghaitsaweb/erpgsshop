@@ -1171,6 +1171,7 @@ def _build_config(entity, model):
     if entity in {
         "purchase-order-lines",
         "purchase-three-way-matches",
+        "tender-award-allocations",
         "tender-audit-logs",
         "vendor-transaction-history",
         "vendor-performance-score-history",

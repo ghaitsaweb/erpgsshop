@@ -1,0 +1,13 @@
+{
+  "slug": "gs-purchase-ph",
+  "name": "GS Purchase Philippines",
+  "category": "Purchase Add-ons",
+  "summary": "Philippine report metadata for Purchase Orders and RFQs, mirroring HMX core_purchase_ph.",
+  "icon": "PH",
+  "version": "1.0.1.0.1",
+  "status": "beta",
+  "enabled": true,
+  "sequence": 20,
+  "dependencies": ["purchase", "accounting", "localization-ph", "gs-localization-purchase"],
+  "django_app": "addons.purchase.gs_purchase_ph.apps.GSPurchasePhilippinesConfig"
+}

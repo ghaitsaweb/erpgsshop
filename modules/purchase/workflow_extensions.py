@@ -1,6 +1,7 @@
 """Purchase-owned extensions to the generic document workflow registry."""
 
 from django.urls import reverse
+from django.utils import timezone
 
 from core.document_registry import (
     register_document_action,
@@ -48,24 +49,38 @@ def purchase_revision_action_available(order):
 
 
 def purchase_tender_action_available(tender, action_key):
+    if action_key == "submit-quotation":
+        today = timezone.localdate()
+        start_date = tender.bid_start_date or tender.publish_date
+        return (
+            tender.status == PurchaseTender.Status.BID_SUBMISSION
+            and (not start_date or today >= start_date)
+            and (not tender.close_date or today <= tender.close_date)
+        )
     if tender.status != PurchaseTender.Status.AWARDED:
         return True
     actions_by_decision_status = {
         PurchaseTender.DecisionStatus.DRAFT: {
             "apply-award-strategy",
+            "bid-comparison",
+            "manage-award-allocation",
             "submit-decision",
             "reopen-award",
         },
         PurchaseTender.DecisionStatus.WAITING_APPROVAL: {
             "approve-decision",
+            "bid-comparison",
             "reject-decision",
         },
         PurchaseTender.DecisionStatus.APPROVED: {
+            "bid-comparison",
             "close",
             "reset-decision",
         },
         PurchaseTender.DecisionStatus.REJECTED: {
             "apply-award-strategy",
+            "bid-comparison",
+            "manage-award-allocation",
             "submit-decision",
             "reopen-award",
         },
@@ -138,6 +153,11 @@ def register_purchase_document_extensions():
     )
     register_document_option(
         "purchase-tenders",
+        "extra_js_assets",
+        ["purchase/js/tender_onchange.js"],
+    )
+    register_document_option(
+        "purchase-tenders",
         "summary_template",
         "purchase/tender_scoring_summary.html",
     )
@@ -155,6 +175,53 @@ def register_purchase_document_extensions():
         "purchase-tenders",
         "action_audit_logger",
         purchase_tender_action_audit,
+    )
+    register_document_action(
+        "purchase-tenders",
+        "submit-quotation",
+        {
+            "label": "Submit Quotation",
+            "from": [PurchaseTender.Status.BID_SUBMISSION],
+            "to": None,
+            "preserve_status": True,
+            "primary": True,
+            "href_builder": lambda tender: reverse(
+                "purchase_tender_submit_quotation",
+                kwargs={"pk": tender.pk},
+            ),
+        },
+    )
+    register_document_action(
+        "purchase-tenders",
+        "bid-comparison",
+        {
+            "label": "Bid Comparison",
+            "from": [
+                PurchaseTender.Status.BID_SELECTION,
+                PurchaseTender.Status.AWARDED,
+                PurchaseTender.Status.CLOSED,
+            ],
+            "to": None,
+            "preserve_status": True,
+            "href_builder": lambda tender: reverse(
+                "purchase_tender_bid_comparison",
+                kwargs={"pk": tender.pk},
+            ),
+        },
+    )
+    register_document_action(
+        "purchase-tenders",
+        "manage-award-allocation",
+        {
+            "label": "Bid Allocation Matrix",
+            "from": [PurchaseTender.Status.AWARDED],
+            "to": None,
+            "preserve_status": True,
+            "href_builder": lambda tender: reverse(
+                "purchase_tender_award_allocation",
+                kwargs={"pk": tender.pk},
+            ),
+        },
     )
     register_document_option(
         "blanket-orders",
@@ -231,6 +298,13 @@ def register_purchase_document_extensions():
     register_document_line_field("purchase-tenders", "cost_center_distribution_ids", after="target_unit_price")
     register_document_line_field("purchase-tenders", "cost_center_distribution_data", after="target_unit_price")
     register_document_line_field("purchase-tenders", "cost_center_analytic_tag_ids", after="target_unit_price")
+    register_document_header_field("purchase-tenders", "expiry_date", after="close_date")
+    register_document_line_field("purchase-tenders", "expiry_date", after="delivery_date")
+    register_document_line_field(
+        "purchase-tenders",
+        "destination_warehouse",
+        after="delivery_date",
+    )
     register_document_option(
         "blanket-orders",
         "total_fields",

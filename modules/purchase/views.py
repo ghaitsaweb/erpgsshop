@@ -5,14 +5,21 @@ from urllib.parse import urlencode
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
+from django.db import transaction
+from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET, require_POST
 
 from modules.approval_workflow.services import can_user_act, pending_approval_for
 
-from .access import can_purchase_entity_action, scope_purchase_queryset
+from .access import (
+    can_purchase_entity_action,
+    can_purchase_workflow_action,
+    scope_purchase_queryset,
+    scope_purchase_form,
+)
 from .forms import (
     BlanketOrderRFQLineFormSet,
     PurchaseRequestApprovalLineFormSet,
@@ -24,14 +31,18 @@ from .forms import (
     PurchaseRequestReRequestLineFormSet,
     PurchaseRequestTenderForm,
     PurchaseRFQMailForm,
+    PurchaseTenderRFQVendorForm,
+    PurchaseTenderLineDocumentForm,
 )
 from .models import (
     BlanketOrder,
     BlanketOrderLine,
     PurchaseQuotation,
     PurchaseOrderTemplate,
+    PurchaseOrderTemplateLine,
     PurchaseRequest,
     PurchaseRequestLine,
+    PurchaseTender,
 )
 from .rfq_comparison import compare_purchase_quotations, confirm_quotation_from_comparison
 from .purchase_analysis import (
@@ -47,9 +58,15 @@ from .services import (
     create_purchase_request_rfqs,
     create_purchase_request_re_request,
     create_purchase_request_tender,
+    create_purchase_tender_rfqs,
     duplicate_purchase_order_template,
+    purchase_tender_rfq_candidates,
+    save_tender_award_allocations,
     send_purchase_quotation_email,
+    transition_purchase_tender,
 )
+from .tender_award_allocation import build_tender_award_allocation_workspace
+from .tender_bid_comparison import build_tender_bid_comparison
 
 
 def _comparison_selection(raw_ids):
@@ -64,6 +81,88 @@ def _comparison_selection(raw_ids):
         selected.append(value)
         seen.add(value)
     return selected
+
+
+@login_required
+@require_GET
+def purchase_tender_onchange(request):
+    """Return bounded, company-scoped values for Tender edit-time onchange."""
+    if not can_purchase_entity_action(request.user, "purchase-tenders", "change"):
+        return JsonResponse({"detail": "You do not have permission to edit Tenders."}, status=403)
+    template_id = request.GET.get("order_template_id", "").strip()
+    product_id = request.GET.get("product_id", "").strip()
+    company_id = request.GET.get("company_id", "").strip()
+    if bool(template_id) == bool(product_id):
+        return JsonResponse({"detail": "Select one Tender onchange source."}, status=400)
+
+    if template_id:
+        if not template_id.isdigit():
+            return JsonResponse({"detail": "Order Template is invalid."}, status=400)
+        template = get_object_or_404(
+            scope_purchase_queryset(
+                request.user,
+                "purchase-order-templates",
+                PurchaseOrderTemplate.objects.select_related("order_type").filter(active=True),
+            ),
+            pk=int(template_id),
+        )
+        if company_id.isdigit() and template.company_id != int(company_id):
+            return JsonResponse(
+                {"detail": "Order Template must belong to the Tender company."},
+                status=400,
+            )
+        lines = list(
+            PurchaseOrderTemplateLine.objects.filter(order_template_id=template.pk)
+            .select_related("product")
+            .order_by("sequence", "pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        )
+        if len(lines) > MAX_PURCHASE_DOCUMENT_LINES:
+            return JsonResponse(
+                {
+                    "detail": (
+                        f"Purchase Order Template exceeds the operational limit of "
+                        f"{MAX_PURCHASE_DOCUMENT_LINES} lines."
+                    )
+                },
+                status=400,
+            )
+        return JsonResponse(
+            {
+                "order_type_id": template.order_type_id,
+                "lines": [
+                    {
+                        "product_id": line.product_id,
+                        "description": line.description or line.product.name,
+                        "quantity": str(line.quantity),
+                        "target_unit_price": str(line.price),
+                        "unit": line.uom or line.product.unit,
+                    }
+                    for line in lines
+                ],
+            }
+        )
+
+    if not product_id.isdigit():
+        return JsonResponse({"detail": "Product is invalid."}, status=400)
+    product_form = PurchaseTenderLineDocumentForm()
+    scope_purchase_form(product_form, request.user, "purchase-tenders")
+    product_queryset = product_form.fields["product"].queryset.filter(active=True)
+    product = get_object_or_404(product_queryset, pk=int(product_id))
+    if company_id.isdigit() and product.company_id != int(company_id):
+        return JsonResponse(
+            {"detail": "Product must belong to the Tender company."},
+            status=400,
+        )
+    return JsonResponse(
+        {
+            "product": {
+                "id": product.pk,
+                "description": product.name,
+                "unit": product.unit,
+                "target_unit_price": str(product.purchase_price),
+            }
+        }
+    )
 
 
 def _purchase_analysis_response(request, *, entity, builder):
@@ -129,6 +228,233 @@ def purchase_request_analysis(request):
         request,
         entity="purchase-requests",
         builder=build_purchase_request_analysis,
+    )
+
+
+@login_required
+@require_GET
+def purchase_tender_bid_comparison(request, pk):
+    if not can_purchase_entity_action(request.user, "purchase-tenders", "view"):
+        messages.error(request, "You do not have permission to view Tender bid comparisons.")
+        return redirect("entity_list", entity="purchase-tenders")
+    tender = get_object_or_404(
+        scope_purchase_queryset(
+            request.user,
+            "purchase-tenders",
+            PurchaseTender.objects.select_related("company", "award_strategy"),
+        ),
+        pk=pk,
+    )
+    try:
+        comparison = build_tender_bid_comparison(tender)
+    except ValidationError as exc:
+        messages.error(request, " ".join(exc.messages))
+        return redirect("entity_edit", entity="purchase-tenders", pk=tender.pk)
+
+    award_action = comparison["award_action"]
+    award_permission_action = (
+        "award" if award_action == "manage-award-allocation" else award_action
+    )
+    comparison["can_award"] = bool(
+        award_action
+        and can_purchase_entity_action(request.user, "purchase-tenders", "change")
+        and can_purchase_workflow_action(
+            request.user,
+            "purchase-tenders",
+            award_permission_action,
+        )
+    )
+    return render(
+        request,
+        "purchase/tender_bid_comparison.html",
+        {
+            "title": f"Bid Comparison · {tender.number}",
+            "tender": tender,
+            "comparison": comparison,
+            "breadcrumbs": [
+                {"label": "Home", "url": reverse("dashboard")},
+                {
+                    "label": "Purchase Tenders",
+                    "url": reverse("entity_list", args=["purchase-tenders"]),
+                },
+                {
+                    "label": tender.number,
+                    "url": reverse("entity_edit", args=["purchase-tenders", tender.pk]),
+                },
+                {"label": "Bid Comparison", "url": ""},
+            ],
+        },
+    )
+
+
+def _parse_tender_allocation_quantities(post_data):
+    quantities = {}
+    prefix = "allocation_"
+    for key in post_data:
+        if not key.startswith(prefix):
+            continue
+        raw_id = key[len(prefix):]
+        values = post_data.getlist(key)
+        if not raw_id.isdigit() or int(raw_id) < 1 or len(values) != 1:
+            raise ValidationError("The Tender allocation matrix contains an invalid Bid line.")
+        bid_line_id = int(raw_id)
+        if bid_line_id in quantities:
+            raise ValidationError("The Tender allocation matrix contains a duplicate Bid line.")
+        quantities[bid_line_id] = values[0]
+    return quantities
+
+
+def _can_manage_tender_allocations(user):
+    return (
+        can_purchase_entity_action(user, "purchase-tenders", "change")
+        and can_purchase_workflow_action(user, "purchase-tenders", "award")
+    )
+
+
+@login_required
+@require_POST
+def purchase_tender_start_award(request, pk):
+    if not _can_manage_tender_allocations(request.user):
+        messages.error(request, "You do not have permission to award this Tender.")
+        return redirect("entity_list", entity="purchase-tenders")
+    tender = get_object_or_404(
+        scope_purchase_queryset(
+            request.user,
+            "purchase-tenders",
+            PurchaseTender.objects.select_related("company", "award_strategy"),
+        ),
+        pk=pk,
+    )
+    previous_status = tender.status
+    try:
+        with transaction.atomic():
+            tender = transition_purchase_tender(tender, "award", request.user)
+            from .workflow_extensions import purchase_tender_action_audit
+
+            purchase_tender_action_audit(tender, "award", request.user, previous_status)
+    except ValidationError as exc:
+        messages.error(request, " ".join(exc.messages))
+        return redirect("purchase_tender_bid_comparison", pk=tender.pk)
+    messages.success(request, "Tender moved to Awarded. Complete the Bid Allocation Matrix.")
+    return redirect("purchase_tender_award_allocation", pk=tender.pk)
+
+
+@login_required
+def purchase_tender_award_allocation(request, pk):
+    if not _can_manage_tender_allocations(request.user):
+        messages.error(request, "You do not have permission to manage Tender allocations.")
+        return redirect("entity_list", entity="purchase-tenders")
+    tender = get_object_or_404(
+        scope_purchase_queryset(
+            request.user,
+            "purchase-tenders",
+            PurchaseTender.objects.select_related("company", "award_strategy"),
+        ),
+        pk=pk,
+    )
+    if request.method == "POST":
+        try:
+            quantities = _parse_tender_allocation_quantities(request.POST)
+            save_tender_award_allocations(tender, quantities, request.user)
+        except ValidationError as exc:
+            messages.error(request, " ".join(exc.messages))
+        else:
+            messages.success(request, "Tender Bid Allocation Matrix saved and audited.")
+            return redirect("purchase_tender_award_allocation", pk=tender.pk)
+    try:
+        allocation_matrix = build_tender_award_allocation_workspace(tender)
+    except ValidationError as exc:
+        messages.error(request, " ".join(exc.messages))
+        return redirect("entity_edit", entity="purchase-tenders", pk=tender.pk)
+    return render(
+        request,
+        "purchase/tender_award_allocation.html",
+        {
+            "title": f"Bid Allocation Matrix · {tender.number}",
+            "tender": tender,
+            "allocation_matrix": allocation_matrix,
+            "breadcrumbs": [
+                {"label": "Home", "url": reverse("dashboard")},
+                {
+                    "label": "Purchase Tenders",
+                    "url": reverse("entity_list", args=["purchase-tenders"]),
+                },
+                {
+                    "label": tender.number,
+                    "url": reverse("entity_edit", args=["purchase-tenders", tender.pk]),
+                },
+                {"label": "Bid Allocation Matrix", "url": ""},
+            ],
+        },
+    )
+
+
+@login_required
+def purchase_tender_submit_quotation(request, pk):
+    if not can_purchase_entity_action(request.user, "purchase-tenders", "change"):
+        messages.error(request, "You do not have permission to create Tender RFQs.")
+        return redirect("entity_list", entity="purchase-tenders")
+    tender = get_object_or_404(
+        scope_purchase_queryset(
+            request.user,
+            "purchase-tenders",
+            PurchaseTender.objects.select_related("company"),
+        ),
+        pk=pk,
+    )
+    try:
+        vendor_scope, candidates = purchase_tender_rfq_candidates(tender)
+    except ValidationError as exc:
+        messages.error(request, " ".join(exc.messages))
+        return redirect("entity_edit", entity="purchase-tenders", pk=tender.pk)
+    form = PurchaseTenderRFQVendorForm(
+        request.POST or None,
+        candidates=candidates,
+        vendor_scope=vendor_scope,
+    )
+    if request.method == "POST" and form.is_valid():
+        try:
+            quotations = create_purchase_tender_rfqs(
+                tender,
+                vendor_ids=[vendor.pk for vendor in form.cleaned_data["vendors"]],
+                actor=request.user,
+            )
+        except ValidationError as exc:
+            form.add_error(None, " ".join(exc.messages))
+        else:
+            messages.success(
+                request,
+                f"Created {len(quotations)} linked Tender RFQ(s): "
+                + ", ".join(quotation.number for quotation in quotations),
+            )
+            return redirect("entity_list", entity="purchase-quotations")
+    return render(
+        request,
+        "purchase/tender_submit_quotation.html",
+        {
+            "title": f"Submit Quotation · {tender.number}",
+            "tender": tender,
+            "vendor_scope": vendor_scope,
+            "vendor_scope_display": {
+                "open_registered": "Open to Registered Vendors",
+                "invited": "Invited Vendors",
+                "open_public": "Open Public / Prequalification",
+            }[vendor_scope],
+            "candidate_count": len(candidates),
+            "form": form,
+            "breadcrumbs": [
+                {"label": "Home", "url": reverse("dashboard")},
+                {
+                    "label": "Purchase Tenders",
+                    "url": reverse("entity_list", args=["purchase-tenders"]),
+                },
+                {
+                    "label": tender.number,
+                    "url": reverse("entity_edit", args=["purchase-tenders", tender.pk]),
+                },
+                {"label": "Submit Quotation", "url": ""},
+            ],
+        },
     )
 
 

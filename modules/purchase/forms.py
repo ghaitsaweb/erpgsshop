@@ -4,6 +4,7 @@ from django import forms
 from django.db import transaction
 from django.db.models import Q
 from django.forms import formset_factory
+from django.urls import reverse
 from django.utils import timezone
 
 from core.forms import PurchaseOrderForm, StyledModelForm
@@ -96,6 +97,24 @@ class PurchaseRFQMailForm(forms.Form):
         value = self.cleaned_data.get("email_cc", "")
         parse_purchase_email_recipients(value)
         return value
+
+
+class PurchaseTenderRFQVendorForm(forms.Form):
+    vendors = forms.ModelMultipleChoiceField(
+        queryset=Contact.objects.none(),
+        widget=forms.CheckboxSelectMultiple,
+        label="Eligible Vendors",
+    )
+
+    def __init__(self, *args, candidates, vendor_scope, **kwargs):
+        super().__init__(*args, **kwargs)
+        candidate_ids = [vendor.pk for vendor in candidates]
+        self.fields["vendors"].queryset = Contact.objects.filter(
+            pk__in=candidate_ids,
+        ).order_by("name", "pk")
+        if vendor_scope in {"invited", "open_public"}:
+            self.fields["vendors"].disabled = True
+            self.initial["vendors"] = candidate_ids
 
 
 def _clean_purchase_cost_center_fields(form, cleaned, company_id):
@@ -383,6 +402,7 @@ class PurchaseTenderDocumentForm(StyledModelForm):
             "publish_date",
             "bid_start_date",
             "close_date",
+            "expiry_date",
             "validity_days",
             "budget_amount",
             "evaluation_price_weight",
@@ -398,9 +418,35 @@ class PurchaseTenderDocumentForm(StyledModelForm):
             "description",
         ]
 
+        widgets = {
+            "publish_date": forms.DateInput(attrs={"type": "date"}),
+            "bid_start_date": forms.DateInput(attrs={"type": "date"}),
+            "close_date": forms.DateInput(attrs={"type": "date"}),
+            "expiry_date": forms.DateInput(attrs={"type": "date"}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["order_template"].widget.attrs["data-tender-onchange-url"] = reverse(
+            "purchase_tender_onchange"
+        )
+        self.fields["expiry_date"].widget.attrs["data-tender-header-expiry"] = "true"
+        self.fields["warehouse"].widget.attrs["data-tender-header-warehouse"] = "true"
+
     def clean(self):
         cleaned = super().clean()
         company = cleaned.get("company")
+        template = cleaned.get("order_template")
+        if template and not template.active:
+            self.add_error("order_template", "Only an active Purchase Order Template can be applied.")
+        if template and company and template.company_id != company.pk:
+            self.add_error(
+                "order_template",
+                "Purchase Order Template must belong to the Tender company.",
+            )
+        if template and template.order_type_id:
+            cleaned["order_type"] = template.order_type
+            self.instance.order_type = template.order_type
         return _clean_purchase_cost_center_fields(
             self,
             cleaned,
@@ -419,6 +465,8 @@ class PurchaseTenderLineDocumentForm(StyledModelForm):
             "quantity",
             "target_unit_price",
             "delivery_date",
+            "expiry_date",
+            "destination_warehouse",
             "cost_center",
             "cost_center_mode",
             "cost_center_distribution_ids",
@@ -426,9 +474,30 @@ class PurchaseTenderLineDocumentForm(StyledModelForm):
             "cost_center_analytic_tag_ids",
         ]
 
+        widgets = {
+            "delivery_date": forms.DateInput(attrs={"type": "date"}),
+            "expiry_date": forms.DateInput(attrs={"type": "date"}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["product"].widget.attrs["data-tender-product-onchange-url"] = reverse(
+            "purchase_tender_onchange"
+        )
+
     def clean(self):
         cleaned = super().clean()
         tender = self.instance.tender if self.instance and self.instance.tender_id else None
+        product = cleaned.get("product")
+        if product and not cleaned.get("description"):
+            cleaned["description"] = product.name
+            self.instance.description = product.name
+        if tender and not cleaned.get("expiry_date") and tender.expiry_date:
+            cleaned["expiry_date"] = tender.expiry_date
+            self.instance.expiry_date = tender.expiry_date
+        if tender and not cleaned.get("destination_warehouse") and tender.warehouse_id:
+            cleaned["destination_warehouse"] = tender.warehouse
+            self.instance.destination_warehouse = tender.warehouse
         return _clean_purchase_cost_center_fields(
             self,
             cleaned,

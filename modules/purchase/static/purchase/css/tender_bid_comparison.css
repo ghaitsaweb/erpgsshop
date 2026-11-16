@@ -1,0 +1,220 @@
+.tender-comparison {
+  display: grid;
+  gap: 22px;
+}
+
+.tender-comparison__topbar,
+.tender-comparison__heading,
+.tender-comparison__breakdown > header {
+  align-items: center;
+  display: flex;
+}
+
+.tender-comparison__topbar {
+  background: #fff;
+  border: 1px solid #e4e9f0;
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(31, 42, 55, .05);
+  gap: 14px;
+  padding: 12px 16px;
+}
+
+.tender-comparison__back {
+  align-items: center;
+  background: #f3f6fa;
+  border-radius: 9px;
+  color: #25364a;
+  display: inline-flex;
+  font-size: 20px;
+  height: 38px;
+  justify-content: center;
+  text-decoration: none;
+  width: 38px;
+}
+
+.tender-comparison__identity {
+  display: grid;
+  gap: 2px;
+  min-width: 220px;
+}
+
+.tender-comparison__identity span { color: #203047; font-weight: 750; }
+.tender-comparison__identity small { color: #78879a; }
+
+.tender-comparison__search {
+  align-items: center;
+  background: #f6f8fb;
+  border: 1px solid #e0e6ee;
+  border-radius: 9px;
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+  max-width: 340px;
+  padding: 0 12px;
+  width: 100%;
+}
+
+.tender-comparison__search span { color: #718096; font-size: 20px; }
+.tender-comparison__search input {
+  background: transparent;
+  border: 0;
+  color: #25364a;
+  min-height: 40px;
+  outline: 0;
+  width: 100%;
+}
+
+.tender-comparison__heading {
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.tender-comparison__heading h2 { font-size: clamp(24px, 3vw, 34px); margin: 3px 0 6px; }
+.tender-comparison__heading p:last-child { color: #68778a; margin: 0; }
+.tender-comparison__actions { display: flex; flex-wrap: wrap; gap: 9px; }
+.tender-comparison__actions form { display: contents; }
+
+.tender-comparison__metrics {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.tender-comparison__metrics article {
+  background: #fff;
+  border: 1px solid #e4e9f0;
+  border-radius: 12px;
+  display: grid;
+  gap: 5px;
+  padding: 16px 18px;
+}
+
+.tender-comparison__metrics span { color: #7a8798; font-size: 12px; font-weight: 650; text-transform: uppercase; }
+.tender-comparison__metrics strong { color: #203047; font-size: 21px; }
+
+.tender-comparison__vendors {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.tender-vendor-card,
+.tender-comparison__empty-card {
+  background: #fff;
+  border: 1px solid #e1e7ef;
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(31, 42, 55, .05);
+  min-height: 180px;
+  padding: 18px;
+  position: relative;
+}
+
+.tender-vendor-card.is-recommended { border-color: #2b73d2; box-shadow: 0 10px 28px rgba(43, 115, 210, .14); }
+.tender-vendor-card__recommended {
+  background: #2b73d2;
+  border-radius: 0 13px 0 10px;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 750;
+  padding: 6px 10px;
+  position: absolute;
+  right: 0;
+  top: 0;
+}
+
+.tender-vendor-card header { align-items: center; display: flex; gap: 10px; margin-bottom: 18px; padding-right: 4px; }
+.tender-vendor-card__avatar {
+  align-items: center;
+  background: #e9f1fc;
+  border-radius: 50%;
+  color: #1f5fae;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-weight: 800;
+  height: 38px;
+  justify-content: center;
+  width: 38px;
+}
+
+.tender-vendor-card header div { display: grid; gap: 2px; min-width: 0; }
+.tender-vendor-card header strong { color: #203047; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tender-vendor-card header small { color: #8190a2; }
+.tender-vendor-card header em { color: #1f5fae; font-style: normal; font-weight: 800; margin-left: auto; }
+.tender-vendor-card > p { color: #8190a2; font-size: 12px; margin: 0 0 3px; }
+.tender-vendor-card h3 { color: #1c2c40; font-size: 21px; margin: 0 0 16px; }
+.tender-vendor-card dl { border-top: 1px solid #edf0f4; display: grid; grid-template-columns: 1fr 1fr; margin: 0; padding-top: 12px; }
+.tender-vendor-card dl div { display: grid; gap: 3px; }
+.tender-vendor-card dt { color: #8290a1; font-size: 11px; }
+.tender-vendor-card dd { color: #33445a; font-weight: 700; margin: 0; }
+.tender-comparison__empty-card { align-items: center; color: #6f7e91; display: flex; flex-direction: column; grid-column: 1 / -1; justify-content: center; }
+.tender-comparison__empty-card strong { color: #33445a; }
+
+.tender-comparison__breakdown {
+  background: #fff;
+  border: 1px solid #e1e7ef;
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(31, 42, 55, .05);
+  overflow: hidden;
+}
+
+.tender-comparison__breakdown > header { justify-content: space-between; padding: 18px 20px; }
+.tender-comparison__breakdown h3 { color: #203047; margin: 2px 0 0; }
+.tender-comparison__legend { align-items: center; color: #68778a; display: flex; font-size: 12px; gap: 7px; }
+.tender-comparison__legend i { background: #dff5e8; border: 1px solid #99ddb7; border-radius: 3px; display: inline-block; height: 12px; width: 12px; }
+.tender-comparison__table-wrap { overflow-x: auto; }
+.tender-comparison table { border-collapse: collapse; min-width: 900px; width: 100%; }
+.tender-comparison th,
+.tender-comparison td { border-top: 1px solid #edf0f4; padding: 14px 16px; text-align: left; vertical-align: top; }
+.tender-comparison thead th { background: #f7f9fc; color: #516176; font-size: 12px; min-width: 210px; }
+.tender-comparison thead th:first-child { min-width: 260px; }
+.tender-comparison__line { background: #fbfcfe; color: #25364a; }
+.tender-comparison__line strong,
+.tender-comparison__line span,
+.tender-comparison__line em { display: block; }
+.tender-comparison__line span { color: #7a8798; font-size: 12px; font-weight: 450; margin-top: 4px; }
+.tender-comparison__line em { color: #1f5fae; font-size: 12px; font-style: normal; margin-top: 8px; }
+.tender-comparison__quote { min-width: 210px; }
+.tender-comparison__quote.is-best { background: #effaf4; box-shadow: inset 3px 0 #3bb273; }
+.tender-comparison__quote.is-empty { background: #fafbfc; }
+.tender-comparison__quote > div { align-items: center; display: flex; gap: 12px; justify-content: space-between; }
+.tender-comparison__quote > div span { color: #78879a; font-size: 11px; }
+.tender-comparison__quote > div strong { color: #25364a; font-size: 13px; }
+.tender-comparison__quote-total { margin-top: 8px; }
+.tender-comparison__quote small { color: #66768a; display: flex; gap: 8px; justify-content: space-between; margin-top: 14px; }
+.tender-comparison__no-quote { color: #9aa5b4; display: block; padding: 24px 0; text-align: center; }
+.tender-comparison tfoot th,
+.tender-comparison tfoot td { background: #edf4fc; color: #1d579e; font-weight: 800; }
+.tender-comparison__empty-row,
+.tender-comparison__search-empty td { color: #7c8998; padding: 34px !important; text-align: center !important; }
+
+@media (max-width: 900px) {
+  .tender-comparison__heading { align-items: flex-start; flex-direction: column; }
+  .tender-comparison__metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tender-comparison__topbar { align-items: stretch; flex-wrap: wrap; }
+  .tender-comparison__search { flex-basis: 100%; max-width: none; }
+}
+
+@media (max-width: 560px) {
+  .tender-comparison__metrics { grid-template-columns: 1fr; }
+  .tender-comparison__actions { display: grid; width: 100%; }
+  .tender-comparison__actions .btn { width: 100%; }
+}
+
+@media print {
+  .sidebar,
+  .topbar,
+  .tender-comparison__topbar,
+  .tender-comparison__actions,
+  .tender-comparison__metrics,
+  .messages { display: none !important; }
+  .app-shell,
+  .main-content,
+  .page-content { display: block !important; margin: 0 !important; padding: 0 !important; }
+  .tender-comparison { gap: 12px; }
+  .tender-comparison__vendors { grid-template-columns: repeat(3, 1fr); }
+  .tender-comparison__breakdown { box-shadow: none; overflow: visible; }
+  .tender-comparison__table-wrap { overflow: visible; }
+  .tender-comparison table { font-size: 9px; min-width: 0; }
+  .tender-comparison th,
+  .tender-comparison td { padding: 6px; }
+}

@@ -10,7 +10,7 @@ from django.utils import timezone
 from core.models import Company, Contact, Product, PurchaseOrder, PurchaseOrderLine, Warehouse
 from core.views import DOCUMENT_CONFIG
 
-from .line_merge import merge_purchase_document_lines
+from .line_merge import _sync_purchase_tender_line_defaults, merge_purchase_document_lines
 from .models import (
     AwardStrategy,
     BlanketOrder,
@@ -332,6 +332,60 @@ class PurchaseLineMergeParityTests(TestCase):
                 self.assertEqual(DOCUMENT_CONFIG[entity]["line_limit"], 500)
                 self.assertTrue(callable(DOCUMENT_CONFIG[entity]["line_saver"]))
 
+    def test_tender_timeline_warehouse_and_cost_center_sync_both_directions(self):
+        tender = self._tender()
+        tender.warehouse = None
+        tender.save(update_fields=["warehouse", "updated_at"])
+        expiry_date = timezone.localdate() + timedelta(days=15)
+        PurchaseTenderLine.objects.create(
+            tender=tender,
+            product=self.product,
+            description="Line supplies header defaults",
+            quantity=Decimal("1"),
+            target_unit_price=Decimal("25"),
+            expiry_date=expiry_date,
+            destination_warehouse=self.warehouse,
+            cost_center="CC-TENDER",
+        )
+
+        _sync_purchase_tender_line_defaults(tender)
+
+        tender.refresh_from_db()
+        self.assertEqual(tender.expiry_date, expiry_date)
+        self.assertEqual(tender.warehouse, self.warehouse)
+        self.assertEqual(tender.cost_center, "CC-TENDER")
+
+        propagated = PurchaseTender.objects.create(
+            company=self.company,
+            number="PT-PLM-PROPAGATE",
+            title="Line Default Propagation",
+            category=PurchaseTender.Category.OPEX,
+            tender_type=PurchaseTender.TenderType.OPEN,
+            award_strategy=self.award_strategy,
+            warehouse=self.warehouse,
+            close_date=timezone.localdate() + timedelta(days=7),
+            expiry_date=expiry_date,
+            cost_center="CC-HEADER",
+        )
+        line = PurchaseTenderLine.objects.bulk_create(
+            [
+                PurchaseTenderLine(
+                    tender=propagated,
+                    product=self.product,
+                    description="Header supplies line defaults",
+                    quantity=Decimal("1"),
+                    target_unit_price=Decimal("25"),
+                )
+            ]
+        )[0]
+
+        _sync_purchase_tender_line_defaults(propagated)
+
+        line.refresh_from_db()
+        self.assertEqual(line.expiry_date, expiry_date)
+        self.assertEqual(line.destination_warehouse, self.warehouse)
+        self.assertEqual(line.cost_center, "CC-HEADER")
+
     def test_merge_query_count_is_fixed_for_two_and_twelve_lines(self):
         def create_order(number, line_count):
             order = self._order(number)
@@ -361,3 +415,42 @@ class PurchaseLineMergeParityTests(TestCase):
         self.assertEqual((len(small_queries), len(large_queries)), (18, 18))
         self.assertEqual(small.lines.get().quantity, Decimal("2"))
         self.assertEqual(large.lines.get().quantity, Decimal("12"))
+
+    def test_tender_default_sync_query_count_does_not_grow_with_lines(self):
+        def prepared(number, line_count):
+            tender = PurchaseTender.objects.create(
+                company=self.company,
+                number=number,
+                title=number,
+                category=PurchaseTender.Category.OPEX,
+                tender_type=PurchaseTender.TenderType.OPEN,
+                award_strategy=self.award_strategy,
+                warehouse=self.warehouse,
+                close_date=timezone.localdate() + timedelta(days=7),
+                expiry_date=timezone.localdate() + timedelta(days=30),
+                cost_center="CC-SCALE",
+            )
+            PurchaseTenderLine.objects.bulk_create(
+                [
+                    PurchaseTenderLine(
+                        tender=tender,
+                        product=self.product,
+                        description=f"Scale line {index}",
+                        quantity=Decimal("1"),
+                        target_unit_price=Decimal("25"),
+                    )
+                    for index in range(line_count)
+                ]
+            )
+            return tender
+
+        small = prepared("PT-PLM-SYNC-SMALL", 2)
+        large = prepared("PT-PLM-SYNC-LARGE", 12)
+        with CaptureQueriesContext(connection) as small_queries:
+            _sync_purchase_tender_line_defaults(small)
+        with CaptureQueriesContext(connection) as large_queries:
+            _sync_purchase_tender_line_defaults(large)
+
+        self.assertEqual(len(large_queries), len(small_queries))
+        self.assertFalse(large.lines.filter(expiry_date__isnull=True).exists())
+        self.assertFalse(large.lines.filter(destination_warehouse__isnull=True).exists())

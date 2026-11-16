@@ -4368,6 +4368,13 @@ def document_pdf(request, entity, pk):
         line_queryset = line_queryset.select_related(*report["line_select_related"])
     queryset = queryset.prefetch_related(Prefetch(document["line_relation"], queryset=line_queryset))
     instance = get_object_or_404(queryset, pk=pk)
+    pdf_context_builder = document.get("pdf_context_builder")
+    if pdf_context_builder is not None:
+        if not callable(pdf_context_builder):
+            raise ImproperlyConfigured(
+                f"Document '{entity}' pdf_context_builder must be callable."
+            )
+        pdf_context_builder(instance, request.user)
     if entity == "sales":
         invoice_accounting = getattr(instance, "invoice_accounting", None)
         settlement_invoice = invoice_accounting.settlement_invoice if invoice_accounting else None

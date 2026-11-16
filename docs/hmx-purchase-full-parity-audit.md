@@ -31,7 +31,7 @@ was changed by this audit.
 | Blanket pricing and tax interaction | `core_purchase.blanketorderline` | `modules.purchase.BlanketOrderLine`, quotation-line trace fields, and `PurchaseOrderLinePricingProvenance` | ADAPTED | Tier pricing, draft price refresh, manual-price preservation, discount-formula traceability, generated free-product synchronization, tax-inclusive RFQ/PO propagation, and immutable approval/confirmation tax snapshots are covered. ERP adapts HMX's multi-tax relation to the local percentage-tax model; exact multi-tax, global-discount, and client-side onchange behavior remains deferred. |
 | Purchase Request conversion | `core_purchase.purchaserequest` + conversion wizards | `modules.purchase.services`, forms, and views | ADAPTED | RFQ, Blanket, Tender, Direct Purchase, line decisions, re-request paths, header/line timeline defaults, and structured cost-center propagation exist with bounded line handling. PR estimated cost takes precedence during RFQ creation; zero estimated cost falls back to the vendor tier with price trace and free-product benefit. The complete HMX client-side onchange matrix is not yet verified. |
 | RFQ and Purchase Order lifecycle | `core_purchase.purchaseorder` | `PurchaseQuotation`, core `PurchaseOrder`, and `PurchaseOrderControl` | ADAPTED | Draft RFQ through selected PO, approval, revision, receiving, vendor limits, cancellation effects, bounded multi-vendor RFQ comparison, direct-PO price refresh, rental controls, header/line timeline propagation, commercial-term snapshots, cost-center accounting propagation, editable Standard/Urgent/Follow-up RFQ mail, immutable delivery evidence, PDF attachment, and scoped Purchase prints are covered. |
-| Tender and award | `core_purchase.tender` / `tenderaward` | `PurchaseTender`, bids, allocations, and responses | ADAPTED | The 50/20/15/5/10 evaluation criteria, persisted component scores and vendor rank, detailed scoring UI, separate Apply Award Strategy action, single-rank allocation, 60/30/10 split allocation with capacity fill, manual-allocation preservation, response creation, rollback, and bounded fixed-query scoring now match the HMX contract. HMX's complete bid-comparison workspace, every client-side onchange, audit-log detail, and all extension-module Tender behavior remain to be verified. |
+| Tender and award | `core_purchase.tender` / `tenderaward` | `PurchaseTender`, linked RFQs, bids, allocations, and responses | ADAPTED | The 50/20/15/5/10 evaluation criteria, persisted component scores and vendor rank, HMX-shaped Bid Comparison and Bid Allocation Matrix workspaces, separate award actions, single-rank allocation, 60/30/10 split allocation with capacity fill, audited manual create/write/unlink, response creation, rollback, template/product onchange, timeline propagation, configured vendor-scope selection, Tender-linked RFQ creation, and RFQ-to-Bid submission now match the covered HMX contract. All extension-module Tender behavior remains to be verified. |
 | Vendor onboarding and legal documents | `core_purchase` vendor models | Purchase vendor profile/legal/prequalification/change-proposal models | ADAPTED | Blocking documents, expiry, review, prequalification, blacklist restoration, company-safe similar-vendor detection, parent-vendor validation, and approval-gated data changes are covered. HMX address subrecords and bank-account master records remain adapted to local Contact/Profile fields. |
 | Vendor pricelist | `core_purchase.vendorpricelist*` | Purchase pricelist, tier, amendment, import, and eligibility services | ADAPTED | Approval, tier lookup, eligibility, import, amendment, initial Blanket free-product synchronization, and bounded price traceability exist. The complete HMX edit-time/onchange behavior remains deferred. |
 | Vendor performance and transaction history | `core_purchase.vendorperformance*`, `vendortransactionhistory` | Purchase performance models/services/tasks and materialized transaction history | ADAPTED | Template validation, qualitative approval, pure scoring formulas, fully-received expected-versus-actual delivery evidence, immutable HMX-shaped score history, latest-vendor score, read-only history UI, daily bounded recalculation, and Vendor-scoped PO/Tender/receipt/return history are covered. HMX transient collection is adapted to idempotent materialization with immediate 100-row pages and keyset background backfill. HMX quality-control evidence remains adapted to local Goods Receipt quantities; additional extension-owned sources remain to be audited. |
@@ -39,7 +39,8 @@ was changed by this audit.
 | Purchase settings and document configuration | `core_purchase.purchasesettings` | `PurchaseSetting`, order type/template/remark/milestone models | ADAPTED | Major configuration records exist. PO Template duplication, immutable Remark Template snapshots, vendor-default payment-term toggle, vendor/billing-address snapshots, module-owned PO control fields, and required structured cost-center guards are covered. Every HMX UI dependency is not yet verified. |
 | Purchase Intelligence dashboards and analysis | `core_purchase` intelligence/report services | Purchase dashboard, AppHub dashboards, and `purchase_analysis` | ADAPTED | Bounded dashboards plus HMX-shaped PO and PR product-by-month analysis contracts exist. Confirmed/approved filters, real quantity/discount/tax/received measures, organization scope, and report endpoints are covered; every spend/risk/vendor insight visualization is not yet verified. |
 | Accounting and inventory extensions | `core_purchase_accounting`, `core_purchase_inventory`, `core_inventory_purchase` | Purchase accounting, receiving, transfer, return, and three-way-match services | ADAPTED | Core bill/receipt/return effects are covered. Every HMX extension view, consignment, procurement-planning, and stock-demand workflow is not verified. |
-| Budget, construction, manufacturing, intercompany, localization, PH/SG, MCP | extension modules listed above | Multiple ERP modules | NOT VERIFIED | Presence of similarly named records is not behavioral parity. Each extension requires its own owner, workflow, security, side-effect, UI, and rollback audit. |
+| Budget, construction, manufacturing, intercompany, localization, SG, MCP | extension modules listed above | Multiple ERP modules | NOT VERIFIED | Presence of similarly named records is not behavioral parity. Each extension requires its own owner, workflow, security, side-effect, UI, and rollback audit. |
+| Philippines Purchase print | `core_purchase_ph` | generic PDF hook + `modules.purchase.localized_reports` + Finance `CountryTaxProfile` | ADAPTED | PH taxpayer name, registered address, VAT REG TIN, printing actor/time, and configured software name/version are injected into Purchase Order and RFQ PDFs only when an active PH company tax profile exists. Focused DB test remains pending the reusable test-database rebuild. |
 
 ## Tender evaluation and award-strategy slice completed in this audit
 
@@ -72,6 +73,145 @@ was changed by this audit.
   workflow/document-completion tests, the Tender approval-cycle regression,
   and 3 generic document-registry tests passed on an isolated reusable test
   database. Native Scale Guard reported zero new SG001-SG004 findings.
+
+## Tender Bid Comparison workspace slice completed in this audit
+
+- Added a Purchase-owned Bid Comparison action that is available only from
+  Bid Selection, Awarded, and Closed, matching the HMX status gate without
+  adding a Tender branch to shared core views.
+- Added the HMX-shaped supplier cards, recommended-vendor ordering, quoted
+  value, average lead time, compliance and total scores, product-line matrix,
+  no-quote cells, and lowest-price markers.
+- Added line-item search plus print/PDF and Excel export controls. Awarding
+  remains an explicit workflow step: Bid Selection enters Award and opens the
+  allocation workspace, while Awarded reopens the same matrix when its
+  decision state still permits changes.
+- Kept view and action authorization company-scoped. An employee belonging to
+  another company receives no access to the Tender comparison.
+- Reads at most 500 Tender lines, 50 vendors, and 5,000 bid lines in fixed
+  queries. The 2-versus-12-vendor fixture confirms the comparison query count
+  does not grow with vendor count.
+- Apply Award Strategy audit details retain immutable per-line allocation
+  create/write/unlink-shaped values, vendor, quantity, strategy, price, score,
+  and rank inside the action audit.
+- Verification: 14/14 focused Tender scoring/comparison tests and 14/14 direct
+  Tender sourcing, document-completion, and generic document-registry tests
+  passed on the isolated reusable test database.
+
+## Tender Bid Allocation Matrix and allocation-audit slice completed in this audit
+
+- Added the HMX-shaped Award matrix with required quantity, every compliant
+  supplier candidate, rank, score, offered quantity, editable allocated
+  quantity, unit price, and live subtotal/balance feedback. The initial matrix
+  mirrors HMX by displaying each candidate's full offered quantity; subsequent
+  visits preserve saved winners and display zero for unallocated candidates.
+- Bid Selection can enter Award without a preselected manual winner, then
+  redirects to the matrix. The Tender document exposes a module-owned Bid
+  Allocation Matrix action, and Bid Comparison reopens the matrix from Award.
+- A matrix submission must contain exactly the displayed candidate identities,
+  rejects foreign, omitted, negative, over-offer, and over-precision values,
+  and requires each Tender line to be fully allocated before decision approval.
+- Saves one locked Tender atomically. Positive allocations are batch-created or
+  updated; zero quantities remove only exact, bounded allocation IDs belonging
+  to that Tender. Winner status, percentage, and response rows are synchronized
+  in the same transaction. An identical retry performs no allocation write and
+  creates no audit noise.
+- Records one immutable create/write/unlink Tender audit row per material
+  allocation change, including old/new quantity, Tender line, Bid line, vendor,
+  strategy, price, score, rank, award cycle, actor, and source. Automatic award
+  strategies use the same per-allocation audit helper. Generic allocation CRUD
+  is read-only so application writes cannot bypass the audited workflow.
+- The local model stores only positive allocation rows; zero candidates are
+  synthesized by the workspace. This is an architecture adaptation of HMX's
+  persisted zero rows. ERP also generates Tender Purchase Orders directly at
+  Close because its Tender Bid records are not draft RFQ records that can be
+  trimmed in place during matrix submission.
+- Bounds the workspace at 500 Tender lines, 50 vendors, and 5,000 candidates or
+  saved allocations. A 2-versus-12-vendor fixture confirms query count does not
+  grow with vendor count.
+- Verification: 19/19 focused Tender tests and 8/8 selected Tender sourcing,
+  approval-cycle, and generic document-registry regressions passed on the
+  isolated reusable test database.
+
+## Tender edit-time onchange and timeline slice completed in this audit
+
+- Corrected the `pt_expiry_period_days` contract: it now defaults the new
+  Tender `expiry_date`, matching HMX, instead of incorrectly overwriting the
+  bid `close_date`. Tender lines carry their own expiry date and destination
+  warehouse; the migration is additive and does not backfill ambiguous
+  historical close dates.
+- Added module-owned Order Template and Product onchange behavior. Selecting a
+  template sets its Order Type and visibly replaces the draft formset with the
+  bounded template lines; selecting a product fills the local product name as
+  description. The endpoint validates Purchase permissions, company scope,
+  active templates/products, and a 500-line limit.
+- Added bidirectional Tender header/line synchronization for expiry date and
+  destination warehouse. Header cost-center assignments fill only blank lines,
+  while a blank header can inherit the first configured line. Server-side batch
+  updates preserve the final values when JavaScript is unavailable.
+- Tender-to-PO generation now uses a line destination warehouse when provided,
+  with the Tender header warehouse as fallback. Purchase Request conversion
+  copies request expiry/warehouse context into the generated Tender lines.
+- Added a generic document `extra_js_assets` extension point in the shared
+  template; all Tender-specific behavior remains owned and registered by
+  `modules.purchase`.
+- Query-growth fixtures cover both template onchange and batch header/line
+  synchronization with small versus grown line sets. Vendor scope is derived
+  from the existing GS Shop configuration rather than duplicated: PQTE maps to
+  HMX Open Public, ITE or Invited Tender maps to Invited, and other Open
+  Tenders map to Open Registered.
+- Verification: 26/26 configuration and line-merge tests plus 27/27 Tender
+  scoring, sourcing, approval, and document-registry regressions passed on the
+  isolated reusable test database. Django system check and migration drift
+  check passed; native Scale Guard reported zero new findings.
+
+## Tender vendor-scope and RFQ submission slice completed in this audit
+
+- Reused existing configuration instead of adding a competing scope field:
+  `PurchaseTender.method`, `tender_type`, `TenderInvitation`, Vendor Profiles,
+  Document Completion, and `PurchaseSetting.rfq_vendor_eligibility` remain the
+  source of truth.
+- Open Registered exposes active Draft, Waiting Approval, and Confirmed Vendor
+  Profiles; Invited uses the Tender Invitation set and rechecks the configured
+  RFQ approval policy; Open Public uses only vendors that passed the existing
+  Tender Document Completion matrix.
+- Added immutable service-owned Tender and Tender-line provenance to RFQ
+  headers/lines. One atomic bounded batch creates at most 50 vendor RFQs with
+  at most 500 lines each, skips vendors with an active Tender RFQ, and records
+  the created and skipped vendor identities in Tender audit history.
+- Receiving a complete Tender RFQ creates or refreshes the vendor's submitted
+  Tender Bid and all Bid lines in the same transaction. Missing, duplicate,
+  zero-price, or foreign Tender-line responses roll back the RFQ transition.
+- Tender RFQs cannot use ordinary RFQ selection to create a PO. They must pass
+  Bid Selection, allocation, decision approval, award response, and Tender
+  Close. Tender and RFQ workspaces expose reciprocal scoped smart actions.
+- Submission visibility follows the configured bid window. Candidate and RFQ
+  creation fixtures confirm fixed query shape for 1 versus 11 vendors and 2
+  versus 12 Tender lines.
+- Verification: 8/8 focused Tender RFQ tests, 34/34 combined Tender RFQ,
+  scoring, and document-completion tests, and 11/11 RFQ plus generic document
+  registry tests passed. The broader approval suite is currently `NOT RUN`
+  after its reusable test database entered a migration rebuild; no PASS is
+  claimed for that interrupted gate.
+
+## Philippines Purchase report slice completed in this audit
+
+- Audited the complete `core_purchase_ph` owner. Its behavioral delta is a PH
+  Purchase Order/RFQ report with taxpayer, address, VAT REG TIN, printing
+  actor/time, and software identity metadata.
+- Reused Finance `CountryTaxProfile` as the authoritative company/country/TIN
+  configuration. `configuration.software_name` and `software_version` carry
+  the two HMX software fields; no duplicate Purchase settings were added.
+- Added one generic `pdf_context_builder` document extension point. The core
+  PDF renderer only consumes a generic localization metadata mapping; PH
+  profile lookup and mapping remain owned by `modules.purchase` and are
+  registered for PO and RFQ documents.
+- PDF rendering remains query-free. The profile is resolved once before
+  rendering and existing organization/view permission scoping remains intact.
+- Django system check and Python compilation pass. The focused database test
+  is present but `NOT RUN` while the reusable test database completes its
+  interrupted migration rebuild; this slice is not represented as fully
+  verified yet.
 
 ## Vendor Performance scoring slice completed in this audit
 
@@ -415,8 +555,9 @@ was changed by this audit.
 - Native Scale Guard SG001-SG004: PASS with zero new findings. The only reported
   item is an explicitly allowed SG003 for provisioning exactly three fixed mail
   template identities per company.
-- Pre-commit wrapper: NOT RUN because the host has no `pre-commit` executable;
-  the configured local hook is the native Scale Guard that was run directly.
+- Working-tree pre-commit wrapper: PASS. Native Scale Guard reported zero new
+  SG001-SG004 findings; the one reported SG003 is the existing allowed fixed
+  three-template provisioning loop.
 - Million-row benchmark and representative PostgreSQL EXPLAIN: NOT RUN.
 
 ## Honest completion state

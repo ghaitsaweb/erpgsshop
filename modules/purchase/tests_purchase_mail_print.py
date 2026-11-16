@@ -14,7 +14,6 @@ from django.utils import timezone
 
 from core.document_pdf import _purchase_terms_story, _styles
 from core.models import Company, Contact, Product, PurchaseOrder, PurchaseOrderLine
-
 from .models import (
     AwardStrategy,
     BlanketOrder,

@@ -417,6 +417,14 @@ class PurchaseQuotation(TimeStampedModel):
         null=True,
         related_name="quotations",
     )
+    tender = models.ForeignKey(
+        "PurchaseTender",
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="quotations",
+        editable=False,
+    )
     vendor = models.ForeignKey(Contact, on_delete=models.PROTECT, related_name="purchase_quotations")
     warehouse = models.ForeignKey(
         Warehouse,
@@ -441,7 +449,15 @@ class PurchaseQuotation(TimeStampedModel):
     class Meta:
         ordering = ["-issue_date"]
         constraints = [
-            models.UniqueConstraint(fields=["company", "number"], name="unique_purchase_quotation_number_per_company")
+            models.UniqueConstraint(fields=["company", "number"], name="unique_purchase_quotation_number_per_company"),
+            models.UniqueConstraint(
+                fields=["tender", "vendor"],
+                condition=models.Q(
+                    tender__isnull=False,
+                    status__in=["draft", "sent", "received"],
+                ),
+                name="unique_active_tender_rfq_vendor",
+            ),
         ]
 
     def __str__(self):
@@ -455,6 +471,11 @@ class PurchaseQuotation(TimeStampedModel):
             errors["vendor"] = "Vendor must belong to the selected company."
         if self.request_id and self.request.company_id != self.company_id:
             errors["request"] = "Purchase request must belong to the selected company."
+        if self.tender_id:
+            if self.tender.company_id != self.company_id:
+                errors["tender"] = "Tender must belong to the quotation company."
+            if self.request_id or self.blanket_order_id:
+                errors["tender"] = "A Tender RFQ cannot also belong to a Purchase Request or Blanket Order."
         if self.warehouse_id and self.warehouse.company_id != self.company_id:
             errors["warehouse"] = "Destination warehouse must belong to the selected company."
         if self.blanket_order_id:
@@ -740,7 +761,8 @@ class PurchaseTender(PurchaseCostCenterStructuredFields, TimeStampedModel):
     cost_center = models.CharField(max_length=80, blank=True)
     publish_date = models.DateField(blank=True, null=True)
     bid_start_date = models.DateField(blank=True, null=True)
-    close_date = models.DateField(blank=True)
+    close_date = models.DateField(blank=True, null=True)
+    expiry_date = models.DateField(blank=True, null=True)
     validity_days = models.PositiveIntegerField(default=30)
     budget_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     evaluation_price_weight = models.PositiveSmallIntegerField(
@@ -810,20 +832,20 @@ class PurchaseTender(PurchaseCostCenterStructuredFields, TimeStampedModel):
             raise ValidationError(errors)
 
     def apply_expiry_default(self):
-        if self.close_date or not self.company_id:
+        if self.expiry_date or not self.company_id:
             return
         period_days = PurchaseSetting.objects.filter(company_id=self.company_id).values_list(
             "pt_expiry_period_days",
             flat=True,
         ).first()
         if period_days:
-            self.close_date = timezone.localdate() + timedelta(days=period_days)
+            self.expiry_date = timezone.localdate() + timedelta(days=period_days)
 
     def save(self, *args, **kwargs):
         self.apply_expiry_default()
         update_fields = kwargs.get("update_fields")
-        if update_fields is not None and self.close_date:
-            kwargs["update_fields"] = set(update_fields) | {"close_date"}
+        if update_fields is not None and self.expiry_date:
+            kwargs["update_fields"] = set(update_fields) | {"expiry_date"}
         return super().save(*args, **kwargs)
 
 
@@ -3763,6 +3785,14 @@ class PurchaseQuotationLine(TimeStampedModel):
         null=True,
         related_name="quotation_lines",
     )
+    tender_line = models.ForeignKey(
+        "PurchaseTenderLine",
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="quotation_lines",
+        editable=False,
+    )
     product = models.ForeignKey(Product, on_delete=models.PROTECT, blank=True, null=True, related_name="purchase_quotation_lines")
     description = models.CharField(max_length=240)
     specification = models.TextField(blank=True)
@@ -3871,6 +3901,11 @@ class PurchaseQuotationLine(TimeStampedModel):
         errors = {}
         if self.request_line_id and self.quotation.request_id and self.request_line.request_id != self.quotation.request_id:
             errors["request_line"] = "The request line must belong to the quotation's purchase request."
+        if self.tender_line_id:
+            if not self.quotation.tender_id or self.tender_line.tender_id != self.quotation.tender_id:
+                errors["tender_line"] = "The Tender line must belong to the quotation's Tender."
+            if self.request_line_id or self.blanket_order_line_id:
+                errors["tender_line"] = "A Tender RFQ line cannot also reference another sourcing document."
         if self.product_id and self.product.company_id != self.quotation.company_id:
             errors["product"] = "Product must belong to the quotation company."
         if self.quantity <= 0:
@@ -4157,12 +4192,56 @@ class PurchaseTenderLine(PurchaseCostCenterStructuredFields, TimeStampedModel):
     target_unit_price = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     cost_center = models.CharField(max_length=80, blank=True)
     delivery_date = models.DateField(blank=True, null=True)
+    expiry_date = models.DateField(blank=True, null=True)
+    destination_warehouse = models.ForeignKey(
+        Warehouse,
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name="purchase_tender_lines",
+    )
 
     class Meta:
         ordering = ["id"]
 
     def __str__(self):
         return f"{self.tender} - {self.description}"
+
+    def clean(self):
+        errors = {}
+        if self.quantity <= 0:
+            errors["quantity"] = "Quantity must be greater than zero."
+        if self.target_unit_price < 0:
+            errors["target_unit_price"] = "Target Unit Price cannot be negative."
+        if self.product_id and self.tender_id and self.product.company_id != self.tender.company_id:
+            errors["product"] = "Product must belong to the Tender company."
+        if (
+            self.destination_warehouse_id
+            and self.tender_id
+            and self.destination_warehouse.company_id != self.tender.company_id
+        ):
+            errors["destination_warehouse"] = (
+                "Destination Warehouse must belong to the Tender company."
+            )
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        if self.tender_id:
+            self.expiry_date = self.expiry_date or self.tender.expiry_date
+            self.destination_warehouse_id = (
+                self.destination_warehouse_id or self.tender.warehouse_id
+            )
+        if self.product_id:
+            self.description = self.description or self.product.name
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None:
+            kwargs["update_fields"] = set(update_fields) | {
+                "description",
+                "expiry_date",
+                "destination_warehouse",
+            }
+        return super().save(*args, **kwargs)
 
 
 class TenderBidLine(TimeStampedModel):

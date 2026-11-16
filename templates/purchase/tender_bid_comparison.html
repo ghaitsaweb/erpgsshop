@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}{{ title }} · ERP GSSHOP{% endblock %}
+{% block page_title %}Bid Comparison{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{% static 'purchase/css/tender_bid_comparison.css' %}">{% endblock %}
+{% block content %}
+  <section
+    class="tender-comparison"
+    data-tender-comparison
+    data-export-name="tender-bid-comparison-{{ comparison.code|slugify }}"
+  >
+    <header class="tender-comparison__topbar">
+      <a
+        class="tender-comparison__back"
+        href="{% url 'entity_edit' 'purchase-tenders' tender.pk %}"
+        aria-label="Back to Tender {{ tender.number }}"
+      >←</a>
+      <div class="tender-comparison__identity">
+        <span>Tender ID: #{{ comparison.code }}</span>
+        <small>{{ comparison.status_display }}</small>
+      </div>
+      <label class="tender-comparison__search">
+        <span aria-hidden="true">⌕</span>
+        <input type="search" placeholder="Search line items…" autocomplete="off" data-comparison-search>
+      </label>
+    </header>
+
+    <div class="tender-comparison__heading">
+      <div>
+        <p class="eyebrow">Tender evaluation</p>
+        <h2>Bid Comparison Analysis</h2>
+        <p>{{ comparison.description }}</p>
+      </div>
+      <div class="tender-comparison__actions">
+        <button class="btn btn-secondary" type="button" data-export-pdf>Export PDF</button>
+        <button class="btn btn-secondary" type="button" data-export-excel>Export Excel</button>
+        {% if comparison.can_award %}
+          {% if comparison.award_action == 'manage-award-allocation' %}
+            <a class="btn btn-primary" href="{% url 'purchase_tender_award_allocation' tender.pk %}">{{ comparison.award_label }}</a>
+          {% else %}
+            <form method="post" action="{% url 'purchase_tender_start_award' tender.pk %}">
+              {% csrf_token %}
+              <button class="btn btn-primary" type="submit">{{ comparison.award_label }}</button>
+            </form>
+          {% endif %}
+        {% elif comparison.award_action %}
+          <button class="btn btn-primary" type="button" disabled>{{ comparison.award_label }}</button>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="tender-comparison__metrics">
+      <article><span>Suppliers</span><strong>{{ comparison.vendor_count }}</strong></article>
+      <article><span>Line items</span><strong>{{ comparison.line_count }}</strong></article>
+      <article><span>Currency</span><strong>{{ comparison.currency }}</strong></article>
+      <article><span>Stage</span><strong>{{ comparison.status_display }}</strong></article>
+    </div>
+
+    <section class="tender-comparison__vendors" aria-label="Supplier ranking">
+      {% for vendor in comparison.vendors %}
+        <article class="tender-vendor-card{% if vendor.recommended %} is-recommended{% endif %}">
+          {% if vendor.recommended %}<span class="tender-vendor-card__recommended">Recommended</span>{% endif %}
+          <header>
+            <span class="tender-vendor-card__avatar">{{ vendor.sequence_label }}</span>
+            <div><strong>{{ vendor.vendor_name }}</strong><small>Rank {{ vendor.rank|default:"—" }}</small></div>
+            <em>{{ vendor.score_display }}</em>
+          </header>
+          <p>Total Quoted Value</p>
+          <h3>{{ vendor.total_quote_display }}</h3>
+          <dl>
+            <div><dt>Avg. Lead Time</dt><dd>{{ vendor.avg_lead_time_display }}</dd></div>
+            <div><dt>Compliance</dt><dd>{{ vendor.compliance_display }}</dd></div>
+          </dl>
+        </article>
+      {% empty %}
+        <article class="tender-comparison__empty-card">
+          <strong>No submitted bids</strong>
+          <span>Submitted vendor bids will appear here after evaluation.</span>
+        </article>
+      {% endfor %}
+    </section>
+
+    <section class="tender-comparison__breakdown">
+      <header>
+        <div><p class="eyebrow">Commercial analysis</p><h3>Line Item Breakdown</h3></div>
+        <span class="tender-comparison__legend"><i></i> Lowest Price</span>
+      </header>
+      <div class="tender-comparison__table-wrap">
+        <table data-comparison-table>
+          <thead>
+            <tr>
+              <th>Line Item Details</th>
+              {% for vendor in comparison.vendors %}<th>{{ vendor.vendor_name }}</th>{% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in comparison.line_rows %}
+              <tr
+                data-comparison-row
+                data-search="{{ row.product_name|lower }} {{ row.sku|lower }} {{ row.description|lower }}"
+              >
+                <th class="tender-comparison__line">
+                  <strong>{{ row.product_name }}</strong>
+                  {% if row.sku %}<span>SKU: {{ row.sku }}</span>{% endif %}
+                  {% if row.description and row.description != row.product_name %}<span>{{ row.description }}</span>{% endif %}
+                  <em>Qty: {{ row.quantity_display }}</em>
+                </th>
+                {% for cell in row.cells %}
+                  <td class="tender-comparison__quote{% if cell.is_lowest_price %} is-best{% endif %}{% if not cell.quoted %} is-empty{% endif %}">
+                    {% if cell.quoted %}
+                      <div><span>Unit Price</span><strong>{{ cell.unit_price_display }}</strong></div>
+                      <div class="tender-comparison__quote-total"><span>Total</span><strong>{{ cell.total_display }}</strong></div>
+                      <small><span>{{ cell.quantity_display }}</span><span>{{ cell.lead_time_display }}</span><span>{{ cell.score_display }}</span></small>
+                    {% else %}
+                      <span class="tender-comparison__no-quote">No quote</span>
+                    {% endif %}
+                  </td>
+                {% endfor %}
+              </tr>
+            {% empty %}
+              <tr><td colspan="{{ comparison.vendor_count|add:1 }}" class="tender-comparison__empty-row">No Tender line items to compare.</td></tr>
+            {% endfor %}
+            <tr class="tender-comparison__search-empty" data-comparison-empty hidden>
+              <td colspan="{{ comparison.vendor_count|add:1 }}">No line items match the current search.</td>
+            </tr>
+          </tbody>
+          {% if comparison.vendors %}
+            <tfoot>
+              <tr>
+                <th>Total quoted</th>
+                {% for vendor in comparison.vendors %}<td>{{ vendor.total_quote_display }}</td>{% endfor %}
+              </tr>
+            </tfoot>
+          {% endif %}
+        </table>
+      </div>
+    </section>
+  </section>
+{% endblock %}
+{% block extra_js %}<script defer src="{% static 'purchase/js/tender_bid_comparison.js' %}"></script>{% endblock %}

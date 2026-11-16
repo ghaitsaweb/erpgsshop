@@ -589,6 +589,14 @@ def _invitation_tender(queryset, source):
     return queryset.filter(pk=source.tender_id)
 
 
+def _tender_quotations(queryset, source):
+    return queryset.filter(tender_id=source.pk)
+
+
+def _quotation_tender(queryset, source):
+    return queryset.filter(pk=source.tender_id) if source.tender_id else queryset.none()
+
+
 def _tender_documents(queryset, source):
     return queryset.filter(tender_id=source.pk)
 
@@ -1040,6 +1048,23 @@ EXPLICIT_SMART_ACTIONS = (
         label="Tender",
         icon="↩",
         filter_queryset=_invitation_tender,
+    ),
+    SmartActionDefinition(
+        key="purchase-tenders.quotations",
+        source_entity="purchase-tenders",
+        target_entity="purchase-quotations",
+        label="Quotations",
+        icon="▤",
+        filter_queryset=_tender_quotations,
+    ),
+    SmartActionDefinition(
+        key="purchase-quotations.tender",
+        source_entity="purchase-quotations",
+        target_entity="purchase-tenders",
+        label="Tender",
+        icon="↩",
+        filter_queryset=_quotation_tender,
+        is_available=lambda quotation: bool(quotation.tender_id),
     ),
     SmartActionDefinition(
         key="purchase-tenders.documents",

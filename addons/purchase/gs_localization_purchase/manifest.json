@@ -1,0 +1,13 @@
+{
+  "slug": "gs-localization-purchase",
+  "name": "GS Localization Purchase",
+  "category": "Purchase Add-ons",
+  "summary": "Country-aware Purchase tax selection matching HMX core_localization_purchase ownership.",
+  "icon": "LP",
+  "version": "1.0.0",
+  "status": "beta",
+  "enabled": true,
+  "sequence": 10,
+  "dependencies": ["purchase", "accounting"],
+  "django_app": "addons.purchase.gs_localization_purchase.apps.GSLocalizationPurchaseConfig"
+}

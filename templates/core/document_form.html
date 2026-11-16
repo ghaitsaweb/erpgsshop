@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% load gsshop_developer %}
+{% load gsshop_developer static %}
 {% block title %}{{ mode }} {{ config.singular }} · ERP GSSHOP{% endblock %}
 {% block page_title %}{{ config.singular }}{% endblock %}
 {% block content %}
@@ -561,4 +561,5 @@ Regards,
       });
     })();
   </script>
+  {% for asset in document.extra_js_assets %}<script defer src="{% static asset %}"></script>{% endfor %}
 {% endblock %}

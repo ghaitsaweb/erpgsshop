@@ -5,6 +5,11 @@ from . import views
 
 urlpatterns = [
     path(
+        "api/purchase-tenders/onchange/",
+        views.purchase_tender_onchange,
+        name="purchase_tender_onchange",
+    ),
+    path(
         "app/purchase-reports/order-analysis/",
         views.purchase_order_analysis,
         name="purchase_order_analysis",
@@ -18,6 +23,26 @@ urlpatterns = [
         "app/purchase-order-templates/duplicate/",
         views.purchase_order_template_duplicate,
         name="purchase_order_template_duplicate",
+    ),
+    path(
+        "app/purchase-tenders/<int:pk>/bid-comparison/",
+        views.purchase_tender_bid_comparison,
+        name="purchase_tender_bid_comparison",
+    ),
+    path(
+        "app/purchase-tenders/<int:pk>/award/start/",
+        views.purchase_tender_start_award,
+        name="purchase_tender_start_award",
+    ),
+    path(
+        "app/purchase-tenders/<int:pk>/submit-quotation/",
+        views.purchase_tender_submit_quotation,
+        name="purchase_tender_submit_quotation",
+    ),
+    path(
+        "app/purchase-tenders/<int:pk>/award-allocation/",
+        views.purchase_tender_award_allocation,
+        name="purchase_tender_award_allocation",
     ),
     path(
         "app/purchase-quotations/compare/",

@@ -2,6 +2,10 @@
 
 ## Mandatory skill usage
 
+- Use `$hmx-addon-mirroring` whenever HMX parity work adds, ports, changes, or
+  audits behavior owned by an HMX add-on. Preserve one physical GS add-on per
+  HMX add-on owner and use the `gs_` package prefix; do not fold an extension
+  such as `core_purchase_ph` into the base Purchase module.
 - Use `$erp-modular-architecture` whenever adding or changing an ERP module,
   model relationship, entity registry, menu, smart action, workflow, permission,
   or module-owned UI. Standard behavior must be supplied through generic

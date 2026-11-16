@@ -1325,3 +1325,328 @@ class InventoryReservationAllocation(models.Model):
 
     def __str__(self):
         return f"{self.reservation} · {self.balance} · {self.quantity}"
+
+
+class InventoryPicking(TimeStampedModel):
+    """Outbound picking adapted from the HMX Transfer/Demand workflow."""
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        CONFIRMED = "confirmed", "Waiting Availability"
+        PARTIAL = "partially_available", "Partially Available"
+        READY = "ready", "Ready"
+        DONE = "done", "Done"
+        CANCELLED = "cancelled", "Cancelled"
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.PROTECT,
+        related_name="inventory_pickings",
+    )
+    branch = models.ForeignKey(
+        Branch,
+        on_delete=models.PROTECT,
+        related_name="inventory_pickings",
+        blank=True,
+        null=True,
+    )
+    warehouse = models.ForeignKey(
+        Warehouse,
+        on_delete=models.PROTECT,
+        related_name="inventory_pickings",
+    )
+    reference = models.CharField(max_length=80)
+    scheduled_date = models.DateField(default=timezone.localdate, db_index=True)
+    responsible = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="responsible_inventory_pickings",
+        blank=True,
+        null=True,
+    )
+    destination_name = models.CharField(max_length=160, blank=True)
+    destination_address = models.TextField(blank=True)
+    status = models.CharField(
+        max_length=24,
+        choices=Status.choices,
+        default=Status.DRAFT,
+        db_index=True,
+    )
+    backorder_of = models.ForeignKey(
+        "self",
+        on_delete=models.PROTECT,
+        related_name="backorders",
+        blank=True,
+        null=True,
+        editable=False,
+    )
+    notes = models.TextField(blank=True)
+    confirmed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="confirmed_inventory_pickings",
+        blank=True,
+        null=True,
+        editable=False,
+    )
+    confirmed_at = models.DateTimeField(blank=True, null=True, editable=False)
+    availability_checked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="availability_checked_inventory_pickings",
+        blank=True,
+        null=True,
+        editable=False,
+    )
+    availability_checked_at = models.DateTimeField(
+        blank=True,
+        null=True,
+        editable=False,
+    )
+    completed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="completed_inventory_pickings",
+        blank=True,
+        null=True,
+        editable=False,
+    )
+    completed_at = models.DateTimeField(blank=True, null=True, editable=False)
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="cancelled_inventory_pickings",
+        blank=True,
+        null=True,
+        editable=False,
+    )
+    cancelled_at = models.DateTimeField(blank=True, null=True, editable=False)
+
+    organization_branch_lookup = "branch"
+
+    class Meta:
+        ordering = ["-scheduled_date", "-created_at", "-pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "reference"],
+                name="unique_inventory_picking_reference",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["company", "branch", "warehouse", "status"],
+                name="inv_picking_scope_idx",
+            ),
+            models.Index(
+                fields=["company", "scheduled_date", "status"],
+                name="inv_picking_schedule_idx",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.warehouse_id:
+            if self.warehouse.company_id != self.company_id:
+                errors["warehouse"] = "Picking warehouse must belong to the selected company."
+            if self.warehouse.branch_id != self.branch_id:
+                errors["branch"] = "Picking branch must match its warehouse branch."
+        if self.backorder_of_id and (
+            self.backorder_of.company_id != self.company_id
+            or self.backorder_of.warehouse_id != self.warehouse_id
+        ):
+            errors["backorder_of"] = "Backorder must keep the original company and warehouse."
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        if self.warehouse_id:
+            self.company_id = self.warehouse.company_id
+            self.branch_id = self.warehouse.branch_id
+        if not self.reference:
+            self.reference = f"PICK-{timezone.localdate():%Y%m%d}-{uuid4().hex[:8].upper()}"
+        if self.pk:
+            persisted = type(self).objects.filter(pk=self.pk).values(
+                "company_id",
+                "branch_id",
+                "warehouse_id",
+                "reference",
+                "backorder_of_id",
+                "status",
+            ).first()
+            immutable_fields = (
+                "company_id",
+                "branch_id",
+                "warehouse_id",
+                "reference",
+                "backorder_of_id",
+            )
+            if persisted and persisted["status"] != self.Status.DRAFT and any(
+                persisted[field_name] != getattr(self, field_name)
+                for field_name in immutable_fields
+            ):
+                raise ValidationError("Confirmed Picking scope is immutable.")
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.status != self.Status.DRAFT:
+            raise ValidationError("Only Draft Pickings can be deleted.")
+        return super().delete(*args, **kwargs)
+
+    def __str__(self):
+        return self.reference
+
+
+class InventoryPickingLine(TimeStampedModel):
+    picking = models.ForeignKey(
+        InventoryPicking,
+        on_delete=models.CASCADE,
+        related_name="lines",
+    )
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.PROTECT,
+        related_name="inventory_picking_lines",
+    )
+    location = models.ForeignKey(
+        InventoryLocation,
+        on_delete=models.PROTECT,
+        related_name="inventory_picking_lines",
+        blank=True,
+        null=True,
+        help_text="Optional exact source location; blank uses location priority.",
+    )
+    lot = models.ForeignKey(
+        InventoryLotSerial,
+        on_delete=models.PROTECT,
+        related_name="inventory_picking_lines",
+        blank=True,
+        null=True,
+    )
+    requested_quantity = models.DecimalField(max_digits=18, decimal_places=3)
+    reserved_quantity = models.DecimalField(
+        max_digits=18,
+        decimal_places=3,
+        default=0,
+        editable=False,
+    )
+    done_quantity = models.DecimalField(max_digits=18, decimal_places=3, default=0)
+    current_reservation = models.ForeignKey(
+        InventoryReservation,
+        on_delete=models.PROTECT,
+        related_name="current_picking_lines",
+        blank=True,
+        null=True,
+        editable=False,
+    )
+
+    organization_branch_lookup = "picking__branch"
+
+    class Meta:
+        ordering = ["picking_id", "pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["picking", "product", "location", "lot"],
+                name="unique_inventory_picking_position",
+                nulls_distinct=False,
+            ),
+            models.CheckConstraint(
+                condition=models.Q(requested_quantity__gt=0),
+                name="inventory_picking_requested_positive",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(reserved_quantity__gte=0),
+                name="inventory_picking_reserved_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(done_quantity__gte=0),
+                name="inventory_picking_done_nonnegative",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.product_id:
+            if self.product.company_id != self.picking.company_id:
+                errors["product"] = "Picking product must belong to the Picking company."
+            elif self.product.product_type != Product.ProductType.STOCKABLE:
+                errors["product"] = "Only stockable products can be picked."
+        if self.location_id:
+            if self.location.warehouse_id != self.picking.warehouse_id:
+                errors["location"] = "Source location must belong to the Picking warehouse."
+            if self.location.usage != InventoryLocation.Usage.INTERNAL:
+                errors["location"] = "Picking requires an Internal source location."
+        if self.lot_id and (
+            self.lot.company_id != self.picking.company_id
+            or self.lot.product_id != self.product_id
+        ):
+            errors["lot"] = "Lot/serial must match the Picking company and product."
+        if self.requested_quantity is not None and self.requested_quantity <= ZERO:
+            errors["requested_quantity"] = "Requested quantity must be greater than zero."
+        if self.done_quantity is not None and self.done_quantity < ZERO:
+            errors["done_quantity"] = "Done quantity cannot be negative."
+        if self.done_quantity is not None and self.done_quantity > self.reserved_quantity:
+            errors["done_quantity"] = "Done quantity cannot exceed reserved quantity."
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            persisted = type(self).objects.filter(pk=self.pk).values(
+                "picking_id",
+                "product_id",
+                "location_id",
+                "lot_id",
+                "requested_quantity",
+                "reserved_quantity",
+                "current_reservation_id",
+            ).first()
+            immutable_fields = (
+                "picking_id",
+                "product_id",
+                "location_id",
+                "lot_id",
+                "requested_quantity",
+                "current_reservation_id",
+            )
+            picking_status = InventoryPicking.objects.filter(
+                pk=self.picking_id
+            ).values_list("status", flat=True).first()
+            if persisted and (
+                persisted["reserved_quantity"] != self.reserved_quantity
+                or persisted["current_reservation_id"] != self.current_reservation_id
+            ):
+                raise ValidationError("Picking reservation fields are system managed.")
+            if (
+                persisted
+                and picking_status != InventoryPicking.Status.DRAFT
+                and any(
+                    persisted[field_name] != getattr(self, field_name)
+                    for field_name in immutable_fields
+                )
+            ):
+                raise ValidationError("Confirmed Picking line demand is immutable.")
+        else:
+            picking_status = self.picking.status
+        if picking_status not in {
+            InventoryPicking.Status.DRAFT,
+            InventoryPicking.Status.CONFIRMED,
+            InventoryPicking.Status.PARTIAL,
+            InventoryPicking.Status.READY,
+        }:
+            raise ValidationError("Picking lines cannot be edited in this status.")
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        status = InventoryPicking.objects.filter(pk=self.picking_id).values_list(
+            "status", flat=True
+        ).first()
+        if status != InventoryPicking.Status.DRAFT:
+            raise ValidationError("Only Draft Picking lines can be deleted.")
+        return super().delete(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.picking} · {self.product} · {self.requested_quantity}"

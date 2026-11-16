@@ -1,6 +1,7 @@
 from collections import defaultdict
 from datetime import date, timedelta
 from decimal import Decimal
+from uuid import uuid4
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
@@ -13,6 +14,8 @@ from .models import (
     InventoryBalanceEvent,
     InventoryLocation,
     InventoryLotSerial,
+    InventoryPicking,
+    InventoryPickingLine,
     InventoryReorderRule,
     InventoryReservation,
     InventoryReservationAllocation,
@@ -31,6 +34,9 @@ MAX_STOCK_COUNT_LINES = 1000
 MAX_STOCK_COUNT_LOCATIONS = 100
 MAX_STOCK_COUNT_PRODUCTS = 1000
 MAX_RESERVATION_CANDIDATES = 1000
+MAX_RESERVATION_BATCH = 250
+MAX_BATCH_RESERVATION_CANDIDATES = 5000
+MAX_PICKING_LINES = 250
 DEFAULT_LOCATION_ROOT = "Stock"
 DEFAULT_LOCATION_NAME = "Main Stock"
 
@@ -1175,6 +1181,828 @@ def consume_inventory_reservation_action(instance, actor):
 
 def cancel_inventory_reservation_action(instance, actor):
     return cancel_inventory_reservation(instance.pk, actor)
+
+
+def _bounded_reservation_ids(reservations):
+    reservation_ids = sorted(
+        {
+            int(getattr(reservation, "pk", reservation))
+            for reservation in reservations
+            if getattr(reservation, "pk", reservation)
+        }
+    )
+    if len(reservation_ids) > MAX_RESERVATION_BATCH:
+        raise ValidationError(
+            f"Reservation batch operations support at most {MAX_RESERVATION_BATCH} "
+            "requests per transaction."
+        )
+    if not reservation_ids:
+        raise ValidationError("Select at least one Reservation.")
+    return reservation_ids
+
+
+@transaction.atomic
+def reserve_inventory_batch(reservations, actor, *, allow_zero=False):
+    """Reserve a bounded demand batch with fixed-query row locking."""
+    if actor is None:
+        raise ValidationError("A user is required to reserve inventory.")
+    reservation_ids = _bounded_reservation_ids(reservations)
+    locked = list(
+        InventoryReservation.objects.select_for_update(of=("self",))
+        .filter(pk__in=reservation_ids)
+        .select_related("product", "warehouse", "location", "lot")
+        .order_by("pk")
+    )
+    if len(locked) != len(reservation_ids):
+        raise ValidationError("One or more Reservations no longer exist.")
+    if any(row.status != InventoryReservation.Status.DRAFT for row in locked):
+        raise ValidationError("Batch reservation requires Draft Reservations.")
+    if any(row.product.product_type != Product.ProductType.STOCKABLE for row in locked):
+        raise ValidationError("Only stockable products can be reserved.")
+
+    warehouse_ids = sorted({row.warehouse_id for row in locked})
+    list(
+        Warehouse.objects.select_for_update(of=("self",))
+        .filter(pk__in=warehouse_ids)
+        .order_by("pk")
+    )
+    _assert_warehouses_not_frozen(warehouse_ids)
+
+    scope_filter = Q(pk__in=[])
+    for row in locked:
+        scope_filter |= Q(
+            company_id=row.company_id,
+            warehouse_id=row.warehouse_id,
+            product_id=row.product_id,
+        )
+    candidates = list(
+        InventoryStockBalance.objects.select_for_update(of=("self",))
+        .filter(
+            scope_filter,
+            ownership_type=InventoryStockBalance.OwnershipType.COMPANY,
+            owner_vendor__isnull=True,
+            location__usage=InventoryLocation.Usage.INTERNAL,
+            location__active=True,
+            location__is_expired_location=False,
+            qty_available__gt=ZERO,
+        )
+        .filter(
+            Q(lot__isnull=True)
+            | Q(
+                lot__status=InventoryLotSerial.Status.ACTIVE,
+                lot__expiration_date__isnull=True,
+            )
+            | Q(
+                lot__status=InventoryLotSerial.Status.ACTIVE,
+                lot__expiration_date__gte=timezone.localdate(),
+            )
+        )
+        .select_related("location", "lot")
+        .order_by("pk")[: MAX_BATCH_RESERVATION_CANDIDATES + 1]
+    )
+    if len(candidates) > MAX_BATCH_RESERVATION_CANDIDATES:
+        raise ValidationError(
+            f"Batch allocation supports at most {MAX_BATCH_RESERVATION_CANDIDATES} "
+            "candidate stock positions. Narrow the Picking location or lot scope."
+        )
+    _assert_warehouses_not_frozen(warehouse_ids)
+
+    candidates_by_scope = defaultdict(list)
+    for balance in candidates:
+        candidates_by_scope[
+            (balance.company_id, balance.warehouse_id, balance.product_id)
+        ].append(balance)
+    for scope_candidates in candidates_by_scope.values():
+        scope_candidates.sort(key=_reservation_candidate_sort_key)
+
+    now = timezone.now()
+    changed_balances = {}
+    allocations = []
+    changed_reservations = []
+    for reservation in locked:
+        remaining = reservation.requested_quantity
+        scope_candidates = candidates_by_scope.get(
+            (reservation.company_id, reservation.warehouse_id, reservation.product_id),
+            (),
+        )
+        for balance in scope_candidates:
+            if reservation.location_id and balance.location_id != reservation.location_id:
+                continue
+            if reservation.lot_id and balance.lot_id != reservation.lot_id:
+                continue
+            available = min(
+                balance.qty_available,
+                balance.qty_on_hand - balance.qty_reserved,
+            )
+            if available <= ZERO:
+                continue
+            quantity = min(remaining, available)
+            balance.qty_reserved += quantity
+            balance.qty_available = balance.qty_on_hand - balance.qty_reserved
+            balance.updated_at = now
+            changed_balances[balance.pk] = balance
+            allocations.append(
+                InventoryReservationAllocation(
+                    reservation=reservation,
+                    balance=balance,
+                    quantity=quantity,
+                    allocated_at=now,
+                )
+            )
+            remaining -= quantity
+            if remaining <= ZERO:
+                break
+        reserved_quantity = reservation.requested_quantity - remaining
+        if reserved_quantity <= ZERO:
+            if allow_zero:
+                continue
+            raise ValidationError(
+                f"No available stock matches Reservation {reservation.reference}."
+            )
+        if remaining > ZERO and not reservation.allow_partial:
+            raise ValidationError(
+                f"Insufficient available stock for Reservation {reservation.reference}."
+            )
+        reservation.reserved_quantity = reserved_quantity
+        reservation.status = (
+            InventoryReservation.Status.RESERVED
+            if remaining <= ZERO
+            else InventoryReservation.Status.PARTIAL
+        )
+        reservation.reserved_by = actor
+        reservation.reserved_at = now
+        reservation.updated_at = now
+        changed_reservations.append(reservation)
+
+    if changed_balances:
+        InventoryStockBalance.objects.bulk_update(
+            list(changed_balances.values()),
+            ["qty_reserved", "qty_available", "updated_at"],
+            batch_size=500,
+        )
+    if allocations:
+        InventoryReservationAllocation.objects.bulk_create(
+            allocations,
+            batch_size=500,
+        )
+    if changed_reservations:
+        InventoryReservation.objects.bulk_update(
+            changed_reservations,
+            [
+                "reserved_quantity",
+                "status",
+                "reserved_by",
+                "reserved_at",
+                "updated_at",
+            ],
+            batch_size=MAX_RESERVATION_BATCH,
+        )
+    return {row.pk: row for row in locked}
+
+
+@transaction.atomic
+def release_inventory_reservations_batch(reservations, actor):
+    if actor is None:
+        raise ValidationError("A user is required to release Reservations.")
+    reservation_ids = _bounded_reservation_ids(reservations)
+    locked = list(
+        InventoryReservation.objects.select_for_update(of=("self",))
+        .filter(pk__in=reservation_ids)
+        .order_by("pk")
+    )
+    if len(locked) != len(reservation_ids):
+        raise ValidationError("One or more Reservations no longer exist.")
+    active_statuses = {
+        InventoryReservation.Status.RESERVED,
+        InventoryReservation.Status.PARTIAL,
+    }
+    if any(row.status not in active_statuses for row in locked):
+        raise ValidationError("Batch release requires active Reservations.")
+    warehouse_ids = sorted({row.warehouse_id for row in locked})
+    list(
+        Warehouse.objects.select_for_update(of=("self",))
+        .filter(pk__in=warehouse_ids)
+        .order_by("pk")
+    )
+    _assert_warehouses_not_frozen(warehouse_ids)
+    allocations = list(
+        InventoryReservationAllocation.objects.select_for_update(of=("self",))
+        .filter(reservation_id__in=reservation_ids)
+        .order_by("balance_id", "pk")[: MAX_BATCH_RESERVATION_CANDIDATES + 1]
+    )
+    if len(allocations) > MAX_BATCH_RESERVATION_CANDIDATES:
+        raise ValidationError("Reservation allocation batch exceeds the supported limit.")
+    allocation_totals = defaultdict(Decimal)
+    release_by_balance = defaultdict(Decimal)
+    for allocation in allocations:
+        allocation_totals[allocation.reservation_id] += allocation.quantity
+        release_by_balance[allocation.balance_id] += allocation.quantity
+    if any(
+        allocation_totals[row.pk] != row.reserved_quantity
+        for row in locked
+    ):
+        raise ValidationError("Reservation allocation totals changed unexpectedly.")
+    balances = list(
+        InventoryStockBalance.objects.select_for_update(of=("self",))
+        .filter(pk__in=sorted(release_by_balance))
+        .order_by("pk")
+    )
+    if len(balances) != len(release_by_balance):
+        raise ValidationError("One or more reserved stock positions no longer exist.")
+    _assert_warehouses_not_frozen(warehouse_ids)
+    now = timezone.now()
+    for balance in balances:
+        quantity = release_by_balance[balance.pk]
+        if balance.qty_reserved < quantity:
+            raise ValidationError("Reserved stock changed unexpectedly; release was rolled back.")
+        balance.qty_reserved -= quantity
+        balance.qty_available = balance.qty_on_hand - balance.qty_reserved
+        balance.updated_at = now
+    InventoryStockBalance.objects.bulk_update(
+        balances,
+        ["qty_reserved", "qty_available", "updated_at"],
+        batch_size=500,
+    )
+    for reservation in locked:
+        reservation.status = InventoryReservation.Status.RELEASED
+        reservation.released_by = actor
+        reservation.released_at = now
+        reservation.updated_at = now
+    InventoryReservation.objects.bulk_update(
+        locked,
+        ["status", "released_by", "released_at", "updated_at"],
+        batch_size=MAX_RESERVATION_BATCH,
+    )
+    return locked
+
+
+@transaction.atomic
+def consume_inventory_reservations_batch(reservations, actor):
+    """Consume a bounded set of full reservations with fixed-query ledger writes."""
+    if actor is None:
+        raise ValidationError("A user is required to consume Reservations.")
+    reservation_ids = _bounded_reservation_ids(reservations)
+    locked = list(
+        InventoryReservation.objects.select_for_update(of=("self",))
+        .filter(pk__in=reservation_ids)
+        .order_by("pk")
+    )
+    if len(locked) != len(reservation_ids):
+        raise ValidationError("One or more Reservations no longer exist.")
+    active_statuses = {
+        InventoryReservation.Status.RESERVED,
+        InventoryReservation.Status.PARTIAL,
+    }
+    if any(row.status not in active_statuses for row in locked):
+        raise ValidationError("Batch consumption requires active Reservations.")
+    warehouse_ids = sorted({row.warehouse_id for row in locked})
+    list(
+        Warehouse.objects.select_for_update(of=("self",))
+        .filter(pk__in=warehouse_ids)
+        .order_by("pk")
+    )
+    _assert_warehouses_not_frozen(warehouse_ids)
+    allocations = list(
+        InventoryReservationAllocation.objects.select_for_update(of=("self",))
+        .filter(reservation_id__in=reservation_ids)
+        .order_by("balance_id", "pk")[: MAX_BATCH_RESERVATION_CANDIDATES + 1]
+    )
+    if not allocations or len(allocations) > MAX_BATCH_RESERVATION_CANDIDATES:
+        raise ValidationError("Reservation allocation batch is empty or exceeds the limit.")
+    if any(allocation.stock_move_id for allocation in allocations):
+        raise ValidationError("One or more Reservation allocations were already consumed.")
+    allocation_totals = defaultdict(Decimal)
+    quantity_by_balance = defaultdict(Decimal)
+    for allocation in allocations:
+        allocation_totals[allocation.reservation_id] += allocation.quantity
+        quantity_by_balance[allocation.balance_id] += allocation.quantity
+    if any(
+        allocation_totals[row.pk] != row.reserved_quantity
+        for row in locked
+    ):
+        raise ValidationError("Reservation allocation totals changed unexpectedly.")
+    balances = {
+        row.pk: row
+        for row in InventoryStockBalance.objects.select_for_update(of=("self",))
+        .filter(pk__in=sorted(quantity_by_balance))
+        .select_related("location", "lot")
+        .order_by("pk")
+    }
+    if len(balances) != len(quantity_by_balance):
+        raise ValidationError("One or more reserved stock positions no longer exist.")
+    _assert_warehouses_not_frozen(warehouse_ids)
+    reservation_by_id = {row.pk: row for row in locked}
+    for allocation in allocations:
+        reservation = reservation_by_id[allocation.reservation_id]
+        balance = balances[allocation.balance_id]
+        if (
+            balance.company_id != reservation.company_id
+            or balance.product_id != reservation.product_id
+            or balance.warehouse_id != reservation.warehouse_id
+        ):
+            raise ValidationError("A Reservation allocation moved outside its original scope.")
+        if not balance.location.active or balance.location.is_expired_location:
+            raise ValidationError("Reserved stock is in an inactive or expired location.")
+        if balance.lot_id and (
+            balance.lot.status != InventoryLotSerial.Status.ACTIVE
+            or balance.lot.is_expired
+        ):
+            raise ValidationError("Reserved stock belongs to an inactive or expired lot/serial.")
+    for balance_id, quantity in quantity_by_balance.items():
+        balance = balances[balance_id]
+        if balance.qty_reserved < quantity or balance.qty_on_hand < quantity:
+            raise ValidationError("Reserved stock is no longer sufficient.")
+
+    product_deltas = defaultdict(Decimal)
+    for reservation in locked:
+        product_deltas[reservation.product_id] += reservation.reserved_quantity
+    products = Product.objects.select_for_update(of=("self",)).filter(
+        pk__in=sorted(product_deltas)
+    ).in_bulk()
+    for product_id, quantity in product_deltas.items():
+        if products[product_id].current_stock < quantity:
+            raise ValidationError(
+                f"Global product stock is insufficient for {products[product_id]}."
+            )
+
+    stock_moves = []
+    for allocation in allocations:
+        reservation = reservation_by_id[allocation.reservation_id]
+        stock_moves.append(
+            StockMove(
+                company_id=reservation.company_id,
+                product_id=reservation.product_id,
+                warehouse_id=reservation.warehouse_id,
+                direction=StockMove.Direction.OUT,
+                quantity=allocation.quantity,
+                reference=reservation.reference,
+                movement_date=timezone.localdate(),
+                note=f"Consumed Inventory Reservation {reservation.reference}.",
+                created_by=actor,
+            )
+        )
+    StockMove.objects.bulk_create(stock_moves, batch_size=500)
+
+    now = timezone.now()
+    events = []
+    affected_lot_ids = set()
+    for allocation, move in zip(allocations, stock_moves):
+        balance = balances[allocation.balance_id]
+        balance.qty_on_hand -= allocation.quantity
+        balance.qty_reserved -= allocation.quantity
+        balance.qty_available = balance.qty_on_hand - balance.qty_reserved
+        balance.last_move_id = move.pk
+        balance.updated_at = now
+        allocation.stock_move_id = move.pk
+        if balance.lot_id:
+            affected_lot_ids.add(balance.lot_id)
+        events.append(
+            InventoryBalanceEvent(
+                stock_move=move,
+                balance=balance,
+                direction=StockMove.Direction.OUT,
+                quantity=allocation.quantity,
+            )
+        )
+    InventoryStockBalance.objects.bulk_update(
+        list(balances.values()),
+        ["qty_on_hand", "qty_reserved", "qty_available", "last_move", "updated_at"],
+        batch_size=500,
+    )
+    InventoryBalanceEvent.objects.bulk_create(events, batch_size=500)
+    InventoryReservationAllocation.objects.bulk_update(
+        allocations,
+        ["stock_move"],
+        batch_size=500,
+    )
+    for product_id, quantity in product_deltas.items():
+        product = products[product_id]
+        product.current_stock -= quantity
+        product.updated_at = now
+    Product.objects.bulk_update(
+        list(products.values()),
+        ["current_stock", "updated_at"],
+        batch_size=MAX_RESERVATION_BATCH,
+    )
+
+    if affected_lot_ids:
+        lot_totals = {
+            row["lot_id"]: row["quantity"] or ZERO
+            for row in InventoryStockBalance.objects.filter(lot_id__in=affected_lot_ids)
+            .order_by()
+            .values("lot_id")
+            .annotate(quantity=Sum("qty_on_hand"))
+        }
+        lots = list(
+            InventoryLotSerial.objects.select_for_update(of=("self",))
+            .filter(pk__in=affected_lot_ids)
+            .order_by("pk")
+        )
+        for lot in lots:
+            lot.quantity = lot_totals.get(lot.pk, ZERO)
+            lot.status = (
+                InventoryLotSerial.Status.ACTIVE
+                if lot.quantity > ZERO
+                else InventoryLotSerial.Status.OUT
+            )
+            lot.updated_at = now
+        InventoryLotSerial.objects.bulk_update(
+            lots,
+            ["quantity", "status", "updated_at"],
+            batch_size=500,
+        )
+    for reservation in locked:
+        reservation.status = InventoryReservation.Status.CONSUMED
+        reservation.consumed_by = actor
+        reservation.consumed_at = now
+        reservation.updated_at = now
+    InventoryReservation.objects.bulk_update(
+        locked,
+        ["status", "consumed_by", "consumed_at", "updated_at"],
+        batch_size=MAX_RESERVATION_BATCH,
+    )
+    return locked
+
+
+def _locked_picking_lines(picking):
+    lines = list(
+        InventoryPickingLine.objects.select_for_update(of=("self",))
+        .filter(picking=picking)
+        .select_related("product", "location", "lot", "current_reservation")
+        .order_by("pk")[: MAX_PICKING_LINES + 1]
+    )
+    if not lines:
+        raise ValidationError("The Picking has no demand lines.")
+    if len(lines) > MAX_PICKING_LINES:
+        raise ValidationError(f"A Picking supports at most {MAX_PICKING_LINES} lines.")
+    return lines
+
+
+def _cancel_draft_picking_reservations(lines, actor, *, now=None):
+    draft_reservations = [
+        line.current_reservation
+        for line in lines
+        if line.current_reservation
+        and line.current_reservation.status == InventoryReservation.Status.DRAFT
+    ]
+    if not draft_reservations:
+        return 0
+    now = now or timezone.now()
+    for reservation in draft_reservations:
+        reservation.status = InventoryReservation.Status.CANCELLED
+        reservation.cancelled_by = actor
+        reservation.cancelled_at = now
+        reservation.updated_at = now
+    InventoryReservation.objects.bulk_update(
+        draft_reservations,
+        ["status", "cancelled_by", "cancelled_at", "updated_at"],
+        batch_size=MAX_RESERVATION_BATCH,
+    )
+    return len(draft_reservations)
+
+
+@transaction.atomic
+def confirm_inventory_picking(picking, actor):
+    if actor is None:
+        raise ValidationError("A user is required to confirm a Picking.")
+    picking_id = getattr(picking, "pk", picking)
+    locked = InventoryPicking.objects.select_for_update(of=("self",)).get(pk=picking_id)
+    if locked.status != InventoryPicking.Status.DRAFT:
+        raise ValidationError("Only Draft Pickings can be confirmed.")
+    lines = _locked_picking_lines(locked)
+    if any(line.reserved_quantity != ZERO or line.done_quantity != ZERO for line in lines):
+        raise ValidationError("Draft Picking lines cannot already contain processed quantities.")
+    now = timezone.now()
+    locked.status = InventoryPicking.Status.CONFIRMED
+    locked.confirmed_by = actor
+    locked.confirmed_at = now
+    locked.save(update_fields=["status", "confirmed_by", "confirmed_at", "updated_at"])
+    return locked
+
+
+@transaction.atomic
+def check_inventory_picking_availability(picking, actor):
+    if actor is None:
+        raise ValidationError("A user is required to check Picking availability.")
+    picking_id = getattr(picking, "pk", picking)
+    locked = InventoryPicking.objects.select_for_update(of=("self",)).get(pk=picking_id)
+    if locked.status not in {
+        InventoryPicking.Status.CONFIRMED,
+        InventoryPicking.Status.PARTIAL,
+    }:
+        raise ValidationError("Only Waiting or Partially Available Pickings can check availability.")
+    lines = _locked_picking_lines(locked)
+    active_statuses = {
+        InventoryReservation.Status.RESERVED,
+        InventoryReservation.Status.PARTIAL,
+    }
+    active_ids = [
+        line.current_reservation_id
+        for line in lines
+        if line.current_reservation
+        and line.current_reservation.status in active_statuses
+    ]
+    if active_ids:
+        release_inventory_reservations_batch(active_ids, actor)
+    _cancel_draft_picking_reservations(lines, actor)
+
+    reservations = [
+        InventoryReservation(
+            company_id=locked.company_id,
+            branch_id=locked.branch_id,
+            warehouse_id=locked.warehouse_id,
+            product_id=line.product_id,
+            location_id=line.location_id,
+            lot_id=line.lot_id,
+            reference=f"{locked.reference}-L{line.pk}-{uuid4().hex[:6].upper()}",
+            requested_quantity=line.requested_quantity,
+            allow_partial=True,
+            notes=f"Generated by Picking {locked.reference}.",
+        )
+        for line in lines
+    ]
+    InventoryReservation.objects.bulk_create(
+        reservations,
+        batch_size=MAX_RESERVATION_BATCH,
+    )
+    reservation_map = reserve_inventory_batch(reservations, actor, allow_zero=True)
+    total_reserved = ZERO
+    fully_reserved = True
+    for line, reservation in zip(lines, reservations):
+        reservation = reservation_map[reservation.pk]
+        line.current_reservation_id = reservation.pk
+        line.reserved_quantity = reservation.reserved_quantity
+        line.done_quantity = min(line.done_quantity, line.reserved_quantity)
+        line.updated_at = timezone.now()
+        total_reserved += line.reserved_quantity
+        if line.reserved_quantity != line.requested_quantity:
+            fully_reserved = False
+    InventoryPickingLine.objects.bulk_update(
+        lines,
+        ["current_reservation", "reserved_quantity", "done_quantity", "updated_at"],
+        batch_size=MAX_PICKING_LINES,
+    )
+    now = timezone.now()
+    if fully_reserved:
+        locked.status = InventoryPicking.Status.READY
+    elif total_reserved > ZERO:
+        locked.status = InventoryPicking.Status.PARTIAL
+    else:
+        locked.status = InventoryPicking.Status.CONFIRMED
+    locked.availability_checked_by = actor
+    locked.availability_checked_at = now
+    locked.save(
+        update_fields=[
+            "status",
+            "availability_checked_by",
+            "availability_checked_at",
+            "updated_at",
+        ]
+    )
+    return locked
+
+
+@transaction.atomic
+def unreserve_inventory_picking(picking, actor):
+    if actor is None:
+        raise ValidationError("A user is required to unreserve a Picking.")
+    picking_id = getattr(picking, "pk", picking)
+    locked = InventoryPicking.objects.select_for_update(of=("self",)).get(pk=picking_id)
+    if locked.status not in {
+        InventoryPicking.Status.PARTIAL,
+        InventoryPicking.Status.READY,
+    }:
+        raise ValidationError("Only Partially Available or Ready Pickings can be unreserved.")
+    lines = _locked_picking_lines(locked)
+    active_ids = [
+        line.current_reservation_id
+        for line in lines
+        if line.current_reservation
+        and line.current_reservation.status
+        in {InventoryReservation.Status.RESERVED, InventoryReservation.Status.PARTIAL}
+    ]
+    if active_ids:
+        release_inventory_reservations_batch(active_ids, actor)
+    _cancel_draft_picking_reservations(lines, actor)
+    now = timezone.now()
+    for line in lines:
+        line.reserved_quantity = ZERO
+        line.done_quantity = ZERO
+        line.updated_at = now
+    InventoryPickingLine.objects.bulk_update(
+        lines,
+        ["reserved_quantity", "done_quantity", "updated_at"],
+        batch_size=MAX_PICKING_LINES,
+    )
+    locked.status = InventoryPicking.Status.CONFIRMED
+    locked.save(update_fields=["status", "updated_at"])
+    return locked
+
+
+@transaction.atomic
+def set_inventory_picking_done_quantities(picking, actor):
+    if actor is None:
+        raise ValidationError("A user is required to set Picking done quantities.")
+    picking_id = getattr(picking, "pk", picking)
+    locked = InventoryPicking.objects.select_for_update(of=("self",)).get(pk=picking_id)
+    if locked.status not in {
+        InventoryPicking.Status.PARTIAL,
+        InventoryPicking.Status.READY,
+    }:
+        raise ValidationError("Done quantities require a Partially Available or Ready Picking.")
+    lines = _locked_picking_lines(locked)
+    now = timezone.now()
+    for line in lines:
+        line.done_quantity = line.reserved_quantity
+        line.updated_at = now
+    InventoryPickingLine.objects.bulk_update(
+        lines,
+        ["done_quantity", "updated_at"],
+        batch_size=MAX_PICKING_LINES,
+    )
+    return locked
+
+
+@transaction.atomic
+def validate_inventory_picking(picking, actor):
+    if actor is None:
+        raise ValidationError("A user is required to validate a Picking.")
+    picking_id = getattr(picking, "pk", picking)
+    locked = InventoryPicking.objects.select_for_update(of=("self",)).get(pk=picking_id)
+    if locked.status not in {
+        InventoryPicking.Status.PARTIAL,
+        InventoryPicking.Status.READY,
+    }:
+        raise ValidationError("Only Partially Available or Ready Pickings can be validated.")
+    lines = _locked_picking_lines(locked)
+    if not any(line.done_quantity > ZERO for line in lines):
+        raise ValidationError("Set at least one done quantity before Validate.")
+    for line in lines:
+        if line.done_quantity != line.reserved_quantity:
+            raise ValidationError(
+                "Done quantity must match the reserved quantity; use Unreserve and "
+                "Check Availability to change the allocation."
+            )
+    reservation_ids = [
+        line.current_reservation_id
+        for line in lines
+        if line.done_quantity > ZERO and line.current_reservation_id
+    ]
+    if not reservation_ids:
+        raise ValidationError("The Picking has no active reservations to consume.")
+    consume_inventory_reservations_batch(reservation_ids, actor)
+    _cancel_draft_picking_reservations(lines, actor)
+
+    backorder_lines = [
+        line for line in lines if line.requested_quantity > line.done_quantity
+    ]
+    if backorder_lines:
+        backorder = InventoryPicking.objects.create(
+            company_id=locked.company_id,
+            branch_id=locked.branch_id,
+            warehouse_id=locked.warehouse_id,
+            reference="",
+            scheduled_date=locked.scheduled_date,
+            responsible_id=locked.responsible_id,
+            destination_name=locked.destination_name,
+            destination_address=locked.destination_address,
+            backorder_of=locked,
+            notes=f"Backorder of {locked.reference}.",
+        )
+        InventoryPickingLine.objects.bulk_create(
+            [
+                InventoryPickingLine(
+                    picking=backorder,
+                    product_id=line.product_id,
+                    location_id=line.location_id,
+                    lot_id=line.lot_id,
+                    requested_quantity=line.requested_quantity - line.done_quantity,
+                )
+                for line in backorder_lines
+            ],
+            batch_size=MAX_PICKING_LINES,
+        )
+    now = timezone.now()
+    locked.status = InventoryPicking.Status.DONE
+    locked.completed_by = actor
+    locked.completed_at = now
+    locked.save(
+        update_fields=["status", "completed_by", "completed_at", "updated_at"]
+    )
+    return locked
+
+
+@transaction.atomic
+def cancel_inventory_picking(picking, actor):
+    if actor is None:
+        raise ValidationError("A user is required to cancel a Picking.")
+    picking_id = getattr(picking, "pk", picking)
+    locked = InventoryPicking.objects.select_for_update(of=("self",)).get(pk=picking_id)
+    if locked.status not in {
+        InventoryPicking.Status.DRAFT,
+        InventoryPicking.Status.CONFIRMED,
+        InventoryPicking.Status.PARTIAL,
+        InventoryPicking.Status.READY,
+    }:
+        raise ValidationError("This Picking can no longer be cancelled.")
+    lines = _locked_picking_lines(locked)
+    active_ids = [
+        line.current_reservation_id
+        for line in lines
+        if line.current_reservation
+        and line.current_reservation.status
+        in {InventoryReservation.Status.RESERVED, InventoryReservation.Status.PARTIAL}
+    ]
+    if active_ids:
+        release_inventory_reservations_batch(active_ids, actor)
+    _cancel_draft_picking_reservations(lines, actor)
+    now = timezone.now()
+    for line in lines:
+        line.reserved_quantity = ZERO
+        line.done_quantity = ZERO
+        line.updated_at = now
+    InventoryPickingLine.objects.bulk_update(
+        lines,
+        ["reserved_quantity", "done_quantity", "updated_at"],
+        batch_size=MAX_PICKING_LINES,
+    )
+    locked.status = InventoryPicking.Status.CANCELLED
+    locked.cancelled_by = actor
+    locked.cancelled_at = now
+    locked.save(
+        update_fields=["status", "cancelled_by", "cancelled_at", "updated_at"]
+    )
+    return locked
+
+
+@transaction.atomic
+def reset_inventory_picking_to_draft(picking, actor):
+    if actor is None:
+        raise ValidationError("A user is required to reset a Picking.")
+    picking_id = getattr(picking, "pk", picking)
+    locked = InventoryPicking.objects.select_for_update(of=("self",)).get(pk=picking_id)
+    if locked.status != InventoryPicking.Status.CANCELLED:
+        raise ValidationError("Only Cancelled Pickings can be reset to Draft.")
+    lines = _locked_picking_lines(locked)
+    now = timezone.now()
+    for line in lines:
+        line.current_reservation_id = None
+        line.reserved_quantity = ZERO
+        line.done_quantity = ZERO
+        line.updated_at = now
+    InventoryPickingLine.objects.bulk_update(
+        lines,
+        ["current_reservation", "reserved_quantity", "done_quantity", "updated_at"],
+        batch_size=MAX_PICKING_LINES,
+    )
+    locked.status = InventoryPicking.Status.DRAFT
+    locked.confirmed_by = None
+    locked.confirmed_at = None
+    locked.availability_checked_by = None
+    locked.availability_checked_at = None
+    locked.cancelled_by = None
+    locked.cancelled_at = None
+    locked.save(
+        update_fields=[
+            "status",
+            "confirmed_by",
+            "confirmed_at",
+            "availability_checked_by",
+            "availability_checked_at",
+            "cancelled_by",
+            "cancelled_at",
+            "updated_at",
+        ]
+    )
+    return locked
+
+
+def confirm_inventory_picking_action(instance, actor):
+    return confirm_inventory_picking(instance.pk, actor)
+
+
+def check_inventory_picking_availability_action(instance, actor):
+    return check_inventory_picking_availability(instance.pk, actor)
+
+
+def unreserve_inventory_picking_action(instance, actor):
+    return unreserve_inventory_picking(instance.pk, actor)
+
+
+def set_inventory_picking_done_quantities_action(instance, actor):
+    return set_inventory_picking_done_quantities(instance.pk, actor)
+
+
+def validate_inventory_picking_action(instance, actor):
+    return validate_inventory_picking(instance.pk, actor)
+
+
+def cancel_inventory_picking_action(instance, actor):
+    return cancel_inventory_picking(instance.pk, actor)
+
+
+def reset_inventory_picking_to_draft_action(instance, actor):
+    return reset_inventory_picking_to_draft(instance.pk, actor)
 
 
 def _require_bounded_reorder_rules(reorder_rules):

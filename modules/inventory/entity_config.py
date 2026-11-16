@@ -1,6 +1,8 @@
 from .forms import (
     InventoryLocationForm,
     InventoryLotSerialForm,
+    InventoryPickingForm,
+    InventoryPickingLineForm,
     InventoryReorderRuleForm,
     InventoryReservationForm,
     InventoryStockCountForm,
@@ -9,6 +11,8 @@ from .forms import (
 from .models import (
     InventoryLocation,
     InventoryLotSerial,
+    InventoryPicking,
+    InventoryPickingLine,
     InventoryReorderRule,
     InventoryReservation,
     InventoryReservationAllocation,
@@ -26,6 +30,13 @@ from .services import (
     consume_inventory_reservation_action,
     release_inventory_reservation_action,
     reserve_inventory_action,
+    cancel_inventory_picking_action,
+    check_inventory_picking_availability_action,
+    confirm_inventory_picking_action,
+    reset_inventory_picking_to_draft_action,
+    set_inventory_picking_done_quantities_action,
+    unreserve_inventory_picking_action,
+    validate_inventory_picking_action,
 )
 
 
@@ -99,6 +110,72 @@ RESERVATION_WORKFLOW = {
         "from": [InventoryReservation.Status.DRAFT],
         "to": InventoryReservation.Status.CANCELLED,
         "handler": cancel_inventory_reservation_action,
+    },
+}
+
+
+PICKING_WORKFLOW = {
+    "confirm": {
+        "label": "Confirm",
+        "from": [InventoryPicking.Status.DRAFT],
+        "to": InventoryPicking.Status.CONFIRMED,
+        "primary": True,
+        "handler": confirm_inventory_picking_action,
+    },
+    "check_availability": {
+        "label": "Check Availability",
+        "from": [
+            InventoryPicking.Status.CONFIRMED,
+            InventoryPicking.Status.PARTIAL,
+        ],
+        "to": InventoryPicking.Status.READY,
+        "success_statuses": [
+            InventoryPicking.Status.CONFIRMED,
+            InventoryPicking.Status.PARTIAL,
+            InventoryPicking.Status.READY,
+        ],
+        "primary": True,
+        "handler": check_inventory_picking_availability_action,
+    },
+    "unreserve": {
+        "label": "Unreserve",
+        "from": [InventoryPicking.Status.PARTIAL, InventoryPicking.Status.READY],
+        "to": InventoryPicking.Status.CONFIRMED,
+        "handler": unreserve_inventory_picking_action,
+    },
+    "set_done_quantities": {
+        "label": "Set Done Quantities",
+        "from": [InventoryPicking.Status.PARTIAL, InventoryPicking.Status.READY],
+        "to": InventoryPicking.Status.READY,
+        "success_statuses": [
+            InventoryPicking.Status.PARTIAL,
+            InventoryPicking.Status.READY,
+        ],
+        "handler": set_inventory_picking_done_quantities_action,
+    },
+    "validate": {
+        "label": "Validate",
+        "from": [InventoryPicking.Status.PARTIAL, InventoryPicking.Status.READY],
+        "to": InventoryPicking.Status.DONE,
+        "primary": True,
+        "handler": validate_inventory_picking_action,
+    },
+    "cancel": {
+        "label": "Cancel",
+        "from": [
+            InventoryPicking.Status.DRAFT,
+            InventoryPicking.Status.CONFIRMED,
+            InventoryPicking.Status.PARTIAL,
+            InventoryPicking.Status.READY,
+        ],
+        "to": InventoryPicking.Status.CANCELLED,
+        "handler": cancel_inventory_picking_action,
+    },
+    "reset_draft": {
+        "label": "Reset to Draft",
+        "from": [InventoryPicking.Status.CANCELLED],
+        "to": InventoryPicking.Status.DRAFT,
+        "handler": reset_inventory_picking_to_draft_action,
     },
 }
 
@@ -312,6 +389,81 @@ ENTITY_CONFIG = {
             InventoryReservation.Status.CONSUMED,
             InventoryReservation.Status.CANCELLED,
         },
+    },
+    "inventory-pickings": {
+        "model": InventoryPicking,
+        "form": InventoryPickingForm,
+        "title": "Outbound Pickings",
+        "singular": "Outbound Picking",
+        "columns": [
+            ("reference", "Reference"),
+            ("scheduled_date", "Scheduled"),
+            ("warehouse", "Warehouse"),
+            ("destination_name", "Destination"),
+            ("responsible", "Responsible"),
+            ("status", "Status"),
+        ],
+        "search": [
+            "reference",
+            "warehouse__code",
+            "warehouse__name",
+            "destination_name",
+            "destination_address",
+            "responsible__username",
+            "notes",
+        ],
+        "select_related": [
+            "company",
+            "branch",
+            "warehouse",
+            "responsible",
+            "backorder_of",
+            "confirmed_by",
+            "availability_checked_by",
+            "completed_by",
+            "cancelled_by",
+        ],
+        "workflow": PICKING_WORKFLOW,
+        "workflow_locked_statuses": {
+            InventoryPicking.Status.CONFIRMED,
+            InventoryPicking.Status.PARTIAL,
+            InventoryPicking.Status.READY,
+            InventoryPicking.Status.DONE,
+            InventoryPicking.Status.CANCELLED,
+        },
+    },
+    "inventory-picking-lines": {
+        "model": InventoryPickingLine,
+        "form": InventoryPickingLineForm,
+        "title": "Picking Lines",
+        "singular": "Picking Line",
+        "columns": [
+            ("picking", "Picking"),
+            ("product", "Product"),
+            ("location", "Source Location"),
+            ("lot", "Lot / Serial"),
+            ("requested_quantity", "Demand"),
+            ("reserved_quantity", "Reserved"),
+            ("done_quantity", "Done"),
+        ],
+        "search": [
+            "picking__reference",
+            "product__sku",
+            "product__name",
+            "location__complete_name",
+            "lot__name",
+            "lot__barcode",
+        ],
+        "select_related": [
+            "picking",
+            "picking__company",
+            "picking__branch",
+            "picking__warehouse",
+            "product",
+            "location",
+            "lot",
+            "current_reservation",
+        ],
     },
     "inventory-reservation-allocations": {
         "model": InventoryReservationAllocation,

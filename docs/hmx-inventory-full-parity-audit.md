@@ -4,7 +4,7 @@
 
 - Designated HMX source: `/home/yusufmjt/hmx-human-resources-port8000-latest`
   on `192.168.0.108`.
-- Read-only HMX commit re-verified for the Stock Count continuation on 16
+- Read-only HMX commit re-verified for the Stock Count and Outbound Picking continuations on 16
   November 2026: `af5184484b17fd08b4e201e0c66065254a6b379c`.
   The earlier foundation inspection recorded
   `eed14195cc2b8710bb49e6a4a02cff2315d09742`; the reference advanced between
@@ -50,7 +50,8 @@ second parallel transfer implementation.
 | Workspace and mobile shell | HMX menu/views | module-owned entity/workspace registries | ADAPTED | Stock Balance, Reservations, read-only Reservation Allocations, Stock Counts, paginated Counting Lines, Replenishment Review, Reordering Rules, Internal Transfers, Locations, and Lot/Serial are exposed without central menu hardcoding and inherit the responsive generic ERP shell. Specialized barcode/mobile picking screens remain deferred. |
 | Counts and adjustments | HMX `stock_count`, `stock_count_line`, and warehouse freeze | `InventoryStockCount`, `InventoryStockCountLine`, `InventoryStockFreeze` | ADAPTED | Draft → Confirm → In Progress → Complete → Validate and In Progress/Completed → Cancel are implemented. Confirm freezes the warehouse and creates a bounded balance snapshot; Validate posts exact location/lot gains or losses as immutable Stock Moves, updates product/balance/lot snapshots, records idempotency events, and releases the freeze atomically. Other stock writes fail while frozen. The local freeze conservatively locks the whole warehouse instead of permitting non-overlapping scopes. HMX approval, background generation above 1,000 lines, valuation review/accounting, CSV/barcode count, and reversal remain deferred. |
 | Reservations | HMX balance reservation services | `InventoryReservation`, `InventoryReservationAllocation` | ADAPTED | Draft → Reserve (full or explicit partial) → Release/Consume and Draft → Cancel are implemented. Candidate balance rows are bounded and locked in primary-key order, company-owned active/non-expired stock is allocated by location priority plus FIFO/FEFO, ordinary outbound movements cannot consume reserved stock, and Consume posts one immutable Stock Move and balance event per exact allocation. Whole-warehouse Stock Count freeze blocks Reserve, Release, and Consume. Ownership pools other than company stock, allocation amendment, backorder creation, and automatic order linkage remain deferred. |
-| Picking, packing, delivery | HMX operational flows | — | DEFERRED | No picking batches/waves, package hierarchy, barcode execution, carrier flow, or delivery execution yet. |
+| Outbound picking | HMX `transfer` / `stock_demand` outbound workflow | `InventoryPicking`, `InventoryPickingLine` | ADAPTED | Draft → Confirm → Check Availability → Partially Available/Ready → Validate/Done, Unreserve, Cancel, and Reset to Draft are implemented. Demand lines carry requested, reserved, and operator-entered done quantities. Availability uses bounded batch reservation with deterministic locks; Validate posts immutable outbound moves/events and creates a Draft backorder for unmet demand. The generic responsive entity shell exposes header and line input on mobile. HMX approval, multi-step pick/pack shipment chains, immediate-transfer wizard choices, background validation, barcode scanning, and proof-of-delivery evidence remain deferred. |
+| Packing and delivery | HMX packages, multi-step shipment chains, POD | — | DEFERRED | No package hierarchy, carrier flow, specialized barcode execution, or proof-of-delivery capture yet. |
 | Routes and put-away | HMX routes/rules | — | DEFERRED | Location policy is present, but automated put-away, pull/push routes, cross-dock, and multi-step receipt/delivery are not implemented. |
 | Valuation and accounting | Inventory accounting extensions | existing Finance inventory accounting records | NOT VERIFIED | Similar records are not parity evidence. Cost layers, landed cost, valuation posting, reconciliation, rollback, and extension ownership need a separate audit. |
 | Barcode, dashboards, reports, imports, schedulers | Base and extension UI/services | partial AppHub dashboard and generic exports | DEFERRED | Existing generic pages are not claimed as HMX behavior parity. |
@@ -79,6 +80,11 @@ second parallel transfer implementation.
   allocation, balance, product, and lot rows use deterministic locks; balance,
   movement, event, and allocation writes are bulk operations. Reservation
   Allocations are read-only in the operator UI.
+- Outbound Picking accepts at most 250 demand lines and 5,000 candidate stock
+  positions per transaction. Check Availability reserves all lines in fixed
+  query batches; Unreserve and Validate aggregate by balance and product and use
+  bulk writes. The 2-versus-12 line fixture proves Check Availability and
+  Validate query counts do not grow with line count.
 - Interactive lists continue through the shared scoped, searched, paginated
   entity view; no Inventory service returns an unbounded result set.
 
@@ -105,6 +111,12 @@ second parallel transfer implementation.
   query-growth checks for Reserve and Release.
 - All 27 Inventory unit and PostgreSQL integration tests pass across the focused
   module suite and isolated PostgreSQL concurrency test.
+- Eight PostgreSQL Outbound Picking tests pass: full reserve-to-ledger lifecycle,
+  partial availability and Draft backorder, unreserve/recheck replacement,
+  cancel/reset, Stock Count freeze rollback, responsive line-form input,
+  generic workflow dispatch, and 2-versus-12 line query-growth checks.
+- All 35 Inventory tests pass together, including the real PostgreSQL
+  reservation concurrency test.
 - Six directly affected Purchase receipt, return, and transfer regressions pass,
   including their existing query-growth fixtures.
 - Python compilation, Django system check, migration drift (`No changes
@@ -119,7 +131,8 @@ second parallel transfer implementation.
 ## Deployment state
 
 Purchase commit `c5eaab4` is deployed. Inventory foundation commit `e253611`,
-Stock Count commit `6f1f625`, and migrations `0001` through `0004` are in the same repository/worktree;
+Stock Count commit `6f1f625`, Reservation commit `9754656`, and migrations
+`0001` through `0005` are in the same repository/worktree;
 Inventory migrations have only been applied to the isolated reusable test database. Production
 Inventory migration, legacy replay, replenishment evaluation, and smoke tests
 remain pending; this document does not claim Inventory is deployed or 1:1.

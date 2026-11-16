@@ -32,6 +32,8 @@ class InventoryFoundationUnitTests(SimpleTestCase):
         self.assertEqual(entities.count("inventory-stock-count-lines"), 1)
         self.assertEqual(entities.count("inventory-reservations"), 1)
         self.assertEqual(entities.count("inventory-reservation-allocations"), 1)
+        self.assertEqual(entities.count("inventory-pickings"), 1)
+        self.assertEqual(entities.count("inventory-picking-lines"), 1)
         self.assertEqual(entities.count("purchase-inventory-transfers"), 1)
 
     def test_inventory_entity_registry_exposes_foundation_records(self):
@@ -47,6 +49,8 @@ class InventoryFoundationUnitTests(SimpleTestCase):
                 "inventory-stock-count-lines",
                 "inventory-reservations",
                 "inventory-reservation-allocations",
+                "inventory-pickings",
+                "inventory-picking-lines",
             },
         )
         self.assertFalse(ENTITY_CONFIG["inventory-stock-balances"]["editable"])
@@ -63,6 +67,22 @@ class InventoryFoundationUnitTests(SimpleTestCase):
             all(callable(item["handler"]) for item in reservation_workflow.values())
         )
         self.assertFalse(ENTITY_CONFIG["inventory-reservation-allocations"]["editable"])
+        picking_workflow = ENTITY_CONFIG["inventory-pickings"]["workflow"]
+        self.assertEqual(
+            set(picking_workflow),
+            {
+                "confirm",
+                "check_availability",
+                "unreserve",
+                "set_done_quantities",
+                "validate",
+                "cancel",
+                "reset_draft",
+            },
+        )
+        self.assertTrue(
+            all(callable(item["handler"]) for item in picking_workflow.values())
+        )
 
     def test_location_capacity_snapshot_matches_hmx_statuses(self):
         location = InventoryLocation(

@@ -4,6 +4,8 @@ from .models import (
     InventoryBalanceEvent,
     InventoryLocation,
     InventoryLotSerial,
+    InventoryPicking,
+    InventoryPickingLine,
     InventoryReorderRule,
     InventoryReplenishmentSnapshot,
     InventoryReservation,
@@ -17,6 +19,8 @@ from .models import (
 
 admin.site.register(InventoryLocation)
 admin.site.register(InventoryLotSerial)
+admin.site.register(InventoryPicking)
+admin.site.register(InventoryPickingLine)
 admin.site.register(InventoryStockBalance)
 admin.site.register(InventoryBalanceEvent)
 admin.site.register(InventoryReorderRule)

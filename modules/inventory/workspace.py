@@ -4,6 +4,15 @@ from modules.apphub.workspaces import register_workspace_contribution
 def register_inventory_workspace():
     register_workspace_contribution(
         "inventory",
+        group_label="Warehouse Execution",
+        group_icon="W",
+        items=[
+            {"entity": "inventory-pickings", "label": "Outbound Pickings"},
+            {"entity": "inventory-picking-lines", "label": "Picking Lines"},
+        ],
+    )
+    register_workspace_contribution(
+        "inventory",
         group_label="Inventory Control",
         group_icon="I",
         items=[

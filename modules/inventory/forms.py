@@ -5,6 +5,8 @@ from core.forms import StyledModelForm
 from .models import (
     InventoryLocation,
     InventoryLotSerial,
+    InventoryPicking,
+    InventoryPickingLine,
     InventoryReorderRule,
     InventoryReservation,
     InventoryStockBalance,
@@ -103,6 +105,64 @@ class InventoryReservationForm(StyledModelForm):
             "allow_partial",
             "notes",
         ]
+
+
+class InventoryPickingForm(StyledModelForm):
+    class Meta:
+        model = InventoryPicking
+        fields = [
+            "company",
+            "branch",
+            "warehouse",
+            "scheduled_date",
+            "responsible",
+            "destination_name",
+            "destination_address",
+            "notes",
+        ]
+        widgets = {
+            "scheduled_date": forms.DateInput(attrs={"type": "date"}),
+        }
+
+
+class InventoryPickingLineForm(StyledModelForm):
+    reserved_quantity = forms.DecimalField(
+        label="Reserved quantity",
+        decimal_places=3,
+        max_digits=18,
+        required=False,
+        disabled=True,
+    )
+
+    class Meta:
+        model = InventoryPickingLine
+        fields = [
+            "picking",
+            "product",
+            "location",
+            "lot",
+            "requested_quantity",
+            "done_quantity",
+        ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["reserved_quantity"].disabled = True
+        picking = self.instance.picking if self.instance.picking_id else None
+        if self.instance.pk and picking and picking.status != InventoryPicking.Status.DRAFT:
+            for field_name in (
+                "picking",
+                "product",
+                "location",
+                "lot",
+                "requested_quantity",
+            ):
+                self.fields[field_name].disabled = True
+        if not picking or picking.status not in {
+            InventoryPicking.Status.PARTIAL,
+            InventoryPicking.Status.READY,
+        }:
+            self.fields["done_quantity"].disabled = True
 
 
 class InventoryStockCountForm(StyledModelForm):

@@ -1,0 +1,22 @@
+<section class="document-tab-card" aria-label="Service work orders">
+  <div class="line-table-wrap document-tab-table-wrap">
+    <table class="line-table document-tab-table">
+      <thead><tr><th>Number</th><th>Milestone</th><th>Contract %</th><th>Progress paid</th><th>Period</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for item in purchase_tab_service_orders %}
+          <tr>
+            <td data-label="Number">{{ item.number }}</td>
+            <td data-label="Milestone">{{ item.milestone_name|default:item.milestone.name|default:"—" }}</td>
+            <td data-label="Contract %">{{ item.contract_term_percentage }}%</td>
+            <td data-label="Progress paid">{{ item.progress_paid }}%</td>
+            <td data-label="Period">{{ item.date_start|date:"Y-m-d" }}{% if item.date_end %} – {{ item.date_end|date:"Y-m-d" }}{% endif %}</td>
+            <td data-label="Status">{{ item.get_status_display }}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="6">No Service Work Order is linked to this Purchase Order.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if purchase_tab_service_orders_has_more %}<p class="document-tab-more">Showing the first 100 Service Work Orders in sequence order.</p>{% endif %}
+</section>

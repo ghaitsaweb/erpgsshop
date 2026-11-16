@@ -106,46 +106,26 @@ Regards,
         {% endif %}
 
         <div class="document-header-grid">
-          {% for field in form %}
-            {% developer_field field config.model as field_meta %}
-            <div class="field {% if field.field.widget.input_type == 'checkbox' %}field-checkbox{% endif %}" data-dev-field="{{ field_meta.name }}" data-dev-field-label="{{ field_meta.label }}" data-dev-field-type="{{ field_meta.type }}" data-dev-field-column="{{ field_meta.column }}" data-dev-field-relation="{{ field_meta.relation }}" data-dev-field-kind="{{ field_meta.kind }}" data-dev-required="{{ field_meta.required|yesno:'true,false' }}">
-              <label for="{{ field.id_for_label }}">{{ field.label }}{% if field.field.required %}<span class="required">*</span>{% endif %}</label>
-              {{ field }}
-              {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-            </div>
-          {% endfor %}
+          {% include "core/_document_bound_fields.html" with fields=document_header_fields %}
         </div>
 
-        {% for section in line_sections %}
-        <section class="document-lines" data-line-section="{{ section.index }}" data-line-prefix="{{ section.prefix }}" data-dev-model="{{ section.developer_meta.model }}" data-dev-table="{{ section.developer_meta.table }}" data-dev-entity="{{ section.developer_meta.entity }}">
-          <div class="document-tabbar"><span class="active">{{ section.line_title }}</span>{% if forloop.first %}<span>Other Information</span>{% endif %}</div>
-          <div class="line-table-wrap">
-            <table class="line-table">
-              <thead>
-                <tr>
-                  {% for field in section.formset.empty_form.visible_fields %}{% developer_field field section.line_model as field_meta %}<th data-dev-field="{{ field_meta.name }}" data-dev-field-label="{{ field_meta.label }}" data-dev-field-type="{{ field_meta.type }}" data-dev-field-column="{{ field_meta.column }}" data-dev-field-relation="{{ field_meta.relation }}" data-dev-field-kind="{{ field_meta.kind }}">{{ field.label }}</th>{% endfor %}
-                  {% if editable %}<th class="line-action-column">Action</th>{% endif %}
-                </tr>
-              </thead>
-              <tbody data-document-line-body>
-                {% for line_form in section.formset.forms %}
-                  <tr class="document-line-row" data-dev-object data-dev-entity="{{ section.developer_meta.entity }}" data-dev-model="{{ section.developer_meta.model }}" data-dev-table="{{ section.developer_meta.table }}" data-dev-object-id="{{ line_form.instance.pk|default:'' }}" data-dev-object-name="{{ section.line_title }}">
-                    {% for hidden in line_form.hidden_fields %}{{ hidden }}{% endfor %}
-                    {% for field in line_form.visible_fields %}
-                      {% developer_field field section.line_model as field_meta %}
-                      <td class="{% if field.name == 'DELETE' %}delete-field{% endif %}" data-dev-field="{{ field_meta.name }}" data-dev-field-label="{{ field_meta.label }}" data-dev-field-type="{{ field_meta.type }}" data-dev-field-column="{{ field_meta.column }}" data-dev-field-relation="{{ field_meta.relation }}" data-dev-field-kind="{{ field_meta.kind }}" data-dev-required="{{ field_meta.required|yesno:'true,false' }}">
-                        {{ field }}
-                        {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
-                      </td>
-                    {% endfor %}
-                    {% if editable %}<td class="line-action-column"><button class="line-remove" type="button" aria-label="Hapus line">Hapus</button></td>{% endif %}
-                  </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
-          {% if editable %}<button class="add-line-button" data-add-document-line type="button">+ Add a line</button>{% endif %}
-        </section>
+        {% if document_tabs %}
+          <section class="document-tabs" data-document-tabs>
+            <div class="document-tabbar" role="tablist" aria-label="{{ config.singular }} sections">
+              {% for tab in document_tabs %}
+                <button id="document-tab-{{ tab.key }}" type="button" role="tab" aria-controls="document-panel-{{ tab.key }}" aria-selected="{% if forloop.first %}true{% else %}false{% endif %}" tabindex="{% if forloop.first %}0{% else %}-1{% endif %}" data-document-tab="{{ tab.key }}" class="{% if forloop.first %}active{% endif %}">{{ tab.label }}</button>
+              {% endfor %}
+            </div>
+            {% for tab in document_tabs %}
+              <section id="document-panel-{{ tab.key }}" class="document-tab-panel" role="tabpanel" aria-labelledby="document-tab-{{ tab.key }}" data-document-tab-panel="{{ tab.key }}" {% if not forloop.first %}hidden{% endif %}>
+                {% include tab.template with tab=tab section=tab.line_section %}
+              </section>
+            {% endfor %}
+          </section>
+        {% endif %}
+
+        {% for section in untabbed_line_sections %}
+          {% include "core/_document_line_section.html" with section=section %}
         {% endfor %}
 
         {% if totals %}
@@ -154,7 +134,7 @@ Regards,
           </div>
         {% endif %}
 
-        {% if record_approval_enabled and object %}
+        {% if record_approval_enabled and object and "approval" not in document_tab_captures %}
           <section class="sales-accounting-card" aria-labelledby="purchase-approval-title">
             <div>
               <p class="eyebrow">Approval workflow</p>
@@ -184,7 +164,7 @@ Regards,
             {% endif %}
           </section>
         {% endif %}
-        {% if document.summary_template and object %}
+        {% if document.summary_template and object and "summary" not in document_tab_captures %}
           {% include document.summary_template %}
         {% endif %}
 
@@ -558,6 +538,42 @@ Regards,
           });
           recalculateSalesRow(row);
         });
+      });
+
+      document.querySelectorAll('[data-document-tabs]').forEach((tabs) => {
+        const buttons = Array.from(tabs.querySelectorAll('[data-document-tab]'));
+        const panels = Array.from(tabs.querySelectorAll('[data-document-tab-panel]'));
+        const activate = (key, {focus = false, updateHash = false} = {}) => {
+          buttons.forEach((button) => {
+            const active = button.dataset.documentTab === key;
+            button.classList.toggle('active', active);
+            button.setAttribute('aria-selected', active ? 'true' : 'false');
+            button.tabIndex = active ? 0 : -1;
+            if (active && focus) button.focus();
+          });
+          panels.forEach((panel) => {
+            panel.hidden = panel.dataset.documentTabPanel !== key;
+          });
+          if (updateHash) window.history.replaceState(null, '', `#tab-${key}`);
+        };
+        buttons.forEach((button, index) => {
+          button.addEventListener('click', () => activate(button.dataset.documentTab, {updateHash: true}));
+          button.addEventListener('keydown', (event) => {
+            if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+            event.preventDefault();
+            let targetIndex = index;
+            if (event.key === 'ArrowLeft') targetIndex = (index - 1 + buttons.length) % buttons.length;
+            if (event.key === 'ArrowRight') targetIndex = (index + 1) % buttons.length;
+            if (event.key === 'Home') targetIndex = 0;
+            if (event.key === 'End') targetIndex = buttons.length - 1;
+            activate(buttons[targetIndex].dataset.documentTab, {focus: true, updateHash: true});
+          });
+        });
+        const errorPanel = panels.find((panel) => panel.querySelector('.field-error, .errorlist, .message.error'));
+        const hashKey = window.location.hash.startsWith('#tab-') ? window.location.hash.slice(5) : '';
+        const hashButton = buttons.find((button) => button.dataset.documentTab === hashKey);
+        if (errorPanel) activate(errorPanel.dataset.documentTabPanel);
+        else if (hashButton) activate(hashKey);
       });
     })();
   </script>

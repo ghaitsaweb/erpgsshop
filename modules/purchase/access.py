@@ -315,6 +315,8 @@ def scope_purchase_queryset(user, entity, queryset):
 
 
 def scope_purchase_form(form, user, entity):
+    if entity in {"purchase-requests", "purchases"}:
+        form.purchase_attachment_actor = user
     if entity == "purchases" and "product" in form.fields:
         order = getattr(form.instance, "_state", None)
         order = order.fields_cache.get("order") if order is not None else None

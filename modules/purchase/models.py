@@ -1,6 +1,7 @@
 from calendar import monthrange
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from uuid import uuid4
 
 from django.conf import settings
@@ -20,6 +21,42 @@ from core.models import (
     TimeStampedModel,
     Warehouse,
 )
+
+
+MAX_PURCHASE_DOCUMENT_ATTACHMENTS = 100
+MAX_PURCHASE_DOCUMENT_ATTACHMENT_SIZE = 25 * 1024 * 1024
+MAX_PURCHASE_DOCUMENT_ATTACHMENT_TOTAL_SIZE = 100 * 1024 * 1024
+PURCHASE_DOCUMENT_ATTACHMENT_EXTENSIONS = ("pdf", "jpg", "jpeg", "png")
+
+
+def validate_purchase_document_attachment(value):
+    """Accept only the HMX PR/PO attachment formats with verified file signatures."""
+    FileExtensionValidator(PURCHASE_DOCUMENT_ATTACHMENT_EXTENSIONS)(value)
+    if value.size > MAX_PURCHASE_DOCUMENT_ATTACHMENT_SIZE:
+        raise ValidationError("Each Purchase attachment must be 25 MB or smaller.")
+    suffix = Path(value.name).suffix.casefold()
+    original_position = value.tell() if hasattr(value, "tell") else 0
+    try:
+        value.open("rb")
+        header = value.read(8)
+    finally:
+        if hasattr(value, "seek"):
+            value.seek(original_position)
+    signatures = {
+        ".pdf": lambda content: content.startswith(b"%PDF-"),
+        ".jpg": lambda content: content.startswith(b"\xff\xd8\xff"),
+        ".jpeg": lambda content: content.startswith(b"\xff\xd8\xff"),
+        ".png": lambda content: content.startswith(b"\x89PNG\r\n\x1a\n"),
+    }
+    if suffix not in signatures or not signatures[suffix](header):
+        raise ValidationError("Purchase attachments must contain a valid PDF, JPG, or PNG file.")
+
+
+def purchase_document_attachment_upload_to(instance, filename):
+    suffix = Path(filename).suffix.casefold()
+    document_kind = "purchase-request" if instance.purchase_request_id else "purchase-order"
+    document_id = instance.purchase_request_id or instance.purchase_order_id or "pending"
+    return f"purchase/{document_kind}/{document_id}/{uuid4().hex}{suffix}"
 
 
 def current_year():
@@ -248,6 +285,57 @@ class PurchaseRequest(PurchaseCostCenterStructuredFields, TimeStampedModel):
         return self.number
 
 
+class PurchaseDocumentAttachment(TimeStampedModel):
+    purchase_request = models.ForeignKey(
+        PurchaseRequest,
+        on_delete=models.CASCADE,
+        related_name="document_attachments",
+        blank=True,
+        null=True,
+    )
+    purchase_order = models.ForeignKey(
+        PurchaseOrder,
+        on_delete=models.CASCADE,
+        related_name="purchase_document_attachments",
+        blank=True,
+        null=True,
+    )
+    file = models.FileField(
+        upload_to=purchase_document_attachment_upload_to,
+        validators=[validate_purchase_document_attachment],
+    )
+    original_name = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=100, blank=True)
+    file_size = models.PositiveBigIntegerField()
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="uploaded_purchase_document_attachments",
+        blank=True,
+        null=True,
+    )
+
+    class Meta:
+        ordering = ["-created_at", "-pk"]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(purchase_request__isnull=False, purchase_order__isnull=True)
+                    | models.Q(purchase_request__isnull=True, purchase_order__isnull=False)
+                ),
+                name="purchase_attachment_exactly_one_document",
+            )
+        ]
+
+    def clean(self):
+        super().clean()
+        if bool(self.purchase_request_id) == bool(self.purchase_order_id):
+            raise ValidationError("A Purchase attachment must belong to exactly one PR or PO.")
+
+    def __str__(self):
+        return self.original_name
+
+
 class PurchaseRequestLine(PurchaseCostCenterStructuredFields, TimeStampedModel):
     class Status(models.TextChoices):
         DRAFT = "draft", "Draft"
@@ -408,6 +496,20 @@ class PurchaseQuotation(TimeStampedModel):
         blank=True,
         null=True,
     )
+    team = models.ForeignKey(
+        "PurchaseTeam",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="quotations",
+    )
+    assigned_to = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="assigned_purchase_quotations",
+    )
     number = models.CharField(max_length=40)
     request = models.ForeignKey(PurchaseRequest, on_delete=models.SET_NULL, blank=True, null=True, related_name="quotations")
     blanket_order = models.ForeignKey(
@@ -478,6 +580,17 @@ class PurchaseQuotation(TimeStampedModel):
                 errors["tender"] = "A Tender RFQ cannot also belong to a Purchase Request or Blanket Order."
         if self.warehouse_id and self.warehouse.company_id != self.company_id:
             errors["warehouse"] = "Destination warehouse must belong to the selected company."
+        if self.team_id and self.team.company_id != self.company_id:
+            errors["team"] = "Purchase Team must belong to the quotation company."
+        if self.assigned_to_id:
+            if not self.team_id:
+                errors["assigned_to"] = "Select a Purchase Team before assigning a PIC."
+            elif not PurchaseTeamMember.objects.filter(
+                team_id=self.team_id,
+                user_id=self.assigned_to_id,
+                active=True,
+            ).exists():
+                errors["assigned_to"] = "PIC must be an active member of the selected Purchase Team."
         if self.blanket_order_id:
             if self.blanket_order.company_id != self.company_id:
                 errors["blanket_order"] = "Blanket Order must belong to the quotation company."
@@ -744,6 +857,20 @@ class PurchaseTender(PurchaseCostCenterStructuredFields, TimeStampedModel):
         blank=True,
         null=True,
     )
+    team = models.ForeignKey(
+        "PurchaseTeam",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="tenders",
+    )
+    assigned_to = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="assigned_purchase_tenders",
+    )
     number = models.CharField(max_length=40)
     title = models.CharField(max_length=180)
     category = models.CharField(max_length=10, choices=Category.choices)
@@ -826,6 +953,17 @@ class PurchaseTender(PurchaseCostCenterStructuredFields, TimeStampedModel):
             errors["close_date"] = "Close date must be on or after bid start date."
         if self.warehouse_id and self.warehouse.company_id != self.company_id:
             errors["warehouse"] = "Warehouse must belong to the selected company."
+        if self.team_id and self.team.company_id != self.company_id:
+            errors["team"] = "Purchase Team must belong to the Tender company."
+        if self.assigned_to_id:
+            if not self.team_id:
+                errors["assigned_to"] = "Select a Purchase Team before assigning a PIC."
+            elif not PurchaseTeamMember.objects.filter(
+                team_id=self.team_id,
+                user_id=self.assigned_to_id,
+                active=True,
+            ).exists():
+                errors["assigned_to"] = "PIC must be an active member of the selected Purchase Team."
         if self.evaluation_weight_total != 100:
             errors["evaluation_price_weight"] = "Evaluation criteria weights must total exactly 100%."
         if errors:
@@ -3308,6 +3446,10 @@ class PurchaseOrderControl(PurchaseCostCenterStructuredFields, TimeStampedModel)
         BILLED = "billed", "Fully Billed"
         PAID = "paid", "Paid"
 
+    class DownpaymentMethod(models.TextChoices):
+        WITH_VAT = "with_vat", "With VAT"
+        WITHOUT_VAT = "without_vat", "Without VAT"
+
     order = models.OneToOneField(PurchaseOrder, on_delete=models.CASCADE, related_name="purchase_control")
     order_type = models.ForeignKey(PurchaseOrderType, on_delete=models.SET_NULL, blank=True, null=True, related_name="orders")
     order_template = models.ForeignKey(
@@ -3393,6 +3535,11 @@ class PurchaseOrderControl(PurchaseCostCenterStructuredFields, TimeStampedModel)
     expected_return_date = models.DateField(blank=True, null=True, editable=False)
     total_rental_duration = models.PositiveIntegerField(default=0, editable=False)
     communication_history = models.TextField(blank=True)
+    downpayment_method = models.CharField(
+        max_length=16,
+        choices=DownpaymentMethod.choices,
+        default=DownpaymentMethod.WITH_VAT,
+    )
     receiving_status = models.CharField(max_length=20, choices=ReceivingStatus.choices, default=ReceivingStatus.NOT_RECEIVED)
     accounting_status = models.CharField(max_length=20, choices=AccountingStatus.choices, default=AccountingStatus.NOT_BILLED)
     match_status = models.CharField(

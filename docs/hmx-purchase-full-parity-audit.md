@@ -7,6 +7,12 @@
 - Resolved module root: `hmx/module`.
 - Git commit: `b59d2b9d743799729ca969e559ae992fea8b19f0`, resolved from
   the designated read-only worktree on 14 November 2026.
+- On 16 November 2026 the same designated directory was resolved again before
+  the document-tab slice. Its `hmx/module` tree remained readable, but the
+  resolver could no longer obtain Git metadata (`git_root: null`, `commit:
+  null`). The prior recorded commit is retained as historical evidence; the
+  current tab comparison is source-path verified but commit identity is **NOT
+  VERIFIED**.
 - Runtime: the HMX process listening on server port `8000` resolves its working
   directory to the designated `hmx` directory and returned HTTP 200 during the
   13 November 2026 audit.
@@ -31,6 +37,7 @@ was changed by this audit.
 | Blanket pricing and tax interaction | `core_purchase.blanketorderline` | `modules.purchase.BlanketOrderLine`, quotation-line trace fields, and `PurchaseOrderLinePricingProvenance` | ADAPTED | Tier pricing, draft price refresh, manual-price preservation, discount-formula traceability, generated free-product synchronization, tax-inclusive RFQ/PO propagation, and immutable approval/confirmation tax snapshots are covered. ERP adapts HMX's multi-tax relation to the local percentage-tax model; exact multi-tax, global-discount, and client-side onchange behavior remains deferred. |
 | Purchase Request conversion | `core_purchase.purchaserequest` + conversion wizards | `modules.purchase.services`, forms, and views | ADAPTED | RFQ, Blanket, Tender, Direct Purchase, line decisions, re-request paths, header/line timeline defaults, and structured cost-center propagation exist with bounded line handling. PR estimated cost takes precedence during RFQ creation; zero estimated cost falls back to the vendor tier with price trace and free-product benefit. The complete HMX client-side onchange matrix is not yet verified. |
 | RFQ and Purchase Order lifecycle | `core_purchase.purchaseorder` | `PurchaseQuotation`, core `PurchaseOrder`, and `PurchaseOrderControl` | ADAPTED | Draft RFQ through selected PO, approval, revision, receiving, vendor limits, cancellation effects, bounded multi-vendor RFQ comparison, direct-PO price refresh, rental controls, header/line timeline propagation, commercial-term snapshots, cost-center accounting propagation, editable Standard/Urgent/Follow-up RFQ mail, immutable delivery evidence, PDF attachment, and scoped Purchase prints are covered. |
+| HMX document tabs and mobile form shell | `core_purchase` PR/RFQ/PO/Tender/Blanket views | generic document-tab registry + Purchase-owned tab registrations/templates | ADAPTED | Accessible tabs expose line editing, Team/PIC, PR/PO multi-file attachments, Tender participant cards/completion/scoring matrices, PO milestones/service work orders/billing/communication, approval history, agreement policy, and metadata. PO Billing includes invoicing policy, VAT treatment, fixed/percentage configuration, status, and bounded bill history. Tab fields stay inside the owning form, validation opens the failing tab, and mobile uses touch-sized controls plus horizontally scrollable matrices. ERP adapts HMX's custom multi-file and Vue widgets to native Django child records/templates; commit identity and DB-backed regressions for this latest slice remain NOT VERIFIED. |
 | Tender and award | `core_purchase.tender` / `tenderaward` | `PurchaseTender`, linked RFQs, bids, allocations, and responses | ADAPTED | The 50/20/15/5/10 evaluation criteria, persisted component scores and vendor rank, HMX-shaped Bid Comparison and Bid Allocation Matrix workspaces, separate award actions, single-rank allocation, 60/30/10 split allocation with capacity fill, audited manual create/write/unlink, response creation, rollback, template/product onchange, timeline propagation, configured vendor-scope selection, Tender-linked RFQ creation, and RFQ-to-Bid submission now match the covered HMX contract. All extension-module Tender behavior remains to be verified. |
 | Vendor onboarding and legal documents | `core_purchase` vendor models | Purchase vendor profile/legal/prequalification/change-proposal models | ADAPTED | Blocking documents, expiry, review, prequalification, blacklist restoration, company-safe similar-vendor detection, parent-vendor validation, and approval-gated data changes are covered. HMX address subrecords and bank-account master records remain adapted to local Contact/Profile fields. |
 | Vendor pricelist | `core_purchase.vendorpricelist*` | Purchase pricelist, tier, amendment, import, and eligibility services | ADAPTED | Approval, tier lookup, eligibility, import, amendment, initial Blanket free-product synchronization, and bounded price traceability exist. The complete HMX edit-time/onchange behavior remains deferred. |
@@ -41,6 +48,46 @@ was changed by this audit.
 | Accounting and inventory extensions | `core_purchase_accounting`, `core_purchase_inventory`, `core_inventory_purchase` | Purchase accounting, receiving, transfer, return, and three-way-match services | ADAPTED | Core bill/receipt/return effects are covered. Every HMX extension view, consignment, procurement-planning, and stock-demand workflow is not verified. |
 | Budget, construction, manufacturing, intercompany, localization, SG, MCP | extension modules listed above | Multiple ERP modules | NOT VERIFIED | Presence of similarly named records is not behavioral parity. Each extension requires its own owner, workflow, security, side-effect, UI, and rollback audit. |
 | Philippines Purchase print | `core_purchase_ph` | generic PDF hook + `modules.purchase.localized_reports` + Finance `CountryTaxProfile` | ADAPTED | PH taxpayer name, registered address, VAT REG TIN, printing actor/time, and configured software name/version are injected into Purchase Order and RFQ PDFs only when an active PH company tax profile exists. Focused DB test remains pending the reusable test-database rebuild. |
+
+## Purchase attachment, billing-tab, and Tender-widget slice completed on 16 November 2026
+
+- Reinspected `basic/core_purchase` version `1.0.9` in the designated read-only
+  HMX worktree. The resolver confirmed the source tree is readable but again
+  returned `git_root: null` and `commit: null`; this slice is source-path
+  verified and commit identity remains **NOT VERIFIED**.
+- Adapted HMX's `multi=True` PR/PO `attachment_files` fields to bounded child
+  records owned by `modules.purchase`. PDF/JPG/PNG extensions and file
+  signatures are validated; each file is capped at 25 MB and each document at
+  100 files/100 MB. Download resolves the scoped parent first and returns an
+  attachment response with `nosniff`; a foreign PR/PO attachment ID cannot be
+  used to cross the company or document boundary.
+- Added the Attachment File tab at the HMX positions: after Order Lines for PR,
+  and between Communication History and Other Information for PO. Draft PR/PO
+  forms save attachment metadata in the document database transaction; PO
+  attachments remain independently manageable while Sent or Waiting Approval,
+  matching HMX's attachment-specific edit window without unlocking other PO
+  fields.
+- Completed the PO Billing Policy panel with HMX's Ordered/Delivered policy and
+  With VAT/Without VAT treatment plus the existing GS fixed/percentage down
+  payment plan. Percentage down payments use the tax-inclusive total for With
+  VAT and the bounded Purchase pricing-provenance untaxed total for Without
+  VAT. Policy fields lock after the first bill provenance and the first 100
+  bill records render in deterministic order.
+- Replaced the Tender participant tables with responsive vendor cards that
+  combine invitation and RFQ state without per-card queries. PQTE alone exposes
+  Document Completion; its persisted JSON columns/cells now render as the HMX
+  status matrix with review links. Vendor Scoring is visible only in Bid
+  Selection, Awarded, and Closed and presents weighted criteria plus vendor and
+  product-line matrices.
+- Interactive attachment lists and every tab history are capped at 100 rows;
+  Tender vendors/documents retain their existing bounded workflow limits. The
+  new reads use fixed-query maps rather than relation queries inside templates.
+- Verification for this slice: Python compilation, Django system check, 18
+  template compilations, migration drift (`No changes detected`), ten generic
+  registry/Purchase UI unit tests, and `git diff --check` pass. The DB-backed
+  Purchase attachment/render/query-growth suite is present but remains **NOT
+  RUN** until an isolated reusable test schema is available; production-scale
+  performance is not claimed.
 
 ## Tender evaluation and award-strategy slice completed in this audit
 
@@ -504,6 +551,44 @@ was changed by this audit.
   agreement terms and approval justification.
 - Mail Templates and RFQ Communication History are exposed in the Purchase
   workspace, while communication history remains read-only.
+
+## HMX document tabs and mobile-input slice completed in this audit
+
+- Re-read the complete `core_purchase` manifest and the directly participating
+  Purchase extension manifests from the designated HMX source. The tab contract
+  was traced from `purchase_request_views.xml`, `purchase_order_views.xml`,
+  `tender_views.xml`, and `blanket_order_views.xml`.
+- Added a generic, deterministic document-tab registry with stable keys,
+  explicit ordering anchors, collision checks, form-field ownership checks,
+  line-section ownership checks, and module-owned templates. Shared core does
+  not import Purchase tab implementations or branch on individual Purchase tab
+  keys.
+- Added real tab panels for Purchase Request, RFQ, Purchase Order, Tender, and
+  Blanket Order. Existing line formsets remain editable inside the Order Lines
+  tab; fields such as Billing Policy, Agreement Policy, Team, PIC, and Milestone
+  Template remain part of the original form submission rather than duplicated
+  display values.
+- Added RFQ and Tender Team/PIC fields as an additive migration. The team must
+  belong to the document company and PIC must be an active team member. Existing
+  rows remain valid because all four new foreign keys are nullable.
+- Exposed bounded read-only tab data: at most 100 PO milestones, Service Work
+  Orders, communication records, Tender invitations, Tender RFQs, or document
+  completion vendor rows are loaded per section. A `has_more` indicator prevents
+  the UI from implying the page contains complete history. The relevant path is
+  a bounded interactive page, ordered deterministically; it is not a complete-
+  data report.
+- Added accessible keyboard/click behavior (`tablist`, `tab`, `tabpanel`, arrow,
+  Home, and End navigation), URL-hash restoration, and automatic activation of
+  the tab containing a validation error. Mobile tab buttons have touch-sized
+  targets, horizontal scroll, one-column fields, 16px inputs, and touch-friendly
+  editable line-table controls.
+- Verification: six registry/builder invariant tests pass without a database;
+  all 15 changed templates compile; Django system check, migration drift, Python
+  compilation, and native Scale Guard pass. The focused PostgreSQL suite was
+  started against an isolated ephemeral database, but the first-time all-app
+  schema bootstrap did not reach the test cases after 20 minutes and was
+  stopped; DB-backed form/render and 2-versus-12 communication query tests are
+  therefore **NOT RUN**, not PASS.
 
 ## Verification snapshot
 

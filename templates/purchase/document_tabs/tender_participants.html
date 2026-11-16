@@ -1,0 +1,44 @@
+<section class="document-tab-card tender-participant-workspace" aria-label="Tender participating vendors">
+  <header class="tender-tab-heading">
+    <div>
+      <p class="eyebrow">Participating Vendors</p>
+      <h3>Vendor invitation and RFQ progress</h3>
+    </div>
+    <span class="tender-tab-count">{{ tender_tab_participants|length }} vendor{{ tender_tab_participants|length|pluralize }}</span>
+  </header>
+
+  <div class="tender-participant-grid">
+    {% for item in tender_tab_participants %}
+      <article class="tender-participant-card {% if item.invitation.status == 'declined' or item.invitation.status == 'expired' %}is-alert{% endif %}">
+        <header>
+          <span class="tender-vendor-avatar" aria-hidden="true">{{ item.vendor.name|slice:":1"|upper }}</span>
+          <div>
+            <h4>{{ item.vendor.name }}</h4>
+            <small>{{ item.vendor.code|default:"Vendor" }}</small>
+          </div>
+          {% if item.invitation %}
+            <span class="document-state status-{{ item.invitation.status }}">{{ item.invitation.get_status_display }}</span>
+          {% elif item.quotation %}
+            <span class="document-state status-{{ item.quotation.status }}">{{ item.quotation.get_status_display }}</span>
+          {% endif %}
+        </header>
+
+        <dl class="tender-participant-facts">
+          <div><dt>Invited</dt><dd>{{ item.invitation.invited_at|date:"Y-m-d H:i"|default:"Not sent" }}</dd></div>
+          <div><dt>Response</dt><dd>{{ item.invitation.response_at|date:"Y-m-d H:i"|default:"Pending" }}</dd></div>
+          <div><dt>RFQ</dt><dd>{% if item.quotation %}{{ item.quotation.number }}{% else %}Not created{% endif %}</dd></div>
+          <div><dt>Quoted</dt><dd>{% if item.quotation %}{{ item.quotation.currency }} {{ item.quotation.quoted_amount }}{% else %}—{% endif %}</dd></div>
+        </dl>
+
+        {% if item.quotation %}
+          <a class="btn btn-secondary tender-participant-action" href="{% url 'entity_edit' 'purchase-quotations' item.quotation.pk %}">Open RFQ</a>
+        {% elif item.invitation.message %}
+          <p class="tender-participant-note">{{ item.invitation.message }}</p>
+        {% endif %}
+      </article>
+    {% empty %}
+      <div class="empty tender-participant-empty">No participating vendor has been invited.</div>
+    {% endfor %}
+  </div>
+  {% if tender_tab_participants_has_more %}<p class="document-tab-more">Showing the first 100 participating vendors.</p>{% endif %}
+</section>

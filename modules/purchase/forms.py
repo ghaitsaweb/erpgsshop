@@ -1,4 +1,5 @@
 from decimal import Decimal
+from pathlib import Path
 
 from django import forms
 from django.db import transaction
@@ -14,11 +15,17 @@ from .models import (
     AwardStrategy,
     BlanketOrder,
     BlanketOrderLine,
+    MAX_PURCHASE_DOCUMENT_ATTACHMENTS,
+    MAX_PURCHASE_DOCUMENT_ATTACHMENT_TOTAL_SIZE,
+    PurchaseDocumentAttachment,
     PurchaseOrderControl,
+    PurchaseOrderInvoiceAccounting,
+    PurchaseInvoiceAccounting,
     PurchaseOrderLinePricingProvenance,
     PurchaseLegalDocument,
     PurchaseMailTemplate,
     PurchaseRemarkTemplate,
+    PurchaseQuotation,
     PurchaseRequest,
     PurchaseRequestLine,
     PurchaseTeam,
@@ -26,6 +33,7 @@ from .models import (
     PurchaseTender,
     PurchaseTenderLine,
     VendorChangeProposal,
+    validate_purchase_document_attachment,
 )
 from .purchase_cost_center import validate_purchase_cost_center_values
 from .services import (
@@ -134,6 +142,167 @@ def _clean_purchase_cost_center_fields(form, cleaned, company_id):
     else:
         cleaned.update(values)
     return cleaned
+
+
+def _clean_purchase_team_assignment(form, cleaned, company_id):
+    team = cleaned.get("team") or cleaned.get("purchase_team")
+    assigned_to = cleaned.get("assigned_to")
+    if team and company_id and team.company_id != company_id:
+        form.add_error(
+            "team" if "team" in form.fields else "purchase_team",
+            "Purchase Team must belong to the document company.",
+        )
+    if assigned_to and not team:
+        form.add_error("assigned_to", "Select a Purchase Team before assigning a PIC.")
+    elif assigned_to and not PurchaseTeamMember.objects.filter(
+        team_id=team.pk,
+        user_id=assigned_to.pk,
+        active=True,
+    ).exists():
+        form.add_error(
+            "assigned_to",
+            "PIC must be an active member of the selected Purchase Team.",
+        )
+    return cleaned
+
+
+def _scope_purchase_team_assignment_choices(form, team_field="team"):
+    if "assigned_to" not in form.fields:
+        return
+    team_value = None
+    if form.is_bound:
+        team_value = form.data.get(form.add_prefix(team_field))
+    if not team_value:
+        team_value = form.initial.get(team_field)
+    if hasattr(team_value, "pk"):
+        team_value = team_value.pk
+    assignment_filter = {"purchase_team_memberships__active": True}
+    if str(team_value or "").isdigit():
+        assignment_filter["purchase_team_memberships__team_id"] = int(team_value)
+    form.fields["assigned_to"].queryset = (
+        form.fields["assigned_to"].queryset.filter(**assignment_filter)
+        .distinct()
+        .order_by("username", "pk")
+    )
+
+
+class PurchaseMultipleFileInput(forms.ClearableFileInput):
+    allow_multiple_selected = True
+
+
+class PurchaseMultipleFileField(forms.FileField):
+    def clean(self, data, initial=None):
+        files = data if isinstance(data, (list, tuple)) else [data] if data else []
+        clean_file = super().clean
+        return [clean_file(item, initial) for item in files]
+
+
+class PurchaseDocumentAttachmentFormMixin:
+    attachment_parent_field = None
+
+    def _initialize_purchase_attachments(self):
+        self.fields["attachment_files"] = PurchaseMultipleFileField(
+            required=False,
+            label="Add attachment files",
+            validators=[validate_purchase_document_attachment],
+            widget=PurchaseMultipleFileInput(
+                attrs={
+                    "accept": ".pdf,.jpg,.jpeg,.png",
+                    "data-purchase-attachment-input": "true",
+                }
+            ),
+            help_text="PDF, JPG, or PNG. Multiple files supported; maximum 25 MB each and 100 MB per document.",
+        )
+        self.purchase_attachment_rows = []
+        self.purchase_attachment_has_more = False
+        if self.instance and self.instance.pk:
+            filters = {f"{self.attachment_parent_field}_id": self.instance.pk}
+            rows = list(
+                PurchaseDocumentAttachment.objects.filter(**filters)
+                .select_related("uploaded_by")
+                .order_by("-created_at", "-pk")[: MAX_PURCHASE_DOCUMENT_ATTACHMENTS + 1]
+            )
+            self.purchase_attachment_rows = rows[:MAX_PURCHASE_DOCUMENT_ATTACHMENTS]
+            self.purchase_attachment_has_more = len(rows) > MAX_PURCHASE_DOCUMENT_ATTACHMENTS
+        self.fields["remove_attachments"] = forms.MultipleChoiceField(
+            required=False,
+            label="Remove existing attachments",
+            choices=[
+                (str(row.pk), f"{row.original_name} ({row.file_size / 1024:.1f} KB)")
+                for row in self.purchase_attachment_rows
+            ],
+            widget=forms.CheckboxSelectMultiple,
+        )
+
+    def _clean_purchase_attachments(self, cleaned):
+        files = cleaned.get("attachment_files") or []
+        remove_ids = {int(value) for value in cleaned.get("remove_attachments") or []}
+        retained = [row for row in self.purchase_attachment_rows if row.pk not in remove_ids]
+        if self.purchase_attachment_has_more or len(retained) + len(files) > MAX_PURCHASE_DOCUMENT_ATTACHMENTS:
+            self.add_error(
+                "attachment_files",
+                f"A Purchase document supports at most {MAX_PURCHASE_DOCUMENT_ATTACHMENTS} attachment files.",
+            )
+        retained_size = sum(row.file_size for row in retained)
+        new_size = sum(upload.size for upload in files)
+        if retained_size + new_size > MAX_PURCHASE_DOCUMENT_ATTACHMENT_TOTAL_SIZE:
+            self.add_error(
+                "attachment_files",
+                "Purchase attachment files must total 100 MB or less per document.",
+            )
+        return cleaned
+
+    def _save_purchase_attachments(self, parent):
+        remove_ids = {int(value) for value in self.cleaned_data.get("remove_attachments") or []}
+        removed_rows = [row for row in self.purchase_attachment_rows if row.pk in remove_ids]
+        if removed_rows:
+            PurchaseDocumentAttachment.objects.filter(
+                pk__in=[row.pk for row in removed_rows]
+            ).delete()
+            for row in removed_rows:
+                storage = row.file.storage
+                stored_name = row.file.name
+                transaction.on_commit(
+                    lambda storage=storage, stored_name=stored_name: storage.delete(stored_name)
+                )
+        actor = getattr(self, "purchase_attachment_actor", None)
+        uploads = self.cleaned_data.get("attachment_files") or []
+        attachment_rows = []
+        for upload in uploads:
+            values = {
+                self.attachment_parent_field: parent,
+                "file": upload,
+                "original_name": Path(upload.name).name[:255],
+                "content_type": str(getattr(upload, "content_type", ""))[:100],
+                "file_size": upload.size,
+                "uploaded_by": actor if getattr(actor, "is_authenticated", False) else None,
+            }
+            attachment_rows.append(PurchaseDocumentAttachment(**values))
+        if attachment_rows:
+            PurchaseDocumentAttachment.objects.bulk_create(attachment_rows)
+
+
+class PurchaseAttachmentManagementForm(PurchaseDocumentAttachmentFormMixin, forms.Form):
+    def __init__(self, *args, parent, parent_field, actor, **kwargs):
+        self.instance = parent
+        self.attachment_parent_field = parent_field
+        super().__init__(*args, **kwargs)
+        self.purchase_attachment_actor = actor
+        self._initialize_purchase_attachments()
+
+    def clean(self):
+        return self._clean_purchase_attachments(super().clean())
+
+    def save(self):
+        self._save_purchase_attachments(self.instance)
+        return self.instance
+
+
+def save_purchase_document_attachments_after_lines(instance, form, actor):
+    if not isinstance(form, PurchaseDocumentAttachmentFormMixin):
+        raise TypeError("Purchase attachment save hook requires a Purchase attachment form.")
+    form.purchase_attachment_actor = actor
+    form._save_purchase_attachments(instance)
 
 
 class VendorChangeProposalForm(StyledModelForm):
@@ -255,7 +424,9 @@ class PurchaseTeamMemberForm(StyledModelForm):
         return cleaned
 
 
-class PurchaseRequestDocumentForm(StyledModelForm):
+class PurchaseRequestDocumentForm(PurchaseDocumentAttachmentFormMixin, StyledModelForm):
+    attachment_parent_field = "purchase_request"
+
     class Meta:
         model = PurchaseRequest
         fields = [
@@ -282,6 +453,7 @@ class PurchaseRequestDocumentForm(StyledModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._initialize_purchase_attachments()
         self._previous_expected_date = (
             self.instance.required_date if self.instance and self.instance.pk else None
         )
@@ -312,7 +484,7 @@ class PurchaseRequestDocumentForm(StyledModelForm):
             cleaned,
             company.pk if company else None,
         )
-        return cleaned
+        return self._clean_purchase_attachments(cleaned)
 
     def save(self, commit=True):
         saved = super().save(commit=commit)
@@ -384,6 +556,47 @@ class PurchaseRequestLineDocumentForm(StyledModelForm):
         )
 
 
+class PurchaseQuotationDocumentForm(StyledModelForm):
+    class Meta:
+        model = PurchaseQuotation
+        fields = [
+            "company",
+            "order_type",
+            "order_template",
+            "number",
+            "request",
+            "vendor",
+            "warehouse",
+            "issue_date",
+            "response_deadline",
+            "expected_date",
+            "currency",
+            "quoted_amount",
+            "team",
+            "assigned_to",
+            "notes",
+        ]
+        labels = {"team": "Purchase Team", "assigned_to": "PIC"}
+        widgets = {
+            "issue_date": forms.DateInput(attrs={"type": "date"}),
+            "response_deadline": forms.DateInput(attrs={"type": "date"}),
+            "expected_date": forms.DateInput(attrs={"type": "date"}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        _scope_purchase_team_assignment_choices(self)
+
+    def clean(self):
+        cleaned = super().clean()
+        company = cleaned.get("company")
+        return _clean_purchase_team_assignment(
+            self,
+            cleaned,
+            company.pk if company else None,
+        )
+
+
 class PurchaseTenderDocumentForm(StyledModelForm):
     class Meta:
         model = PurchaseTender
@@ -415,8 +628,12 @@ class PurchaseTenderDocumentForm(StyledModelForm):
             "cost_center_distribution_ids",
             "cost_center_distribution_data",
             "cost_center_analytic_tag_ids",
+            "team",
+            "assigned_to",
             "description",
         ]
+
+        labels = {"team": "Purchase Team", "assigned_to": "PIC"}
 
         widgets = {
             "publish_date": forms.DateInput(attrs={"type": "date"}),
@@ -427,6 +644,7 @@ class PurchaseTenderDocumentForm(StyledModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        _scope_purchase_team_assignment_choices(self)
         self.fields["order_template"].widget.attrs["data-tender-onchange-url"] = reverse(
             "purchase_tender_onchange"
         )
@@ -447,6 +665,11 @@ class PurchaseTenderDocumentForm(StyledModelForm):
         if template and template.order_type_id:
             cleaned["order_type"] = template.order_type
             self.instance.order_type = template.order_type
+        _clean_purchase_team_assignment(
+            self,
+            cleaned,
+            company.pk if company else None,
+        )
         return _clean_purchase_cost_center_fields(
             self,
             cleaned,
@@ -539,8 +762,10 @@ class BlanketOrderDocumentForm(StyledModelForm):
         )
 
 
-class PurchaseOrderDocumentForm(PurchaseOrderForm):
+class PurchaseOrderDocumentForm(PurchaseDocumentAttachmentFormMixin, PurchaseOrderForm):
     """Expose Purchase-owned PO control fields without extending the core PO model."""
+
+    attachment_parent_field = "purchase_order"
 
     expiry_date = forms.DateField(
         required=False,
@@ -575,11 +800,46 @@ class PurchaseOrderDocumentForm(PurchaseOrderForm):
         queryset=PurchaseRemarkTemplate.objects.all(),
         required=False,
     )
+    downpayment_method = forms.ChoiceField(
+        choices=PurchaseOrderControl.DownpaymentMethod.choices,
+        initial=PurchaseOrderControl.DownpaymentMethod.WITH_VAT,
+        widget=forms.RadioSelect,
+        label="Down Payment Method",
+    )
+    downpayment_type = forms.ChoiceField(
+        choices=PurchaseOrderInvoiceAccounting.DownpaymentType.choices,
+        initial=PurchaseOrderInvoiceAccounting.DownpaymentType.FIXED_AMOUNT,
+        widget=forms.RadioSelect,
+        label="Down Payment Basis",
+    )
+    downpayment_amount = forms.DecimalField(
+        required=False,
+        min_value=0,
+        max_digits=18,
+        decimal_places=2,
+        initial=0,
+        label="Fixed Down Payment Amount",
+    )
+    downpayment_percentage = forms.DecimalField(
+        required=False,
+        min_value=0,
+        max_value=100,
+        max_digits=5,
+        decimal_places=2,
+        initial=0,
+        label="Down Payment Percentage",
+    )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._initialize_purchase_attachments()
+        self.fields["invoicing_policy"].widget = forms.RadioSelect(
+            choices=self.fields["invoicing_policy"].choices
+        )
         self._previous_expected_date = None
         self._previous_expiry_date = None
+        self._purchase_billing_plan = None
+        self._purchase_billing_locked = False
         if self.instance and self.instance.pk:
             control = PurchaseOrderControl.objects.filter(order_id=self.instance.pk).only(
                 "expiry_date",
@@ -602,6 +862,7 @@ class PurchaseOrderDocumentForm(PurchaseOrderForm):
                 "remark_template",
                 "remark_template_code",
                 "remark_template_name",
+                "downpayment_method",
             ).first()
             if control:
                 self._previous_expected_date = control.expected_date
@@ -627,8 +888,33 @@ class PurchaseOrderDocumentForm(PurchaseOrderForm):
                         "is_multiple_expected_date": control.is_multiple_expected_date,
                         "is_multiple_rental_duration": control.is_multiple_rental_duration,
                         "remark_template": control.remark_template_id,
+                        "downpayment_method": control.downpayment_method,
                     }
                 )
+            self._purchase_billing_plan = PurchaseOrderInvoiceAccounting.objects.filter(
+                order_id=self.instance.pk
+            ).first()
+            if self._purchase_billing_plan:
+                self.initial.update(
+                    {
+                        "downpayment_type": self._purchase_billing_plan.downpayment_type,
+                        "downpayment_amount": self._purchase_billing_plan.downpayment_amount,
+                        "downpayment_percentage": self._purchase_billing_plan.downpayment_percentage,
+                    }
+                )
+                self._purchase_billing_locked = PurchaseInvoiceAccounting.objects.filter(
+                    order_accounting_id=self._purchase_billing_plan.pk
+                ).exists()
+        if self._purchase_billing_locked:
+            for field_name in (
+                "invoicing_policy",
+                "downpayment_method",
+                "downpayment_type",
+                "downpayment_amount",
+                "downpayment_percentage",
+            ):
+                self.fields[field_name].disabled = True
+        _scope_purchase_team_assignment_choices(self, team_field="purchase_team")
 
     def clean(self):
         cleaned = super().clean()
@@ -647,12 +933,43 @@ class PurchaseOrderDocumentForm(PurchaseOrderForm):
             PurchaseRemarkTemplate.ApplicableDocument.ALL,
         }:
             self.add_error("remark_template", "This template is not applicable to Purchase Orders.")
+        _clean_purchase_team_assignment(
+            self,
+            cleaned,
+            company.pk if company else None,
+        )
         _clean_purchase_cost_center_fields(
             self,
             cleaned,
             company.pk if company else None,
         )
-        return cleaned
+        downpayment_type = cleaned.get("downpayment_type")
+        downpayment_amount = cleaned.get("downpayment_amount") or Decimal("0")
+        downpayment_percentage = cleaned.get("downpayment_percentage") or Decimal("0")
+        has_downpayment = bool(
+            downpayment_amount > 0
+            or downpayment_percentage > 0
+        )
+        if has_downpayment:
+            if (
+                downpayment_type
+                == PurchaseOrderInvoiceAccounting.DownpaymentType.FIXED_AMOUNT
+                and downpayment_amount <= 0
+            ):
+                self.add_error(
+                    "downpayment_amount",
+                    "Set a positive fixed Purchase down-payment amount.",
+                )
+            if (
+                downpayment_type
+                == PurchaseOrderInvoiceAccounting.DownpaymentType.PERCENTAGE
+                and downpayment_percentage <= 0
+            ):
+                self.add_error(
+                    "downpayment_percentage",
+                    "Set a positive Purchase down-payment percentage.",
+                )
+        return self._clean_purchase_attachments(cleaned)
 
     def save(self, commit=True):
         saved = super().save(commit=commit)
@@ -686,8 +1003,26 @@ class PurchaseOrderDocumentForm(PurchaseOrderForm):
                 self.cleaned_data.get("is_multiple_rental_duration")
             ),
             remark_template=self.cleaned_data.get("remark_template"),
+            downpayment_method=(
+                self.cleaned_data.get("downpayment_method")
+                or PurchaseOrderControl.DownpaymentMethod.WITH_VAT
+            ),
             updated_at=timezone.now(),
         )
+        downpayment_amount = self.cleaned_data.get("downpayment_amount") or Decimal("0")
+        downpayment_percentage = self.cleaned_data.get("downpayment_percentage") or Decimal("0")
+        has_downpayment = downpayment_amount > 0 or downpayment_percentage > 0
+        if has_downpayment:
+            PurchaseOrderInvoiceAccounting.objects.update_or_create(
+                order=saved,
+                defaults={
+                    "downpayment_type": self.cleaned_data.get("downpayment_type"),
+                    "downpayment_amount": downpayment_amount,
+                    "downpayment_percentage": downpayment_percentage,
+                },
+            )
+        elif self._purchase_billing_plan and not self._purchase_billing_locked:
+            self._purchase_billing_plan.delete()
         snapshot_purchase_order_commercial_defaults(saved)
         template = self.cleaned_data.get("remark_template")
         if "remark_template" in self.changed_data and template:

@@ -1,0 +1,29 @@
+<section class="document-tab-card" aria-label="Communication history">
+  <div class="line-table-wrap document-tab-table-wrap">
+    <table class="line-table document-tab-table">
+      <thead>
+        <tr>
+          <th>Date and time</th>
+          <th>Channel / status</th>
+          <th>Recipient</th>
+          <th>Subject</th>
+          <th>Sent by</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in purchase_tab_communications %}
+          <tr>
+            <td data-label="Date and time">{% if item.communicated_at %}{{ item.communicated_at|date:"Y-m-d H:i" }}{% else %}{{ item.created_at|date:"Y-m-d H:i" }}{% endif %}</td>
+            <td data-label="Channel / status">{% if item.direction %}{{ item.get_direction_display }}{% else %}{{ item.get_status_display }}{% endif %}{% if item.delivery_status %} · {{ item.delivery_status }}{% endif %}</td>
+            <td data-label="Recipient">{{ item.recipient|default:item.email_to|default:"—" }}</td>
+            <td data-label="Subject">{{ item.subject }}</td>
+            <td data-label="Sent by">{{ item.sender|default:item.sent_by|default:"—" }}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="5">No communication has been recorded.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if purchase_tab_communications_has_more %}<p class="document-tab-more">Showing the 100 most recent records. Open Communication History for older records.</p>{% endif %}
+</section>

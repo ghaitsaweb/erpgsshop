@@ -1,0 +1,10 @@
+<section class="document-tab-card document-metadata-card" aria-label="Other information">
+  <dl class="document-metadata-grid">
+    {% if object.created_at %}<div><dt>Created at</dt><dd>{{ object.created_at|date:"Y-m-d H:i" }}</dd></div>{% endif %}
+    {% if object.updated_at %}<div><dt>Updated at</dt><dd>{{ object.updated_at|date:"Y-m-d H:i" }}</dd></div>{% endif %}
+    {% if object.confirmed_at %}<div><dt>Confirmed at</dt><dd>{{ object.confirmed_at|date:"Y-m-d H:i" }}</dd></div>{% endif %}
+    {% if object.cancel_reason %}<div><dt>Cancellation reason</dt><dd>{{ object.cancel_reason }}</dd></div>{% endif %}
+    {% if object.reject_reason %}<div><dt>Rejection reason</dt><dd>{{ object.reject_reason }}</dd></div>{% endif %}
+    {% if object.decision_rejection_reason %}<div><dt>Decision rejection reason</dt><dd>{{ object.decision_rejection_reason }}</dd></div>{% endif %}
+  </dl>
+</section>

@@ -4,7 +4,7 @@ from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.core.exceptions import FieldDoesNotExist, ValidationError
+from django.core.exceptions import FieldDoesNotExist, ImproperlyConfigured, ValidationError
 from django.core.paginator import Paginator
 from django.db import IntegrityError, transaction
 from django.db.models import Count, F, ImageField, Max, Prefetch, Q, Sum
@@ -2913,6 +2913,75 @@ def entity_image(request, entity, pk, field_name):
     return response
 
 
+def _build_document_tabs(document, form, line_sections, instance, user):
+    tabs = []
+    tabbed_field_names = set()
+    tabbed_line_indexes = set()
+    line_sections_by_relation = {
+        section["line_relation"]: section for section in line_sections
+    }
+    captures = set()
+    for definition in document.get("tabs", ()):
+        if definition.get("requires_object") and instance is None:
+            continue
+        visibility = definition.get("is_visible")
+        if visibility is not None:
+            if not callable(visibility):
+                raise ImproperlyConfigured(
+                    f"Document tab '{definition.get('key', '')}' is_visible must be callable."
+                )
+            if not visibility(instance, user):
+                continue
+        field_names = tuple(definition.get("field_names", ()))
+        missing_fields = [name for name in field_names if name not in form.fields]
+        if missing_fields:
+            raise ImproperlyConfigured(
+                f"Document tab '{definition['key']}' references missing form fields: "
+                + ", ".join(missing_fields)
+            )
+        duplicated_fields = tabbed_field_names.intersection(field_names)
+        if duplicated_fields:
+            raise ImproperlyConfigured(
+                f"Document tab '{definition['key']}' repeats form fields: "
+                + ", ".join(sorted(duplicated_fields))
+            )
+        line_section = None
+        line_relation = definition.get("line_relation")
+        if line_relation:
+            line_section = line_sections_by_relation.get(line_relation)
+            if line_section is None:
+                raise ImproperlyConfigured(
+                    f"Document tab '{definition['key']}' references missing line relation "
+                    f"'{line_relation}'."
+                )
+            if line_section["index"] in tabbed_line_indexes:
+                raise ImproperlyConfigured(
+                    f"Document line relation '{line_relation}' is assigned to more than one tab."
+                )
+            tabbed_line_indexes.add(line_section["index"])
+        tabbed_field_names.update(field_names)
+        captures.update(definition.get("captures", ()))
+        tabs.append(
+            {
+                **definition,
+                "fields": [form[name] for name in field_names],
+                "line_section": line_section,
+            }
+        )
+    return {
+        "document_tabs": tabs,
+        "document_tab_captures": captures,
+        "document_header_fields": [
+            field for field in form if field.name not in tabbed_field_names
+        ],
+        "untabbed_line_sections": [
+            section
+            for section in line_sections
+            if section["index"] not in tabbed_line_indexes
+        ],
+    }
+
+
 def _document_context(request, entity, config, instance=None, mode="Create"):
     document = DOCUMENT_CONFIG[entity]
     model = config["model"]
@@ -3073,13 +3142,22 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
                     saved = apply_purchase_milestone_template(saved, milestone_template_id, request.user)
             if model._meta.app_label == "gsshop_construction":
                 handle_construction_document_save(entity, saved, request.user)
+            after_save = document.get("after_save")
+            if after_save is not None:
+                if not callable(after_save):
+                    raise ImproperlyConfigured(
+                        f"Document '{entity}' after_save must be callable."
+                    )
+                after_save(saved, form, request.user)
         saved.refresh_from_db()
         messages.success(request, f"{config['singular']} saved with its detail lines.")
         return None, redirect("entity_edit", entity=entity, pk=saved.pk)
 
     if not editable:
-        for field in form.fields.values():
-            field.disabled = True
+        always_editable_fields = set(document.get("always_editable_fields", ()))
+        for field_name, field in form.fields.items():
+            if field_name not in always_editable_fields:
+                field.disabled = True
         for section in line_sections:
             for line_form in section["formset"].forms:
                 for field in line_form.fields.values():
@@ -3144,6 +3222,9 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
         "totals": totals,
         "developer_meta": developer_metadata(model, entity=entity, instance=instance),
     }
+    context.update(
+        _build_document_tabs(document, form, line_sections, instance, request.user)
+    )
     context.update(_approval_transaction_context(instance, request.user, pending=document_approval))
     context_builder = document.get("context_builder")
     if instance and context_builder is not None:
@@ -3265,14 +3346,16 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
             or 0
         )
         bill_remaining = sum((line.remaining_to_bill for line in purchase_lines), 0) - pending_bill
-        billing_plan = (
-            PurchaseOrderInvoiceAccounting.objects.filter(order_id=instance.pk)
-            .select_related("downpayment_invoice", "settlement_invoice")
-            .first()
-        )
+        billing_plan = context.get("purchase_billing_plan")
+        if "purchase_billing_plan" not in context:
+            billing_plan = (
+                PurchaseOrderInvoiceAccounting.objects.filter(order_id=instance.pk)
+                .select_related("downpayment_invoice", "settlement_invoice")
+                .first()
+            )
         context["purchase_billing_plan"] = billing_plan
-        active_purchase_bills = []
-        if billing_plan:
+        active_purchase_bills = list(context.get("purchase_tab_billing_history", ()))
+        if billing_plan and "purchase_tab_billing_history" not in context:
             active_purchase_bills = list(
                 PurchaseInvoiceAccounting.objects.filter(order_accounting=billing_plan)
                 .exclude(invoice__status=Invoice.Status.CANCELLED)

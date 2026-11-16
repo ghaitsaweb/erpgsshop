@@ -5,6 +5,16 @@ from . import views
 
 urlpatterns = [
     path(
+        "app/<slug:entity>/<int:pk>/attachments/manage/",
+        views.purchase_document_attachment_manage,
+        name="purchase_document_attachment_manage",
+    ),
+    path(
+        "app/<slug:entity>/<int:pk>/attachments/<int:attachment_pk>/download/",
+        views.purchase_document_attachment_download,
+        name="purchase_document_attachment_download",
+    ),
+    path(
         "api/purchase-tenders/onchange/",
         views.purchase_tender_onchange,
         name="purchase_tender_onchange",

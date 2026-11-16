@@ -1,0 +1,10 @@
+{% load gsshop_developer %}
+{% for field in fields %}
+  {% developer_field field config.model as field_meta %}
+  <div class="field {% if field.field.widget.input_type == 'checkbox' %}field-checkbox{% endif %}" data-dev-field="{{ field_meta.name }}" data-dev-field-label="{{ field_meta.label }}" data-dev-field-type="{{ field_meta.type }}" data-dev-field-column="{{ field_meta.column }}" data-dev-field-relation="{{ field_meta.relation }}" data-dev-field-kind="{{ field_meta.kind }}" data-dev-required="{{ field_meta.required|yesno:'true,false' }}">
+    <label for="{{ field.id_for_label }}">{{ field.label }}{% if field.field.required %}<span class="required">*</span>{% endif %}</label>
+    {{ field }}
+    {% if field.help_text %}<small class="field-help">{{ field.help_text }}</small>{% endif %}
+    {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+  </div>
+{% endfor %}

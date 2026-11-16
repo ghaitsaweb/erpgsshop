@@ -1,0 +1,42 @@
+<section class="document-tab-card purchase-attachment-workspace" aria-label="Purchase document attachments">
+  <div class="purchase-attachment-dropzone">
+    <div>
+      <p class="eyebrow">Supporting documents</p>
+      <h3>Attachment File</h3>
+      <p>Upload PDF, JPG, or PNG files. You can select several files at once from a phone or desktop.</p>
+    </div>
+    <div class="document-tab-fields">
+      {% include "core/_document_bound_fields.html" with fields=tab.fields %}
+      {% if object and purchase_attachment_manage_allowed %}
+        <button
+          class="btn btn-primary purchase-attachment-save"
+          type="submit"
+          formaction="{% url 'purchase_document_attachment_manage' entity object.pk %}"
+          formmethod="post"
+        >Save attachment files</button>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="purchase-attachment-list" aria-live="polite">
+    <h3>Uploaded files</h3>
+    {% for item in form.purchase_attachment_rows %}
+      <article class="purchase-attachment-item">
+        <div class="purchase-attachment-icon" aria-hidden="true">📎</div>
+        <div>
+          <a href="{% url 'purchase_document_attachment_download' entity object.pk item.pk %}">{{ item.original_name }}</a>
+          <small>
+            {{ item.file_size|filesizeformat }}
+            · {{ item.created_at|date:"Y-m-d H:i" }}
+            {% if item.uploaded_by %}· {{ item.uploaded_by }}{% endif %}
+          </small>
+        </div>
+      </article>
+    {% empty %}
+      <p class="empty">No attachment file has been uploaded.</p>
+    {% endfor %}
+    {% if form.purchase_attachment_has_more %}
+      <p class="document-tab-more">Showing the newest 100 attachments.</p>
+    {% endif %}
+  </div>
+</section>

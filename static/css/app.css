@@ -681,9 +681,29 @@ input[type="checkbox"].form-control { width: 20px; min-height: 20px; }
 .document-state.status-cancelled, .document-state.status-reversed { color: #993b34; background: #fae7e5; }
 .document-header-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 17px 24px; }
 .document-lines { margin-top: 30px; }
-.document-tabbar { display: flex; gap: 22px; border-bottom: 1px solid var(--line); }
-.document-tabbar span { padding: 10px 3px; color: var(--muted); font-size: 11px; font-weight: 800; }
-.document-tabbar span.active { color: var(--green-dark); border-bottom: 2px solid var(--green); }
+.document-tabs { margin-top: 30px; }
+.document-tabbar { display: flex; gap: 22px; overflow-x: auto; border-bottom: 1px solid var(--line); scrollbar-width: thin; }
+.document-tabbar span,
+.document-tabbar button { flex: 0 0 auto; padding: 10px 3px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font: inherit; font-size: 11px; font-weight: 800; cursor: pointer; }
+.document-tabbar span.active,
+.document-tabbar button.active { color: var(--green-dark); border-bottom-color: var(--green); }
+.document-tabbar button:focus-visible { border-radius: 4px; outline: 2px solid var(--green); outline-offset: -2px; }
+.document-tab-panel { min-width: 0; padding-top: 4px; }
+.document-tab-panel[hidden] { display: none; }
+.document-tab-panel .document-lines { margin-top: 14px; }
+.document-tab-fields { margin-top: 18px; }
+.document-tab-card { margin-top: 18px; }
+.document-metadata-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 24px; margin: 0; }
+.document-metadata-grid div { padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.document-metadata-grid dt { color: var(--muted); font-size: 11px; font-weight: 800; text-transform: uppercase; }
+.document-metadata-grid dd { margin: 5px 0 0; color: var(--text); font-size: 13px; }
+.document-tab-table-wrap { margin-top: 10px; }
+.document-tab-table { min-width: 720px; }
+.document-tab-more { margin: 10px 2px 0; color: var(--muted); font-size: 11px; }
+.agreement-policy-help { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.agreement-policy-help > div { padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.agreement-policy-help h3 { margin: 0 0 6px; font-size: 14px; }
+.agreement-policy-help p { margin: 0; color: var(--muted); font-size: 12px; }
 .line-table-wrap { overflow-x: auto; }
 .line-table { min-width: 760px; }
 .line-table th { padding: 10px 8px; background: #fbfcfc; }
@@ -1051,6 +1071,70 @@ input[type="checkbox"].form-control { width: 20px; min-height: 20px; }
 .employee-kanban-card__footer code { color: #7a8798; font-size: 10px; font-weight: 800; }
 .employee-kanban-card__footer a { border-radius: 8px; padding: 7px 9px; background: #eaf0ff; color: #2947b6; font-size: 10px; font-weight: 850; }
 
+/* Purchase document parity: attachments, billing cards, and Tender matrices. */
+.purchase-attachment-workspace { display: grid; gap: 20px; }
+.purchase-attachment-dropzone { display: grid; grid-template-columns: minmax(220px, .8fr) minmax(300px, 1.2fr); gap: 20px; align-items: start; border: 1px dashed #aebfe0; border-radius: 14px; padding: 18px; background: #f7f9ff; }
+.purchase-attachment-dropzone h3, .purchase-attachment-list h3 { margin: 3px 0 7px; color: #263852; }
+.purchase-attachment-dropzone p { margin: 0; color: #65758c; }
+.purchase-attachment-dropzone input[type="file"] { width: 100%; min-height: 48px; border: 1px solid #cfd9e8; border-radius: 10px; padding: 9px; background: #fff; }
+.purchase-attachment-dropzone .field > ul { display: grid; gap: 7px; max-height: 220px; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
+.purchase-attachment-dropzone .field > ul label { display: flex; gap: 8px; align-items: center; font-weight: 700; }
+.purchase-attachment-list { display: grid; gap: 9px; }
+.purchase-attachment-item { display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 11px; align-items: center; border: 1px solid #e0e6ef; border-radius: 11px; padding: 11px 13px; background: #fff; }
+.purchase-attachment-icon { display: grid; width: 40px; height: 40px; place-items: center; border-radius: 10px; background: #edf2ff; }
+.purchase-attachment-item a { display: block; overflow: hidden; color: #2947b6; font-weight: 850; text-overflow: ellipsis; white-space: nowrap; }
+.purchase-attachment-item small { display: block; margin-top: 4px; color: #7d8ba0; }
+.purchase-billing-policy { display: grid; gap: 18px; }
+.purchase-billing-policy-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.purchase-billing-policy-grid .field { min-width: 0; border: 1px solid #dce4ef; border-radius: 13px; padding: 14px; background: #fff; }
+.purchase-billing-policy-grid .field:first-child, .purchase-billing-policy-grid .field:nth-child(2) { background: #f7f9ff; }
+.purchase-billing-policy-grid .field > ul { display: grid; gap: 8px; margin: 8px 0 0; padding: 0; list-style: none; }
+.purchase-billing-policy-grid .field > ul label { display: flex; min-height: 44px; gap: 9px; align-items: center; border: 1px solid #d9e1ec; border-radius: 10px; padding: 9px 11px; background: #fff; cursor: pointer; }
+.purchase-billing-policy-grid input[type="radio"] { width: 18px; height: 18px; accent-color: #3156c8; }
+.purchase-billing-summary { border: 1px solid #ccd9ee; border-radius: 13px; padding: 15px 17px; background: linear-gradient(135deg, #f1f5ff, #fff); }
+.purchase-billing-summary h3 { margin: 3px 0 7px; color: #263852; }
+.purchase-billing-summary p { margin: 0; color: #66768d; }
+.tender-tab-heading { display: flex; gap: 14px; align-items: flex-start; justify-content: space-between; margin-bottom: 16px; }
+.tender-tab-heading h3 { margin: 3px 0 0; color: #263852; }
+.tender-tab-count { display: inline-flex; min-height: 30px; align-items: center; border-radius: 999px; padding: 0 11px; background: #eaf0ff; color: #2947b6; font-size: 11px; font-weight: 850; }
+.tender-participant-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 14px; }
+.tender-participant-card { display: flex; min-height: 220px; flex-direction: column; gap: 14px; border: 1px solid #dbe3ee; border-radius: 14px; padding: 15px; background: #fff; box-shadow: 0 7px 20px rgb(31 52 89 / 6%); }
+.tender-participant-card.is-alert { border-color: #e2a09b; }
+.tender-participant-card > header { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+.tender-participant-card h4 { overflow: hidden; margin: 0; color: #263852; text-overflow: ellipsis; white-space: nowrap; }
+.tender-participant-card header small { display: block; margin-top: 3px; color: #8090a6; }
+.tender-vendor-avatar { display: grid; width: 44px; height: 44px; place-items: center; border-radius: 50%; background: linear-gradient(145deg, #3151bd, #7791e8); color: #fff; font-size: 17px; font-weight: 900; }
+.tender-participant-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin: 0; }
+.tender-participant-facts > div { min-width: 0; border-radius: 9px; padding: 9px; background: #f7f9fc; }
+.tender-participant-facts dt { color: #8593a6; font-size: 9px; font-weight: 850; letter-spacing: .04em; text-transform: uppercase; }
+.tender-participant-facts dd { overflow: hidden; margin: 4px 0 0; color: #34465f; font-size: 11px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+.tender-participant-action { align-self: flex-start; margin-top: auto; }
+.tender-participant-note { margin: auto 0 0; color: #65758c; font-size: 11px; }
+.tender-participant-empty { grid-column: 1 / -1; padding: 30px; text-align: center; }
+.tender-matrix-wrap { max-width: 100%; }
+.tender-completion-matrix { min-width: 760px; }
+.tender-completion-matrix th[scope="row"] { min-width: 190px; color: #2e405a; text-align: left; }
+.tender-completion-matrix th[scope="row"] small, .tender-completion-matrix td small { display: block; margin-top: 4px; color: #8290a4; font-weight: 600; }
+.tender-matrix-state { display: inline-flex; min-height: 27px; align-items: center; border-radius: 999px; padding: 0 9px; background: #eef1f5; color: #5d6c81; font-size: 10px; font-weight: 850; }
+.tender-matrix-state.is-success { background: #e3f8ec; color: #117044; }
+.tender-matrix-state.is-danger { background: #fff0ef; color: #a43d36; }
+.tender-matrix-state.is-warning { background: #fff4d8; color: #8a620a; }
+.tender-matrix-action { min-height: 36px; padding: 8px 10px; }
+.tender-criteria-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; width: 100%; margin: 14px 0 18px; }
+.tender-criteria-grid article { border: 1px solid #dce4ef; border-radius: 11px; padding: 11px; background: #f9fbff; }
+.tender-criteria-grid span, .tender-criteria-grid strong { display: block; }
+.tender-criteria-grid span { color: #728197; font-size: 10px; font-weight: 750; }
+.tender-criteria-grid strong { margin-top: 4px; color: #283b58; font-size: 18px; }
+.tender-criteria-meter { height: 5px; overflow: hidden; margin-top: 8px; border-radius: 999px; background: #dfe6f2; }
+.tender-criteria-meter i { display: block; height: 100%; border-radius: inherit; background: #3f62cf; }
+.tender-rank-badge { display: inline-flex; min-width: 31px; min-height: 31px; align-items: center; justify-content: center; border-radius: 50%; background: #eaf0ff; color: #2947b6; font-weight: 900; }
+.tender-evaluation-weight-card { border: 1px solid #dce4ef; border-radius: 13px; padding: 13px; background: linear-gradient(90deg, #eef3ff 0, #eef3ff var(--tender-weight-percent), #fff var(--tender-weight-percent), #fff 100%); }
+.tender-evaluation-weight-card input { font-size: 16px; font-weight: 850; }
+.tender-evaluation-total { display: grid; align-content: center; border: 1px solid #e2b3af; border-radius: 13px; padding: 13px; background: #fff5f4; color: #9f3e38; }
+.tender-evaluation-total.is-valid { border-color: #b7dfc7; background: #effaf3; color: #197247; }
+.tender-evaluation-total span, .tender-evaluation-total strong, .tender-evaluation-total small { display: block; }
+.tender-evaluation-total strong { margin: 3px 0; font-size: 20px; }
+
 @media (max-width: 1050px) {
   .organization-chip { min-width: 210px; }
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
@@ -1115,6 +1199,26 @@ input[type="checkbox"].form-control { width: 20px; min-height: 20px; }
   .document-statusbar { width: 100%; max-width: 420px; }
   .document-statusbar__flow { right: auto; left: 0; }
   .document-header-grid { grid-template-columns: 1fr; }
+  .document-metadata-grid { grid-template-columns: 1fr; }
+  .document-tabs { margin-top: 22px; }
+  .document-tabbar { gap: 8px; margin-right: -4px; padding-right: 16px; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; }
+  .document-tabbar button { min-height: 44px; padding: 11px 10px; scroll-snap-align: start; font-size: 12px; touch-action: manipulation; }
+  .document-tab-panel { padding-top: 8px; }
+  .document-tab-fields .form-control,
+  .document-tab-fields input,
+  .document-tab-fields select,
+  .document-tab-fields textarea { width: 100%; min-height: 44px; box-sizing: border-box; font-size: 16px; }
+  .document-tab-panel .line-table-wrap { padding-bottom: 10px; overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch; }
+  .document-tab-panel .line-table .form-control { min-height: 44px; font-size: 16px; }
+  .document-tab-panel .add-line-button { min-height: 44px; padding: 10px 8px; touch-action: manipulation; }
+  .document-tab-panel .line-remove { min-height: 40px; touch-action: manipulation; }
+  .agreement-policy-help { grid-template-columns: 1fr; }
+  .purchase-attachment-dropzone, .purchase-billing-policy-grid { grid-template-columns: 1fr; }
+  .purchase-attachment-dropzone input[type="file"] { min-height: 52px; font-size: 16px; }
+  .tender-tab-heading { flex-direction: column; }
+  .tender-participant-grid { grid-template-columns: 1fr; }
+  .tender-participant-card { min-height: 0; }
+  .tender-matrix-wrap { margin-right: -8px; }
   .sales-accounting-card { align-items: flex-start; flex-direction: column; }
   .login-story { min-height: 440px; padding: 34px; }
   .application-switcher { padding: 0; }

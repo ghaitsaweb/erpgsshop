@@ -133,6 +133,7 @@ MAX_PURCHASE_KPI_LINES = 100
 MAX_PURCHASE_ROUTING_BATCH = 500
 MAX_PURCHASE_ROUTING_TEAMS = 500
 MAX_PURCHASE_MAIL_RECIPIENTS = 50
+MAX_PURCHASE_DOCUMENT_TAB_ROWS = 100
 
 
 PURCHASE_MAIL_TEMPLATE_DEFAULTS = {
@@ -7428,9 +7429,137 @@ def purchase_tender_scoring_payload(tender):
     }
 
 
+def _bounded_document_tab_rows(queryset):
+    rows = list(queryset[: MAX_PURCHASE_DOCUMENT_TAB_ROWS + 1])
+    return rows[:MAX_PURCHASE_DOCUMENT_TAB_ROWS], len(rows) > MAX_PURCHASE_DOCUMENT_TAB_ROWS
+
+
+def purchase_request_document_tab_context(instance, actor):
+    del actor
+    return {
+        "purchase_attachment_manage_allowed": instance.status
+        in {PurchaseRequest.Status.DRAFT, PurchaseRequest.Status.REJECTED}
+    }
+
+
+def purchase_order_document_tab_context(instance, actor):
+    del actor
+    milestones, milestones_has_more = _bounded_document_tab_rows(
+        instance.milestones.order_by("sequence", "pk")
+    )
+    service_orders, service_orders_has_more = _bounded_document_tab_rows(
+        instance.service_work_orders.select_related("milestone").order_by("sequence", "pk")
+    )
+    communications, communications_has_more = _bounded_document_tab_rows(
+        instance.communications.order_by("-communicated_at", "-pk")
+    )
+    billing_plan = (
+        PurchaseOrderInvoiceAccounting.objects.filter(order_id=instance.pk)
+        .select_related("downpayment_invoice", "settlement_invoice")
+        .first()
+    )
+    billing_history = []
+    billing_history_has_more = False
+    if billing_plan:
+        billing_history, billing_history_has_more = _bounded_document_tab_rows(
+            billing_plan.invoice_provenance.select_related("invoice").order_by("pk")
+        )
+    return {
+        "purchase_tab_milestones": milestones,
+        "purchase_tab_milestones_has_more": milestones_has_more,
+        "purchase_tab_service_orders": service_orders,
+        "purchase_tab_service_orders_has_more": service_orders_has_more,
+        "purchase_tab_communications": communications,
+        "purchase_tab_communications_has_more": communications_has_more,
+        "purchase_billing_plan": billing_plan,
+        "purchase_tab_billing_history": billing_history,
+        "purchase_tab_billing_history_has_more": billing_history_has_more,
+        "purchase_attachment_manage_allowed": instance.status
+        in {
+            PurchaseOrder.Status.DRAFT,
+            PurchaseOrder.Status.SENT,
+            PurchaseOrder.Status.WAITING_APPROVAL,
+        },
+    }
+
+
+def purchase_quotation_document_tab_context(instance, actor):
+    del actor
+    communications, communications_has_more = _bounded_document_tab_rows(
+        instance.communications.select_related("template", "sent_by").order_by(
+            "-created_at", "-pk"
+        )
+    )
+    return {
+        "purchase_tab_communications": communications,
+        "purchase_tab_communications_has_more": communications_has_more,
+    }
+
+
 def purchase_tender_document_context(instance, actor):
     del actor
-    return {"tender_scoring": purchase_tender_scoring_payload(instance)}
+    invitations, invitations_has_more = _bounded_document_tab_rows(
+        instance.invitations.select_related("vendor").order_by("vendor__name", "pk")
+    )
+    quotations, quotations_has_more = _bounded_document_tab_rows(
+        instance.quotations.select_related("vendor").order_by("vendor__name", "pk")
+    )
+    invitation_by_vendor_id = {row.vendor_id: row for row in invitations}
+    quotation_by_vendor_id = {row.vendor_id: row for row in quotations}
+    participant_vendor_ids = sorted(
+        set(invitation_by_vendor_id) | set(quotation_by_vendor_id),
+        key=lambda vendor_id: str(
+            (invitation_by_vendor_id.get(vendor_id) or quotation_by_vendor_id[vendor_id]).vendor
+        ).casefold(),
+    )
+    participants = [
+        {
+            "vendor": (
+                invitation_by_vendor_id.get(vendor_id)
+                or quotation_by_vendor_id[vendor_id]
+            ).vendor,
+            "invitation": invitation_by_vendor_id.get(vendor_id),
+            "quotation": quotation_by_vendor_id.get(vendor_id),
+        }
+        for vendor_id in participant_vendor_ids
+    ]
+    completion_matrix = None
+    if instance.method == PurchaseTender.Method.PQTE:
+        completion_matrix = TenderDocumentCompletionMatrix.objects.filter(
+            tender_id=instance.pk
+        ).first()
+    completion_lines = []
+    completion_has_more = False
+    if completion_matrix:
+        completion_lines, completion_has_more = _bounded_document_tab_rows(
+            completion_matrix.lines.select_related(
+                "vendor", "vendor__partner"
+            ).order_by("sequence", "pk")
+        )
+    return {
+        "tender_scoring": (
+            purchase_tender_scoring_payload(instance)
+            if instance.status
+            in {
+                PurchaseTender.Status.BID_SELECTION,
+                PurchaseTender.Status.AWARDED,
+                PurchaseTender.Status.CLOSED,
+            }
+            else None
+        ),
+        "tender_tab_invitations": invitations,
+        "tender_tab_invitations_has_more": invitations_has_more,
+        "tender_tab_quotations": quotations,
+        "tender_tab_quotations_has_more": quotations_has_more,
+        "tender_tab_participants": participants,
+        "tender_tab_participants_has_more": invitations_has_more or quotations_has_more,
+        "tender_tab_completion_matrix": completion_matrix,
+        "tender_tab_completion_columns": (
+            completion_matrix.document_columns if completion_matrix else []
+        ),
+        "tender_tab_completion_lines": completion_lines,
+        "tender_tab_completion_has_more": completion_has_more,
+    }
 
 
 def _load_tender_award_data(locked):
@@ -8831,15 +8960,45 @@ def recalculate_purchase_quotation_total(quotation):
 def save_purchase_order_lines(order, formset):
     """Save a bounded document formset and derive its authoritative total."""
     formset.save()
-    return recalculate_purchase_order_total(order)
+    order = recalculate_purchase_order_total(order)
+    billing_plan = PurchaseOrderInvoiceAccounting.objects.filter(order_id=order.pk).only(
+        "downpayment_type",
+        "downpayment_amount",
+    ).first()
+    if (
+        billing_plan
+        and billing_plan.downpayment_type
+        == PurchaseOrderInvoiceAccounting.DownpaymentType.FIXED_AMOUNT
+        and billing_plan.downpayment_amount > order.total
+    ):
+        raise ValidationError("Purchase down payment cannot exceed the Purchase Order total.")
+    return order
 
 
-def _configured_purchase_downpayment_amount(plan, order_total):
+def _configured_purchase_downpayment_amount(plan, calculation_base):
     if plan.downpayment_type == PurchaseOrderInvoiceAccounting.DownpaymentType.PERCENTAGE:
-        amount = order_total * plan.downpayment_percentage / HUNDRED
+        amount = calculation_base * plan.downpayment_percentage / HUNDRED
     else:
         amount = plan.downpayment_amount
     return Decimal(amount).quantize(Decimal("0.01"))
+
+
+def _purchase_order_untaxed_total(order_lines):
+    pricing_by_line_id = {
+        row.order_line_id: row
+        for row in PurchaseOrderLinePricingProvenance.objects.filter(
+            order_line_id__in=[line.pk for line in order_lines]
+        ).select_related("order_line")
+    }
+    return sum(
+        (
+            pricing_by_line_id[line.pk].untaxed_amount
+            if line.pk in pricing_by_line_id
+            else line.subtotal
+            for line in order_lines
+        ),
+        ZERO,
+    )
 
 
 def _posted_purchase_downpayment_balance(plan_id):
@@ -8926,7 +9085,28 @@ def create_purchase_downpayment_bill(order, actor=None):
     )
     if plan is None:
         raise ValidationError("Create a Purchase Order Billing Plan and set its down-payment amount first.")
-    downpayment_amount = _configured_purchase_downpayment_amount(plan, locked.total)
+    order_lines = _require_bounded(
+        list(
+            PurchaseOrderLine.objects.select_for_update(of=("self",))
+            .filter(order_id=locked.pk)
+            .select_related("product")
+            .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
+        ),
+        limit=MAX_PURCHASE_DOCUMENT_LINES,
+        label="Purchase order",
+    )
+    downpayment_method = (
+        PurchaseOrderControl.objects.filter(order_id=locked.pk)
+        .values_list("downpayment_method", flat=True)
+        .first()
+        or PurchaseOrderControl.DownpaymentMethod.WITH_VAT
+    )
+    calculation_base = (
+        _purchase_order_untaxed_total(order_lines)
+        if downpayment_method == PurchaseOrderControl.DownpaymentMethod.WITHOUT_VAT
+        else locked.total
+    )
+    downpayment_amount = _configured_purchase_downpayment_amount(plan, calculation_base)
     if downpayment_amount <= 0:
         raise ValidationError("Set a positive Purchase Order down-payment amount or percentage first.")
     if downpayment_amount > locked.total:
@@ -8946,16 +9126,6 @@ def create_purchase_downpayment_bill(order, actor=None):
     already_invoiced = sum((row.invoice.total for row in active_purchase_invoices), ZERO)
     if already_invoiced + downpayment_amount > locked.total:
         raise ValidationError("Purchase down payment exceeds the remaining Purchase Order amount due.")
-    order_lines = _require_bounded(
-        list(
-            PurchaseOrderLine.objects.select_for_update(of=("self",))
-            .filter(order_id=locked.pk)
-            .select_related("product")
-            .order_by("pk")[: MAX_PURCHASE_DOCUMENT_LINES + 1]
-        ),
-        limit=MAX_PURCHASE_DOCUMENT_LINES,
-        label="Purchase order",
-    )
     allocations = _allocate_amount_by_order_line(order_lines, downpayment_amount)
     suffix = uuid4().hex[:8].upper()
     invoice = Invoice.objects.create(
@@ -8966,7 +9136,10 @@ def create_purchase_downpayment_bill(order, actor=None):
         invoice_date=timezone.localdate(),
         due_date=timezone.localdate(),
         total=downpayment_amount,
-        notes=f"Purchase down payment {plan.downpayment_sequence} for {locked.number}.",
+        notes=(
+            f"Purchase down payment {plan.downpayment_sequence} for {locked.number} "
+            f"({PurchaseOrderControl.DownpaymentMethod(downpayment_method).label})."
+        ),
     )
     invoice_lines = InvoiceLine.objects.bulk_create(
         [

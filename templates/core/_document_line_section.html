@@ -1,0 +1,29 @@
+{% load gsshop_developer %}
+<section class="document-lines" data-line-section="{{ section.index }}" data-line-prefix="{{ section.prefix }}" data-dev-model="{{ section.developer_meta.model }}" data-dev-table="{{ section.developer_meta.table }}" data-dev-entity="{{ section.developer_meta.entity }}" aria-label="{{ section.line_title }}">
+  <div class="line-table-wrap">
+    <table class="line-table">
+      <thead>
+        <tr>
+          {% for field in section.formset.empty_form.visible_fields %}{% developer_field field section.line_model as field_meta %}<th data-dev-field="{{ field_meta.name }}" data-dev-field-label="{{ field_meta.label }}" data-dev-field-type="{{ field_meta.type }}" data-dev-field-column="{{ field_meta.column }}" data-dev-field-relation="{{ field_meta.relation }}" data-dev-field-kind="{{ field_meta.kind }}">{{ field.label }}</th>{% endfor %}
+          {% if editable %}<th class="line-action-column">Action</th>{% endif %}
+        </tr>
+      </thead>
+      <tbody data-document-line-body>
+        {% for line_form in section.formset.forms %}
+          <tr class="document-line-row" data-dev-object data-dev-entity="{{ section.developer_meta.entity }}" data-dev-model="{{ section.developer_meta.model }}" data-dev-table="{{ section.developer_meta.table }}" data-dev-object-id="{{ line_form.instance.pk|default:'' }}" data-dev-object-name="{{ section.line_title }}">
+            {% for hidden in line_form.hidden_fields %}{{ hidden }}{% endfor %}
+            {% for field in line_form.visible_fields %}
+              {% developer_field field section.line_model as field_meta %}
+              <td class="{% if field.name == 'DELETE' %}delete-field{% endif %}" data-dev-field="{{ field_meta.name }}" data-dev-field-label="{{ field_meta.label }}" data-dev-field-type="{{ field_meta.type }}" data-dev-field-column="{{ field_meta.column }}" data-dev-field-relation="{{ field_meta.relation }}" data-dev-field-kind="{{ field_meta.kind }}" data-dev-required="{{ field_meta.required|yesno:'true,false' }}">
+                {{ field }}
+                {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+              </td>
+            {% endfor %}
+            {% if editable %}<td class="line-action-column"><button class="line-remove" type="button" aria-label="Hapus line">Hapus</button></td>{% endif %}
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if editable %}<button class="add-line-button" data-add-document-line type="button">+ Add a line</button>{% endif %}
+</section>

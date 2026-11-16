@@ -1,0 +1,30 @@
+{% if tab.fields %}
+  <div class="document-tab-fields document-header-grid">
+    {% include "core/_document_bound_fields.html" with fields=tab.fields %}
+  </div>
+{% endif %}
+<section class="sales-accounting-card document-tab-card" aria-label="Purchase routing assignment">
+  <div>
+    <p class="eyebrow">Purchase routing</p>
+    <h3>
+      {% if entity == 'purchases' %}
+        {{ purchase_control.team|default:"Not assigned" }}
+      {% else %}
+        {{ object.team|default:"Not assigned" }}
+      {% endif %}
+    </h3>
+    <p>
+      PIC:
+      <strong>
+        {% if entity == 'purchases' %}
+          {{ purchase_control.assigned_to|default:"Not assigned" }}
+        {% else %}
+          {{ object.assigned_to|default:"Not assigned" }}
+        {% endif %}
+      </strong>
+    </p>
+    {% if entity == 'purchase-requests' or entity == 'purchases' %}
+      <p>Use <strong>Auto Route to Purchase Team</strong> to match active routing parameters.</p>
+    {% endif %}
+  </div>
+</section>

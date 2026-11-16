@@ -1,12 +1,16 @@
-<section class="sales-accounting-card" aria-labelledby="tender-scoring-title">
+<section class="sales-accounting-card tender-scoring-workspace" aria-labelledby="tender-scoring-title">
   <div>
     <p class="eyebrow">Tender evaluation</p>
     <h3 id="tender-scoring-title">Vendor ranking and award criteria</h3>
-    <p>
+    <div class="tender-criteria-grid" aria-label="Tender evaluation criteria">
       {% for criterion in tender_scoring.criteria %}
-        <strong>{{ criterion.label }}</strong> {{ criterion.weight }}%{% if not forloop.last %} · {% endif %}
+        <article>
+          <span>{{ criterion.label }}</span>
+          <strong>{{ criterion.weight }}%</strong>
+          <div class="tender-criteria-meter" aria-hidden="true"><i style="width: {{ criterion.weight }}%"></i></div>
+        </article>
       {% endfor %}
-    </p>
+    </div>
     {% if tender_scoring.rows %}
       <div class="line-table-wrap">
         <table class="line-table">
@@ -26,15 +30,15 @@
           <tbody>
             {% for row in tender_scoring.rows %}
               <tr>
-                <td>{% if row.rank %}{{ row.rank }}{% else %}—{% endif %}</td>
-                <td>{{ row.vendor }}</td>
-                <td>{{ row.price_score }}</td>
-                <td>{{ row.delivery_score }}</td>
-                <td>{{ row.compliance_score }}</td>
-                <td>{{ row.term_score }}</td>
-                <td>{{ row.history_score }}</td>
-                <td><strong>{{ row.total_score }}</strong></td>
-                <td>{{ row.status }}</td>
+                <td data-label="Rank"><span class="tender-rank-badge">{% if row.rank %}#{{ row.rank }}{% else %}—{% endif %}</span></td>
+                <td data-label="Vendor">{{ row.vendor }}</td>
+                <td data-label="Pricing">{{ row.price_score }}</td>
+                <td data-label="Delivery">{{ row.delivery_score }}</td>
+                <td data-label="Compliance">{{ row.compliance_score }}</td>
+                <td data-label="Terms">{{ row.term_score }}</td>
+                <td data-label="History">{{ row.history_score }}</td>
+                <td data-label="Total"><strong>{{ row.total_score }}</strong></td>
+                <td data-label="Status">{{ row.status }}</td>
               </tr>
             {% endfor %}
           </tbody>
@@ -66,18 +70,18 @@
           <tbody>
             {% for row in tender_scoring.line_rows %}
               <tr>
-                <td>{{ row.line.product|default:row.line.description }}</td>
-                <td>{% if row.rank %}{{ row.rank }}{% else %}—{% endif %}</td>
-                <td>{{ row.vendor }}</td>
-                <td>{% if row.no_bid %}No bid{% else %}{{ row.quantity }}{% endif %}</td>
-                <td>{{ row.unit_price }}</td>
-                <td>{{ row.delivery_days }}</td>
-                <td>{{ row.price_score }}</td>
-                <td>{{ row.delivery_score }}</td>
-                <td>{{ row.compliance_score }}</td>
-                <td>{{ row.term_score }}</td>
-                <td>{{ row.history_score }}</td>
-                <td><strong>{{ row.total_score }}</strong></td>
+                <td data-label="Scope line">{{ row.line.product|default:row.line.description }}</td>
+                <td data-label="Rank">{% if row.rank %}#{{ row.rank }}{% else %}—{% endif %}</td>
+                <td data-label="Vendor">{{ row.vendor }}</td>
+                <td data-label="Quantity">{% if row.no_bid %}No bid{% else %}{{ row.quantity }}{% endif %}</td>
+                <td data-label="Unit price">{{ row.unit_price }}</td>
+                <td data-label="Delivery days">{{ row.delivery_days }}</td>
+                <td data-label="Pricing">{{ row.price_score }}</td>
+                <td data-label="Delivery">{{ row.delivery_score }}</td>
+                <td data-label="Compliance">{{ row.compliance_score }}</td>
+                <td data-label="Terms">{{ row.term_score }}</td>
+                <td data-label="History">{{ row.history_score }}</td>
+                <td data-label="Total"><strong>{{ row.total_score }}</strong></td>
               </tr>
             {% endfor %}
           </tbody>

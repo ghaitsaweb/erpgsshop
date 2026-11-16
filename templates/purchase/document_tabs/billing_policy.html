@@ -1,0 +1,41 @@
+<section class="document-tab-card purchase-billing-policy" aria-label="Purchase billing policy">
+  <div class="purchase-billing-policy-grid">
+    {% include "core/_document_bound_fields.html" with fields=tab.fields %}
+  </div>
+
+  <aside class="purchase-billing-summary" aria-label="Down payment status">
+    <div>
+      <p class="eyebrow">Billing readiness</p>
+      {% if purchase_billing_plan %}
+        <h3>{{ purchase_billing_plan.get_status_display }}</h3>
+        <p>
+          Sequence <strong>{{ purchase_billing_plan.downpayment_sequence }}</strong>
+          · configured as <strong>{{ purchase_billing_plan.get_downpayment_type_display }}</strong>
+        </p>
+      {% else %}
+        <h3>No down payment configured</h3>
+        <p>Leave both amount fields at zero when this Purchase Order does not require a down payment.</p>
+      {% endif %}
+    </div>
+  </aside>
+
+  {% if purchase_tab_billing_history %}
+    <div class="line-table-wrap document-tab-table-wrap">
+      <table class="line-table document-tab-table">
+        <thead><tr><th>Bill</th><th>Kind</th><th>Status</th><th>Total</th><th>Created</th></tr></thead>
+        <tbody>
+          {% for item in purchase_tab_billing_history %}
+            <tr>
+              <td data-label="Bill"><a href="{% url 'entity_edit' 'invoices' item.invoice_id %}">{{ item.invoice.number }}</a></td>
+              <td data-label="Kind">{{ item.get_invoice_kind_display }}</td>
+              <td data-label="Status">{{ item.invoice.get_status_display }}</td>
+              <td data-label="Total">{{ item.invoice.total }}</td>
+              <td data-label="Created">{{ item.created_at|date:"Y-m-d H:i" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if purchase_tab_billing_history_has_more %}<p class="document-tab-more">Showing the first 100 billing records.</p>{% endif %}
+  {% endif %}
+</section>

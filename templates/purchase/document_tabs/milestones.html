@@ -1,0 +1,27 @@
+{% if tab.fields %}
+  <div class="document-tab-fields document-header-grid">
+    {% include "core/_document_bound_fields.html" with fields=tab.fields %}
+  </div>
+{% endif %}
+<section class="document-tab-card" aria-label="Milestone and contract terms">
+  <div class="line-table-wrap document-tab-table-wrap">
+    <table class="line-table document-tab-table">
+      <thead><tr><th>Sequence</th><th>Milestone</th><th>Due date</th><th>Contract %</th><th>Status</th><th>Notes</th></tr></thead>
+      <tbody>
+        {% for item in purchase_tab_milestones %}
+          <tr>
+            <td data-label="Sequence">{{ item.sequence }}</td>
+            <td data-label="Milestone">{{ item.name }}</td>
+            <td data-label="Due date">{{ item.due_date|date:"Y-m-d" }}</td>
+            <td data-label="Contract %">{{ item.percentage }}%</td>
+            <td data-label="Status">{{ item.get_status_display }}</td>
+            <td data-label="Notes">{{ item.notes|default:"—" }}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="6">Select a Milestone Template and save the draft to create contract milestones.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if purchase_tab_milestones_has_more %}<p class="document-tab-more">Showing the first 100 milestones in sequence order.</p>{% endif %}
+</section>

@@ -6,12 +6,13 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.http import JsonResponse
+from django.http import FileResponse, Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 
+from core.models import PurchaseOrder
 from modules.approval_workflow.services import can_user_act, pending_approval_for
 
 from .access import (
@@ -22,6 +23,7 @@ from .access import (
 )
 from .forms import (
     BlanketOrderRFQLineFormSet,
+    PurchaseAttachmentManagementForm,
     PurchaseRequestApprovalLineFormSet,
     PurchaseRequestBlanketForm,
     PurchaseRequestConversionLineFormSet,
@@ -37,6 +39,7 @@ from .forms import (
 from .models import (
     BlanketOrder,
     BlanketOrderLine,
+    PurchaseDocumentAttachment,
     PurchaseQuotation,
     PurchaseOrderTemplate,
     PurchaseOrderTemplateLine,
@@ -81,6 +84,94 @@ def _comparison_selection(raw_ids):
         selected.append(value)
         seen.add(value)
     return selected
+
+
+@login_required
+@require_GET
+def purchase_document_attachment_download(request, entity, pk, attachment_pk):
+    parent_config = {
+        "purchase-requests": (PurchaseRequest, "purchase_request_id"),
+        "purchases": (PurchaseOrder, "purchase_order_id"),
+    }.get(entity)
+    if parent_config is None or not can_purchase_entity_action(request.user, entity, "view"):
+        raise Http404
+    parent_model, attachment_parent_field = parent_config
+    parent = get_object_or_404(
+        scope_purchase_queryset(request.user, entity, parent_model.objects.all()),
+        pk=pk,
+    )
+    attachment = get_object_or_404(
+        PurchaseDocumentAttachment.objects.all(),
+        pk=attachment_pk,
+        **{attachment_parent_field: parent.pk},
+    )
+    try:
+        attachment.file.open("rb")
+    except (FileNotFoundError, OSError) as error:
+        raise Http404 from error
+    content_type = {
+        "pdf": "application/pdf",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "png": "image/png",
+    }.get(attachment.original_name.rsplit(".", 1)[-1].casefold(), "application/octet-stream")
+    response = FileResponse(
+        attachment.file,
+        as_attachment=True,
+        filename=attachment.original_name,
+        content_type=content_type,
+    )
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@login_required
+@require_POST
+def purchase_document_attachment_manage(request, entity, pk):
+    parent_config = {
+        "purchase-requests": (
+            PurchaseRequest,
+            "purchase_request",
+            {PurchaseRequest.Status.DRAFT, PurchaseRequest.Status.REJECTED},
+        ),
+        "purchases": (
+            PurchaseOrder,
+            "purchase_order",
+            {
+                PurchaseOrder.Status.DRAFT,
+                PurchaseOrder.Status.SENT,
+                PurchaseOrder.Status.WAITING_APPROVAL,
+            },
+        ),
+    }.get(entity)
+    if parent_config is None or not can_purchase_entity_action(request.user, entity, "change"):
+        raise Http404
+    parent_model, parent_field, editable_statuses = parent_config
+    parent = get_object_or_404(
+        scope_purchase_queryset(request.user, entity, parent_model.objects.all()),
+        pk=pk,
+    )
+    if parent.status not in editable_statuses:
+        messages.error(request, "Attachments are locked by this document's workflow status.")
+        return redirect(f"{reverse('entity_edit', args=[entity, parent.pk])}#tab-attachment-file")
+    form = PurchaseAttachmentManagementForm(
+        request.POST,
+        request.FILES,
+        parent=parent,
+        parent_field=parent_field,
+        actor=request.user,
+    )
+    if form.is_valid():
+        with transaction.atomic():
+            form.save()
+        messages.success(request, "Purchase attachment files updated.")
+    else:
+        details = "; ".join(
+            f"{field}: {', '.join(str(error) for error in errors)}"
+            for field, errors in form.errors.items()
+        )
+        messages.error(request, details or "Purchase attachment files could not be updated.")
+    return redirect(f"{reverse('entity_edit', args=[entity, parent.pk])}#tab-attachment-file")
 
 
 @login_required

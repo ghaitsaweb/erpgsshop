@@ -1,6 +1,42 @@
 (() => {
   const form = document.querySelector('form[data-dev-entity="purchase-tenders"]');
   if (!form) return;
+  const evaluationWeightInputs = [
+    'evaluation_price_weight',
+    'evaluation_delivery_weight',
+    'evaluation_compliance_weight',
+    'evaluation_term_weight',
+    'evaluation_history_weight',
+  ].map((name) => form.querySelector(`#id_${name}`)).filter(Boolean);
+  if (evaluationWeightInputs.length) {
+    const weightContainer = evaluationWeightInputs[0].closest('.document-header-grid');
+    const totalCard = document.createElement('aside');
+    totalCard.className = 'tender-evaluation-total';
+    totalCard.setAttribute('aria-live', 'polite');
+    weightContainer?.append(totalCard);
+    const updateEvaluationWeights = () => {
+      const total = evaluationWeightInputs.reduce(
+        (sum, input) => sum + (Number.parseFloat(input.value) || 0),
+        0,
+      );
+      for (const input of evaluationWeightInputs) {
+        input.min = '0';
+        input.max = '100';
+        input.inputMode = 'decimal';
+        input.closest('.field')?.classList.add('tender-evaluation-weight-card');
+        input.closest('.field')?.style.setProperty(
+          '--tender-weight-percent',
+          `${Math.min(Math.max(Number.parseFloat(input.value) || 0, 0), 100)}%`,
+        );
+      }
+      totalCard.classList.toggle('is-valid', total === 100);
+      totalCard.innerHTML = `<span>Evaluation total</span><strong>${total}%</strong><small>${
+        total === 100 ? 'Ready for scoring' : 'Weights must total exactly 100%'
+      }</small>`;
+    };
+    evaluationWeightInputs.forEach((input) => input.addEventListener('input', updateEvaluationWeights));
+    updateEvaluationWeights();
+  }
   const templateSelect = form.querySelector('#id_order_template');
   const companySelect = form.querySelector('#id_company');
   const orderTypeSelect = form.querySelector('#id_order_type');

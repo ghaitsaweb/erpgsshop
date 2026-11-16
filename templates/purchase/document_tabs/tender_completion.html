@@ -1,0 +1,46 @@
+<section class="document-tab-card tender-completion-workspace" aria-label="Tender document completion">
+  <header class="tender-tab-heading">
+    <div>
+      <p class="eyebrow">Document Completion</p>
+      <h3>Required document status by vendor</h3>
+    </div>
+    {% if tender_tab_completion_matrix %}<span class="tender-tab-count">{{ tender_tab_completion_matrix.name }}</span>{% endif %}
+  </header>
+
+  <div class="line-table-wrap document-tab-table-wrap tender-matrix-wrap">
+    <table class="line-table document-tab-table tender-completion-matrix">
+      <thead>
+        <tr>
+          <th>Vendor</th>
+          {% for column in tender_tab_completion_columns %}<th>{{ column.column_name }}</th>{% endfor %}
+          <th>Completion</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in tender_tab_completion_lines %}
+          <tr>
+            <th scope="row">
+              {{ item.vendor_name }}
+              {% if item.vendor_subtitle %}<small>{{ item.vendor_subtitle }}</small>{% endif %}
+            </th>
+            {% for cell in item.document_cells %}
+              <td data-label="{{ cell.column_name }}">
+                {% if cell.is_action and cell.action_res_id %}
+                  <a class="btn btn-secondary tender-matrix-action" href="{% url 'entity_edit' 'vendor-prequalifications' cell.action_res_id %}">{{ cell.price_display|default:"Review" }}</a>
+                {% else %}
+                  <span class="tender-matrix-state is-{{ cell.tone|default:cell.status }}">{{ cell.price_display|default:cell.status }}</span>
+                  {% if cell.file_name %}<small>{{ cell.file_name }}</small>{% endif %}
+                  {% if cell.description %}<small>{{ cell.description }}</small>{% endif %}
+                {% endif %}
+              </td>
+            {% endfor %}
+            <td data-label="Completion"><strong>{{ item.completion_summary }}</strong></td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="99">No document-completion matrix has been prepared for this Tender.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if tender_tab_completion_has_more %}<p class="document-tab-more">Showing the first 100 vendor rows. Use the Document Completion workspace for the full matrix.</p>{% endif %}
+</section>

@@ -8,6 +8,7 @@ from core.document_registry import (
     register_document_header_field,
     register_document_line_field,
     register_document_option,
+    register_document_tab,
 )
 from core.models import PurchaseOrder
 
@@ -16,10 +17,12 @@ from .forms import (
     BlanketOrderLineForm,
     PurchaseOrderDocumentForm,
     PurchaseOrderLineDocumentForm,
+    PurchaseQuotationDocumentForm,
     PurchaseRequestDocumentForm,
     PurchaseRequestLineDocumentForm,
     PurchaseTenderDocumentForm,
     PurchaseTenderLineDocumentForm,
+    save_purchase_document_attachments_after_lines,
 )
 from .models import (
     BlanketOrder,
@@ -32,6 +35,9 @@ from .services import (
     apply_tender_award_strategy_action,
     auto_route_purchase_order_action,
     auto_route_purchase_request_action,
+    purchase_order_document_tab_context,
+    purchase_quotation_document_tab_context,
+    purchase_request_document_tab_context,
     purchase_tender_document_context,
     update_blanket_order_prices_action,
 )
@@ -109,11 +115,54 @@ def purchase_tender_action_audit(tender, action, actor, previous_status):
     )
 
 
+def purchase_tender_completion_tab_visible(tender, actor):
+    del actor
+    return bool(tender and tender.method == PurchaseTender.Method.PQTE)
+
+
+def purchase_tender_scoring_tab_visible(tender, actor):
+    del actor
+    return bool(
+        tender
+        and tender.status
+        in {
+            PurchaseTender.Status.BID_SELECTION,
+            PurchaseTender.Status.AWARDED,
+            PurchaseTender.Status.CLOSED,
+        }
+    )
+
+
 def register_purchase_document_extensions():
     register_document_option(
         "purchases",
         "header_form",
         PurchaseOrderDocumentForm,
+    )
+    register_document_option(
+        "purchases",
+        "context_builder",
+        purchase_order_document_tab_context,
+    )
+    register_document_option(
+        "purchases",
+        "always_editable_fields",
+        ["attachment_files", "remove_attachments"],
+    )
+    register_document_option(
+        "purchases",
+        "after_save",
+        save_purchase_document_attachments_after_lines,
+    )
+    register_document_option(
+        "purchase-quotations",
+        "header_form",
+        PurchaseQuotationDocumentForm,
+    )
+    register_document_option(
+        "purchase-quotations",
+        "context_builder",
+        purchase_quotation_document_tab_context,
     )
     register_document_action(
         "purchase-quotations",
@@ -138,6 +187,21 @@ def register_purchase_document_extensions():
     )
     register_document_option(
         "purchase-requests",
+        "context_builder",
+        purchase_request_document_tab_context,
+    )
+    register_document_option(
+        "purchase-requests",
+        "always_editable_fields",
+        ["attachment_files", "remove_attachments"],
+    )
+    register_document_option(
+        "purchase-requests",
+        "after_save",
+        save_purchase_document_attachments_after_lines,
+    )
+    register_document_option(
+        "purchase-requests",
         "line_form",
         PurchaseRequestLineDocumentForm,
     )
@@ -155,11 +219,6 @@ def register_purchase_document_extensions():
         "purchase-tenders",
         "extra_js_assets",
         ["purchase/js/tender_onchange.js"],
-    )
-    register_document_option(
-        "purchase-tenders",
-        "summary_template",
-        "purchase/tender_scoring_summary.html",
     )
     register_document_option(
         "purchase-tenders",
@@ -325,6 +384,295 @@ def register_purchase_document_extensions():
         "purchases",
         "summary_template",
         "purchase/purchase_routing_summary.html",
+    )
+    register_document_tab(
+        "purchase-requests",
+        "order-lines",
+        {
+            "label": "Order Lines",
+            "template": "core/document_tabs/lines.html",
+            "line_relation": "lines",
+        },
+    )
+    register_document_tab(
+        "purchase-requests",
+        "attachment-file",
+        {
+            "label": "Attachment File",
+            "template": "purchase/document_tabs/attachments.html",
+            "field_names": ["attachment_files", "remove_attachments"],
+        },
+        after="order-lines",
+    )
+    register_document_tab(
+        "purchase-requests",
+        "purchase-team",
+        {
+            "label": "Purchase Teams",
+            "template": "purchase/document_tabs/team.html",
+            "field_names": ["team"],
+            "captures": ["summary"],
+        },
+        after="attachment-file",
+    )
+    register_document_tab(
+        "purchase-requests",
+        "approval-history",
+        {
+            "label": "Approval History",
+            "template": "core/document_tabs/approval.html",
+            "requires_object": True,
+            "captures": ["approval"],
+        },
+        after="purchase-team",
+    )
+    register_document_tab(
+        "purchase-quotations",
+        "order-lines",
+        {
+            "label": "Order Lines",
+            "template": "core/document_tabs/lines.html",
+            "line_relation": "lines",
+        },
+    )
+    register_document_tab(
+        "purchase-quotations",
+        "purchase-team",
+        {
+            "label": "Purchase Teams",
+            "template": "purchase/document_tabs/team.html",
+            "field_names": ["team", "assigned_to"],
+        },
+        after="order-lines",
+    )
+    register_document_tab(
+        "purchase-quotations",
+        "communication-history",
+        {
+            "label": "Communication History",
+            "template": "purchase/document_tabs/communications.html",
+            "requires_object": True,
+        },
+        after="purchase-team",
+    )
+    register_document_tab(
+        "purchase-quotations",
+        "other-information",
+        {
+            "label": "Other Information",
+            "template": "core/document_tabs/metadata.html",
+            "requires_object": True,
+        },
+        after="communication-history",
+    )
+    register_document_tab(
+        "purchases",
+        "order-lines",
+        {
+            "label": "Order Lines",
+            "template": "core/document_tabs/lines.html",
+            "line_relation": "lines",
+        },
+    )
+    register_document_tab(
+        "purchases",
+        "milestone-contract-terms",
+        {
+            "label": "Milestone and Contract Terms",
+            "template": "purchase/document_tabs/milestones.html",
+            "field_names": ["milestone_template"],
+        },
+        after="order-lines",
+    )
+    register_document_tab(
+        "purchases",
+        "service-work-order",
+        {
+            "label": "Service Work Order",
+            "template": "purchase/document_tabs/service_work_orders.html",
+            "requires_object": True,
+        },
+        after="milestone-contract-terms",
+    )
+    register_document_tab(
+        "purchases",
+        "billing-policy",
+        {
+            "label": "Billing Policy",
+            "template": "purchase/document_tabs/billing_policy.html",
+            "field_names": [
+                "invoicing_policy",
+                "downpayment_method",
+                "downpayment_type",
+                "downpayment_amount",
+                "downpayment_percentage",
+            ],
+        },
+        after="service-work-order",
+    )
+    register_document_tab(
+        "purchases",
+        "purchase-team",
+        {
+            "label": "Purchase Teams",
+            "template": "purchase/document_tabs/team.html",
+            "field_names": ["purchase_team", "assigned_to"],
+            "captures": ["summary"],
+        },
+        after="billing-policy",
+    )
+    register_document_tab(
+        "purchases",
+        "communication-history",
+        {
+            "label": "Communication History",
+            "template": "purchase/document_tabs/communications.html",
+            "requires_object": True,
+        },
+        after="purchase-team",
+    )
+    register_document_tab(
+        "purchases",
+        "attachment-file",
+        {
+            "label": "Attachment File",
+            "template": "purchase/document_tabs/attachments.html",
+            "field_names": ["attachment_files", "remove_attachments"],
+        },
+        after="communication-history",
+    )
+    register_document_tab(
+        "purchases",
+        "other-information",
+        {
+            "label": "Other Information",
+            "template": "core/document_tabs/metadata.html",
+            "requires_object": True,
+        },
+        after="attachment-file",
+    )
+    register_document_tab(
+        "purchases",
+        "approval-history",
+        {
+            "label": "Approval History",
+            "template": "core/document_tabs/approval.html",
+            "requires_object": True,
+            "captures": ["approval"],
+        },
+        after="other-information",
+    )
+    register_document_tab(
+        "purchase-tenders",
+        "order-lines",
+        {
+            "label": "Order Lines",
+            "template": "core/document_tabs/lines.html",
+            "line_relation": "lines",
+        },
+    )
+    register_document_tab(
+        "purchase-tenders",
+        "participating-vendors",
+        {
+            "label": "Participating Vendors",
+            "template": "purchase/document_tabs/tender_participants.html",
+            "requires_object": True,
+        },
+        after="order-lines",
+    )
+    register_document_tab(
+        "purchase-tenders",
+        "document-completion",
+        {
+            "label": "Document Completion",
+            "template": "purchase/document_tabs/tender_completion.html",
+            "requires_object": True,
+            "is_visible": purchase_tender_completion_tab_visible,
+        },
+        after="participating-vendors",
+    )
+    register_document_tab(
+        "purchase-tenders",
+        "vendor-scoring",
+        {
+            "label": "Vendor Scoring",
+            "template": "purchase/document_tabs/tender_scoring.html",
+            "requires_object": True,
+            "is_visible": purchase_tender_scoring_tab_visible,
+        },
+        after="document-completion",
+    )
+    register_document_tab(
+        "purchase-tenders",
+        "purchase-team",
+        {
+            "label": "Purchase Teams",
+            "template": "purchase/document_tabs/team.html",
+            "field_names": ["team", "assigned_to"],
+        },
+        after="vendor-scoring",
+    )
+    register_document_tab(
+        "purchase-tenders",
+        "approval-history",
+        {
+            "label": "Approval History",
+            "template": "core/document_tabs/approval.html",
+            "requires_object": True,
+            "captures": ["approval"],
+        },
+        after="purchase-team",
+    )
+    register_document_tab(
+        "purchase-tenders",
+        "other-information",
+        {
+            "label": "Other Information",
+            "template": "core/document_tabs/metadata.html",
+            "requires_object": True,
+        },
+        after="approval-history",
+    )
+    register_document_tab(
+        "blanket-orders",
+        "order-lines",
+        {
+            "label": "Order Lines",
+            "template": "core/document_tabs/lines.html",
+            "line_relation": "lines",
+        },
+    )
+    register_document_tab(
+        "blanket-orders",
+        "agreement-policy",
+        {
+            "label": "Agreement Policy",
+            "template": "purchase/document_tabs/agreement_policy.html",
+            "field_names": ["agreement_policy"],
+        },
+        after="order-lines",
+    )
+    register_document_tab(
+        "blanket-orders",
+        "approval-history",
+        {
+            "label": "Approval History",
+            "template": "core/document_tabs/approval.html",
+            "requires_object": True,
+            "captures": ["approval"],
+        },
+        after="agreement-policy",
+    )
+    register_document_tab(
+        "blanket-orders",
+        "other-information",
+        {
+            "label": "Other Information",
+            "template": "core/document_tabs/metadata.html",
+            "requires_object": True,
+        },
+        after="approval-history",
     )
     register_document_option(
         "purchases",

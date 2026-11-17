@@ -10,6 +10,11 @@ urlpatterns = [
     path("api/expense-products/claim-search/", views.expense_claim_product_search, name="expense_claim_product_search"),
     path("api/customers/search/", views.customer_search, name="customer_search"),
     path(
+        "api/relations/<slug:entity>/<str:field_name>/search/",
+        views.relation_search,
+        name="relation_search",
+    ),
+    path(
         "app/employee-change-requests/<int:pk>/attachment/",
         views.employee_change_request_attachment,
         name="employee_change_request_attachment",

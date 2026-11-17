@@ -1,12 +1,18 @@
 from django import forms
+from django.db.models import Q
+from django.forms import BaseInlineFormSet
 
 from core.forms import StyledModelForm
 
 from .models import (
     InventoryLocation,
     InventoryLotSerial,
+    InventoryPackage,
+    InventoryPackageAllocation,
+    InventoryPackageType,
     InventoryPicking,
     InventoryPickingLine,
+    InventoryProofOfDelivery,
     InventoryReorderRule,
     InventoryReservation,
     InventoryStockBalance,
@@ -124,6 +130,12 @@ class InventoryPickingForm(StyledModelForm):
             "scheduled_date": forms.DateInput(attrs={"type": "date"}),
         }
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance.pk and self.instance.status != InventoryPicking.Status.DRAFT:
+            for field in self.fields.values():
+                field.disabled = True
+
 
 class InventoryPickingLineForm(StyledModelForm):
     reserved_quantity = forms.DecimalField(
@@ -157,12 +169,219 @@ class InventoryPickingLineForm(StyledModelForm):
                 "lot",
                 "requested_quantity",
             ):
-                self.fields[field_name].disabled = True
+                if field_name in self.fields:
+                    self.fields[field_name].disabled = True
         if not picking or picking.status not in {
             InventoryPicking.Status.PARTIAL,
             InventoryPicking.Status.READY,
         }:
             self.fields["done_quantity"].disabled = True
+
+
+class InventoryPickingLineFormSet(BaseInlineFormSet):
+    MAX_LINES = 250
+
+    def clean(self):
+        super().clean()
+        if any(self.errors):
+            return
+        active_forms = [
+            form
+            for form in self.forms
+            if form.cleaned_data and not form.cleaned_data.get("DELETE")
+        ]
+        if len(active_forms) > self.MAX_LINES:
+            raise forms.ValidationError(
+                f"A Picking supports at most {self.MAX_LINES} demand lines."
+            )
+        if self.instance.status != InventoryPicking.Status.DRAFT and any(
+            form.cleaned_data.get("DELETE")
+            for form in self.forms
+            if form.cleaned_data
+        ):
+            raise forms.ValidationError("Only Draft Picking lines can be deleted.")
+
+
+class InventoryPackageTypeForm(StyledModelForm):
+    class Meta:
+        model = InventoryPackageType
+        fields = [
+            "company",
+            "code",
+            "name",
+            "reusable",
+            "auto_generated",
+            "strict_compatibility",
+            "active",
+        ]
+
+
+class InventoryPackageForm(StyledModelForm):
+    class Meta:
+        model = InventoryPackage
+        fields = [
+            "company",
+            "package_type",
+            "code",
+            "barcode",
+            "pack_date",
+            "owner_warehouse",
+            "return_expected",
+        ]
+        widgets = {
+            "pack_date": forms.DateInput(attrs={"type": "date"}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["code"].required = False
+        if self.instance.pk:
+            for field_name in (
+                "company",
+                "package_type",
+                "code",
+                "owner_warehouse",
+            ):
+                self.fields[field_name].disabled = True
+            if self.instance.status != InventoryPackage.Status.AVAILABLE:
+                for field in self.fields.values():
+                    field.disabled = True
+
+    def clean(self):
+        cleaned = super().clean()
+        package_type = cleaned.get("package_type") or getattr(self.instance, "package_type", None)
+        code = (cleaned.get("code") or "").strip()
+        if not code and package_type and not package_type.auto_generated:
+            self.add_error("code", "Package code is required for a manually numbered Package Type.")
+        return cleaned
+
+
+class InventoryPackageAllocationForm(StyledModelForm):
+    class Meta:
+        model = InventoryPackageAllocation
+        fields = ["picking_line", "package", "quantity"]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        picking = getattr(self.instance, "picking", None)
+        if picking and picking.pk:
+            self.fields["picking_line"].queryset = InventoryPickingLine.objects.filter(
+                picking_id=picking.pk,
+            ).select_related("product", "location", "lot")
+            self.fields["package"].queryset = InventoryPackage.objects.filter(
+                company_id=picking.company_id,
+                owner_warehouse_id=picking.warehouse_id,
+                active=True,
+            ).filter(
+                Q(status=InventoryPackage.Status.AVAILABLE)
+                | Q(
+                    status=InventoryPackage.Status.IN_USE,
+                    current_picking_id=picking.pk,
+                )
+            ).select_related("package_type")
+            if picking.status != InventoryPicking.Status.READY:
+                for field in self.fields.values():
+                    field.disabled = True
+
+
+class InventoryPackageAllocationFormSet(BaseInlineFormSet):
+    MAX_ALLOCATIONS = 500
+
+    def clean(self):
+        super().clean()
+        if any(self.errors):
+            return
+        totals = {}
+        combinations = set()
+        active_forms = [
+            form
+            for form in self.forms
+            if form.cleaned_data and not form.cleaned_data.get("DELETE")
+        ]
+        if len(active_forms) > self.MAX_ALLOCATIONS:
+            raise forms.ValidationError(
+                f"A Picking supports at most {self.MAX_ALLOCATIONS} Package allocations."
+            )
+        if active_forms and self.instance.status != InventoryPicking.Status.READY:
+            raise forms.ValidationError("Packing is only available when the Picking is Ready.")
+        for form in active_forms:
+            picking_line = form.cleaned_data.get("picking_line")
+            package = form.cleaned_data.get("package")
+            quantity = form.cleaned_data.get("quantity")
+            if not picking_line or not package or quantity is None:
+                continue
+            key = (picking_line.pk, package.pk)
+            if key in combinations:
+                raise forms.ValidationError(
+                    "The same Picking Line and Package can only appear once."
+                )
+            combinations.add(key)
+            totals[picking_line.pk] = totals.get(picking_line.pk, 0) + quantity
+        line_map = {
+            line.pk: line
+            for line in InventoryPickingLine.objects.filter(
+                picking_id=self.instance.pk,
+                pk__in=sorted(totals),
+            ).only("pk", "reserved_quantity")
+        }
+        for line_id, packed_quantity in totals.items():
+            line = line_map.get(line_id)
+            if not line or packed_quantity > line.reserved_quantity:
+                raise forms.ValidationError(
+                    "Total packed quantity cannot exceed the Picking Line reserved quantity."
+                )
+
+
+class InventoryProofOfDeliveryForm(StyledModelForm):
+    class Meta:
+        model = InventoryProofOfDelivery
+        fields = [
+            "picking",
+            "sender_name",
+            "sender_signature",
+            "sender_evidence_document",
+            "sender_evidence_photo",
+            "sender_evidence_caption",
+            "receiver_name",
+            "receiver_signature",
+            "receiver_evidence_document",
+            "receiver_evidence_photo",
+            "receiver_evidence_caption",
+            "notes",
+            "evidence_document",
+            "evidence_photo",
+            "evidence_caption",
+        ]
+        widgets = {
+            "sender_signature": forms.ClearableFileInput(attrs={"accept": "image/png,image/jpeg"}),
+            "receiver_signature": forms.ClearableFileInput(attrs={"accept": "image/png,image/jpeg"}),
+            "sender_evidence_photo": forms.ClearableFileInput(
+                attrs={"accept": "image/png,image/jpeg", "capture": "environment"}
+            ),
+            "receiver_evidence_photo": forms.ClearableFileInput(
+                attrs={"accept": "image/png,image/jpeg", "capture": "environment"}
+            ),
+            "evidence_photo": forms.ClearableFileInput(
+                attrs={"accept": "image/png,image/jpeg", "capture": "environment"}
+            ),
+            "sender_evidence_document": forms.ClearableFileInput(
+                attrs={"accept": ".pdf,.doc,.docx,.xls,.xlsx,.csv,.png,.jpg,.jpeg"}
+            ),
+            "receiver_evidence_document": forms.ClearableFileInput(
+                attrs={"accept": ".pdf,.doc,.docx,.xls,.xlsx,.csv,.png,.jpg,.jpeg"}
+            ),
+            "evidence_document": forms.ClearableFileInput(
+                attrs={"accept": ".pdf,.doc,.docx,.xls,.xlsx,.csv,.png,.jpg,.jpeg"}
+            ),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["picking"].disabled = True
+        if self.instance.sender_signature:
+            self.fields["sender_signature"].disabled = True
+        if self.instance.receiver_signature:
+            self.fields["receiver_signature"].disabled = True
 
 
 class InventoryStockCountForm(StyledModelForm):

@@ -26,7 +26,7 @@ class ApplicationGroupAccessTests(TestCase):
         self.client.force_login(self.user)
 
         app_manager = self.client.get("/apps/")
-        self.assertNotContains(app_manager, "Catalog Test")
+        self.assertRedirects(app_manager, "/dashboard/")
         workspace = self.client.get("/apps/product/")
         self.assertRedirects(workspace, "/dashboard/")
 
@@ -41,7 +41,47 @@ class ApplicationGroupAccessTests(TestCase):
         self.user.groups.add(group)
         self.client.force_login(self.user)
 
-        app_manager = self.client.get("/apps/")
-        self.assertContains(app_manager, "Catalog Test")
+        dashboard = self.client.get("/dashboard/")
+        self.assertContains(dashboard, "Catalog Test")
+        self.assertNotContains(dashboard, "Manage applications")
         workspace = self.client.get("/apps/product/")
         self.assertEqual(workspace.status_code, 200)
+
+    def test_only_superuser_can_open_application_manager(self):
+        admin = get_user_model().objects.create_superuser(
+            username="catalog-admin",
+            email="catalog-admin@example.com",
+            password="safe-test-password",
+        )
+        self.client.force_login(admin)
+
+        response = self.client.get("/apps/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Catalog Test")
+
+    def test_operational_application_workspace_redirects_to_its_dashboard(self):
+        ERPApp.objects.update_or_create(
+            slug="inventory",
+            defaults={
+                "name": "Inventory",
+                "category": "Operations",
+                "summary": "Inventory operations.",
+                "enabled": True,
+                "status": ERPApp.Status.STABLE,
+            },
+        )
+        admin = get_user_model().objects.create_superuser(
+            username="inventory-launch-admin",
+            email="inventory-launch@example.com",
+            password="safe-test-password",
+        )
+        self.client.force_login(admin)
+
+        response = self.client.get("/apps/inventory/")
+
+        self.assertRedirects(
+            response,
+            "/apps/inventory/feature/dashboard/",
+            fetch_redirect_response=False,
+        )

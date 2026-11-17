@@ -1,0 +1,28 @@
+<div class="document-tab-fields">
+  {% if inventory_pod %}
+    <div class="document-header-grid">
+      <div class="field">
+        <label>POD Status</label>
+        <strong class="document-state status-{{ inventory_pod.status }}">{{ inventory_pod.get_status_display }}</strong>
+      </div>
+      <div class="field">
+        <label>Sender</label>
+        <span>{{ inventory_pod.sender_name|default:"Pending signature" }}</span>
+        {% if inventory_pod.sender_signed_at %}<small>{{ inventory_pod.sender_signed_at|date:"Y-m-d H:i" }}</small>{% endif %}
+      </div>
+      <div class="field">
+        <label>Receiver</label>
+        <span>{{ inventory_pod.receiver_name|default:"Pending signature" }}</span>
+        {% if inventory_pod.receiver_signed_at %}<small>{{ inventory_pod.receiver_signed_at|date:"Y-m-d H:i" }}</small>{% endif %}
+      </div>
+      <div class="field">
+        <label>Evidence</label>
+        <span>{% if inventory_pod.evidence_uploaded_at %}Uploaded {{ inventory_pod.evidence_uploaded_at|date:"Y-m-d H:i" }}{% else %}No general evidence yet{% endif %}</span>
+      </div>
+    </div>
+    <p>Sender signing is available while Waiting, Ready, or Done. Receiver signing is unlocked after validation. Existing signatures are immutable.</p>
+    <a class="btn btn-primary" href="{% url 'entity_edit' 'inventory-proof-of-deliveries' inventory_pod.pk %}">Open mobile POD capture</a>
+  {% else %}
+    <p>The POD audit record has not been initialized for this Picking. Save the document once, then reopen it.</p>
+  {% endif %}
+</div>

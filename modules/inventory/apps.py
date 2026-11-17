@@ -9,10 +9,10 @@ class InventoryConfig(AppConfig):
     verbose_name = "GSSHOP Inventory"
 
     def ready(self):
-        from core.models import StockMove
+        from core.models import Company, StockMove
 
         from .security import ensure_inventory_roles
-        from .signals import sync_single_stock_move
+        from .signals import ensure_default_package_type, sync_single_stock_move
         from .workspace import register_inventory_workspace
 
         register_inventory_workspace()
@@ -20,6 +20,11 @@ class InventoryConfig(AppConfig):
             sync_single_stock_move,
             sender=StockMove,
             dispatch_uid="gsshop_inventory.sync_single_stock_move",
+        )
+        post_save.connect(
+            ensure_default_package_type,
+            sender=Company,
+            dispatch_uid="gsshop_inventory.ensure_default_package_type",
         )
         post_migrate.connect(
             ensure_inventory_roles,

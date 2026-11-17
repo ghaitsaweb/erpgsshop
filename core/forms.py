@@ -39,6 +39,12 @@ class SearchableMasterWidget(forms.HiddenInput):
         return False
 
 
+class SearchableRelationWidget(SearchableMasterWidget):
+    """Render a bounded, server-searched replacement for a relation select."""
+
+    pass
+
+
 class ImagePreviewFileInput(forms.ClearableFileInput):
     """Render image uploads without exposing the storage path as a text link."""
 

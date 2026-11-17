@@ -14,6 +14,9 @@ from .models import (
     InventoryBalanceEvent,
     InventoryLocation,
     InventoryLotSerial,
+    InventoryPackage,
+    InventoryPackageAllocation,
+    InventoryPackageMovementHistory,
     InventoryPicking,
     InventoryPickingLine,
     InventoryReorderRule,
@@ -37,8 +40,397 @@ MAX_RESERVATION_CANDIDATES = 1000
 MAX_RESERVATION_BATCH = 250
 MAX_BATCH_RESERVATION_CANDIDATES = 5000
 MAX_PICKING_LINES = 250
+MAX_PACKAGE_ALLOCATIONS = 500
 DEFAULT_LOCATION_ROOT = "Stock"
 DEFAULT_LOCATION_NAME = "Main Stock"
+
+
+def _package_history_row(
+    package,
+    actor,
+    movement,
+    *,
+    picking=None,
+    picking_line=None,
+    quantity_in=ZERO,
+    quantity_out=ZERO,
+    source_status="",
+    destination_status="",
+    source_holder_type="",
+    destination_holder_type="",
+    source_warehouse_id=None,
+    destination_warehouse_id=None,
+    source_location_id=None,
+    destination_location_id=None,
+    notes="",
+):
+    return InventoryPackageMovementHistory(
+        package=package,
+        history_type=(
+            InventoryPackageMovementHistory.HistoryType.CONTENT
+            if picking_line
+            else InventoryPackageMovementHistory.HistoryType.PACKAGE
+        ),
+        movement=movement,
+        source_status=source_status,
+        destination_status=destination_status,
+        source_holder_type=source_holder_type,
+        destination_holder_type=destination_holder_type,
+        source_warehouse_id=source_warehouse_id,
+        destination_warehouse_id=destination_warehouse_id,
+        source_location_id=source_location_id,
+        destination_location_id=destination_location_id,
+        picking=picking,
+        picking_line=picking_line,
+        product_id=picking_line.product_id if picking_line else None,
+        lot_id=picking_line.lot_id if picking_line else None,
+        quantity_in=quantity_in,
+        quantity_out=quantity_out,
+        actor=actor,
+        notes=notes,
+    )
+
+
+def _locked_packages(package_ids):
+    package_ids = sorted(set(package_ids))
+    if len(package_ids) > MAX_PACKAGE_ALLOCATIONS:
+        raise ValidationError(
+            f"A packing transaction supports at most {MAX_PACKAGE_ALLOCATIONS} Packages."
+        )
+    return list(
+        InventoryPackage.objects.select_for_update(of=("self",))
+        .filter(pk__in=package_ids)
+        .select_related("owner_warehouse", "current_warehouse", "current_location")
+        .order_by("pk")
+    )
+
+
+def _apply_package_updates(packages, history_rows):
+    if packages:
+        InventoryPackage.objects.bulk_update(
+            packages,
+            [
+                "status",
+                "active",
+                "archive_source",
+                "archive_reason",
+                "current_holder_type",
+                "current_warehouse",
+                "current_location",
+                "current_picking",
+                "updated_at",
+            ],
+            batch_size=MAX_PACKAGE_ALLOCATIONS,
+        )
+    if history_rows:
+        InventoryPackageMovementHistory.objects.bulk_create(
+            history_rows,
+            batch_size=MAX_PACKAGE_ALLOCATIONS,
+        )
+
+
+@transaction.atomic
+def save_inventory_package_allocations(picking, formset, actor):
+    """Persist a Ready Picking's package splits and reconcile lifecycle atomically."""
+    if actor is None:
+        raise ValidationError("A user is required to save Packing allocations.")
+    locked = InventoryPicking.objects.select_for_update(of=("self",)).get(pk=picking.pk)
+    if locked.status != InventoryPicking.Status.READY:
+        raise ValidationError("Packing is only available when the Picking is Ready.")
+
+    old_rows = list(
+        InventoryPackageAllocation.objects.select_for_update(of=("self",))
+        .filter(picking_id=locked.pk)
+        .values("pk", "picking_line_id", "package_id", "quantity")
+        .order_by("pk")[: MAX_PACKAGE_ALLOCATIONS + 1]
+    )
+    if len(old_rows) > MAX_PACKAGE_ALLOCATIONS:
+        raise ValidationError(
+            f"A Picking supports at most {MAX_PACKAGE_ALLOCATIONS} Package allocations."
+        )
+    old_by_pk = {row["pk"]: row for row in old_rows}
+    changed_instances = formset.save(commit=False)
+    deleted_ids = sorted(obj.pk for obj in formset.deleted_objects if obj.pk)
+    now = timezone.now()
+    new_instances = []
+    update_instances = []
+    for allocation in changed_instances:
+        allocation.picking_id = locked.pk
+        allocation.updated_at = now
+        if allocation.pk:
+            update_instances.append(allocation)
+        else:
+            allocation.created_at = now
+            new_instances.append(allocation)
+    if deleted_ids:
+        InventoryPackageAllocation.objects.filter(
+            picking_id=locked.pk,
+            pk__in=deleted_ids,
+        ).delete()
+    if update_instances:
+        InventoryPackageAllocation.objects.bulk_update(
+            update_instances,
+            ["picking_line", "package", "quantity", "updated_at"],
+            batch_size=MAX_PACKAGE_ALLOCATIONS,
+        )
+    if new_instances:
+        InventoryPackageAllocation.objects.bulk_create(
+            new_instances,
+            batch_size=MAX_PACKAGE_ALLOCATIONS,
+        )
+
+    new_rows = list(
+        InventoryPackageAllocation.objects.filter(picking_id=locked.pk)
+        .select_related("picking_line")
+        .order_by("pk")[: MAX_PACKAGE_ALLOCATIONS + 1]
+    )
+    if len(new_rows) > MAX_PACKAGE_ALLOCATIONS:
+        raise ValidationError(
+            f"A Picking supports at most {MAX_PACKAGE_ALLOCATIONS} Package allocations."
+        )
+    totals = defaultdict(Decimal)
+    for allocation in new_rows:
+        totals[allocation.picking_line_id] += allocation.quantity
+    affected_line_ids = set(totals) | {row["picking_line_id"] for row in old_rows}
+    line_map = {
+        line.pk: line
+        for line in InventoryPickingLine.objects.filter(
+            picking_id=locked.pk,
+            pk__in=sorted(affected_line_ids),
+        ).select_related("product", "lot")
+    }
+    if not set(totals).issubset(line_map) or any(
+        totals[line_id] > line_map[line_id].reserved_quantity
+        for line_id in totals
+    ):
+        raise ValidationError(
+            "Total packed quantity cannot exceed its Picking Line reserved quantity."
+        )
+
+    new_by_pk = {row.pk: row for row in new_rows}
+    package_ids = {
+        row["package_id"] for row in old_rows
+    } | {row.package_id for row in new_rows}
+    packages = _locked_packages(package_ids)
+    package_map = {package.pk: package for package in packages}
+    if set(package_map) != package_ids:
+        raise ValidationError("One or more selected Packages no longer exist.")
+    active_package_ids = {row.package_id for row in new_rows}
+    history_rows = []
+
+    for row in old_rows:
+        replacement = new_by_pk.get(row["pk"])
+        if replacement and (
+            replacement.package_id != row["package_id"]
+            or replacement.picking_line_id != row["picking_line_id"]
+        ):
+            old_line = line_map.get(row["picking_line_id"])
+            if old_line:
+                history_rows.append(
+                    _package_history_row(
+                        package_map[row["package_id"]],
+                        actor,
+                        "unpacked",
+                        picking=locked,
+                        picking_line=old_line,
+                        quantity_out=row["quantity"],
+                    )
+                )
+        elif not replacement:
+            old_line = line_map.get(row["picking_line_id"])
+            if old_line:
+                history_rows.append(
+                    _package_history_row(
+                        package_map[row["package_id"]],
+                        actor,
+                        "unpacked",
+                        picking=locked,
+                        picking_line=old_line,
+                        quantity_out=row["quantity"],
+                    )
+                )
+    for row in new_rows:
+        previous = old_by_pk.get(row.pk)
+        old_quantity = previous["quantity"] if previous else ZERO
+        changed_identity = previous and (
+            previous["package_id"] != row.package_id
+            or previous["picking_line_id"] != row.picking_line_id
+        )
+        if not previous or changed_identity or row.quantity != old_quantity:
+            history_rows.append(
+                _package_history_row(
+                    package_map[row.package_id],
+                    actor,
+                    "packed",
+                    picking=locked,
+                    picking_line=row.picking_line,
+                    quantity_in=row.quantity if not previous or changed_identity else max(row.quantity - old_quantity, ZERO),
+                    quantity_out=(max(old_quantity - row.quantity, ZERO) if previous and not changed_identity else ZERO),
+                )
+            )
+
+    for package in packages:
+        source_status = package.status
+        source_holder = package.current_holder_type
+        source_warehouse_id = package.current_warehouse_id
+        source_location_id = package.current_location_id
+        if package.pk in active_package_ids:
+            if package.company_id != locked.company_id:
+                raise ValidationError("Package company must match the Picking company.")
+            if package.owner_warehouse_id != locked.warehouse_id:
+                raise ValidationError("Package must belong to the Picking warehouse.")
+            if package.status not in {
+                InventoryPackage.Status.AVAILABLE,
+                InventoryPackage.Status.IN_USE,
+            } or (
+                package.status == InventoryPackage.Status.IN_USE
+                and package.current_picking_id != locked.pk
+            ):
+                raise ValidationError(f"Package {package.code} is no longer available.")
+            package.status = InventoryPackage.Status.IN_USE
+            package.active = True
+            package.current_holder_type = InventoryPackage.HolderType.WAREHOUSE
+            package.current_warehouse_id = locked.warehouse_id
+            package.current_picking_id = locked.pk
+            movement = "assigned"
+        elif package.current_picking_id == locked.pk:
+            package.status = InventoryPackage.Status.AVAILABLE
+            package.active = True
+            package.current_holder_type = InventoryPackage.HolderType.WAREHOUSE
+            package.current_warehouse_id = package.owner_warehouse_id
+            package.current_location_id = None
+            package.current_picking_id = None
+            movement = "released"
+        else:
+            continue
+        package.archive_source = ""
+        package.archive_reason = ""
+        package.updated_at = now
+        if source_status != package.status or source_holder != package.current_holder_type:
+            history_rows.append(
+                _package_history_row(
+                    package,
+                    actor,
+                    movement,
+                    picking=locked,
+                    source_status=source_status,
+                    destination_status=package.status,
+                    source_holder_type=source_holder,
+                    destination_holder_type=package.current_holder_type,
+                    source_warehouse_id=source_warehouse_id,
+                    destination_warehouse_id=package.current_warehouse_id,
+                    source_location_id=source_location_id,
+                    destination_location_id=package.current_location_id,
+                )
+            )
+    _apply_package_updates(packages, history_rows)
+    return locked
+
+
+def _release_inventory_packing(picking, actor):
+    rows = list(
+        InventoryPackageAllocation.objects.select_for_update(of=("self",))
+        .filter(picking_id=picking.pk)
+        .select_related("picking_line", "picking_line__product", "picking_line__lot")
+        .order_by("pk")[: MAX_PACKAGE_ALLOCATIONS + 1]
+    )
+    if len(rows) > MAX_PACKAGE_ALLOCATIONS:
+        raise ValidationError(
+            f"A Picking supports at most {MAX_PACKAGE_ALLOCATIONS} Package allocations."
+        )
+    if not rows:
+        return
+    packages = _locked_packages(row.package_id for row in rows)
+    package_map = {package.pk: package for package in packages}
+    history_rows = [
+        _package_history_row(
+            package_map[row.package_id],
+            actor,
+            "unpacked",
+            picking=picking,
+            picking_line=row.picking_line,
+            quantity_out=row.quantity,
+            notes="Picking packing was released.",
+        )
+        for row in rows
+    ]
+    now = timezone.now()
+    for package in packages:
+        source_status = package.status
+        source_holder = package.current_holder_type
+        source_warehouse_id = package.current_warehouse_id
+        source_location_id = package.current_location_id
+        package.status = InventoryPackage.Status.AVAILABLE
+        package.active = True
+        package.current_holder_type = InventoryPackage.HolderType.WAREHOUSE
+        package.current_warehouse_id = package.owner_warehouse_id
+        package.current_location_id = None
+        package.current_picking_id = None
+        package.updated_at = now
+        history_rows.append(
+            _package_history_row(
+                package,
+                actor,
+                "released",
+                picking=picking,
+                source_status=source_status,
+                destination_status=package.status,
+                source_holder_type=source_holder,
+                destination_holder_type=package.current_holder_type,
+                source_warehouse_id=source_warehouse_id,
+                destination_warehouse_id=package.current_warehouse_id,
+                source_location_id=source_location_id,
+            )
+        )
+    InventoryPackageAllocation.objects.filter(pk__in=[row.pk for row in rows]).delete()
+    _apply_package_updates(packages, history_rows)
+
+
+def _dispatch_inventory_packages(picking, actor):
+    package_ids = list(
+        InventoryPackageAllocation.objects.filter(picking_id=picking.pk)
+        .order_by()
+        .values_list("package_id", flat=True)
+        .distinct()[: MAX_PACKAGE_ALLOCATIONS + 1]
+    )
+    if len(package_ids) > MAX_PACKAGE_ALLOCATIONS:
+        raise ValidationError(
+            f"A Picking supports at most {MAX_PACKAGE_ALLOCATIONS} Packages."
+        )
+    packages = _locked_packages(package_ids)
+    now = timezone.now()
+    history_rows = []
+    for package in packages:
+        if package.status != InventoryPackage.Status.IN_USE or package.current_picking_id != picking.pk:
+            raise ValidationError(f"Package {package.code} is not assigned to this Picking.")
+        source_status = package.status
+        source_holder = package.current_holder_type
+        source_warehouse_id = package.current_warehouse_id
+        source_location_id = package.current_location_id
+        package.status = (
+            InventoryPackage.Status.AWAITING_RETURN
+            if package.reusable and package.return_expected
+            else InventoryPackage.Status.IN_TRANSIT
+        )
+        package.current_holder_type = InventoryPackage.HolderType.CUSTOMER
+        package.current_warehouse_id = None
+        package.current_location_id = None
+        package.updated_at = now
+        history_rows.append(
+            _package_history_row(
+                package,
+                actor,
+                "dispatched",
+                picking=picking,
+                source_status=source_status,
+                destination_status=package.status,
+                source_holder_type=source_holder,
+                destination_holder_type=package.current_holder_type,
+                source_warehouse_id=source_warehouse_id,
+                source_location_id=source_location_id,
+            )
+        )
+    _apply_package_updates(packages, history_rows)
 
 
 def _assert_warehouses_not_frozen(warehouse_ids):
@@ -1774,6 +2166,7 @@ def unreserve_inventory_picking(picking, actor):
     }:
         raise ValidationError("Only Partially Available or Ready Pickings can be unreserved.")
     lines = _locked_picking_lines(locked)
+    _release_inventory_packing(locked, actor)
     active_ids = [
         line.current_reservation_id
         for line in lines
@@ -1852,6 +2245,7 @@ def validate_inventory_picking(picking, actor):
         raise ValidationError("The Picking has no active reservations to consume.")
     consume_inventory_reservations_batch(reservation_ids, actor)
     _cancel_draft_picking_reservations(lines, actor)
+    _dispatch_inventory_packages(locked, actor)
 
     backorder_lines = [
         line for line in lines if line.requested_quantity > line.done_quantity
@@ -1906,6 +2300,7 @@ def cancel_inventory_picking(picking, actor):
     }:
         raise ValidationError("This Picking can no longer be cancelled.")
     lines = _locked_picking_lines(locked)
+    _release_inventory_packing(locked, actor)
     active_ids = [
         line.current_reservation_id
         for line in lines

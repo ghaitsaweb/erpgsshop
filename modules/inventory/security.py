@@ -9,8 +9,13 @@ INVENTORY_USER = "Inventory User"
 INVENTORY_MODELS = {
     "inventorylocation",
     "inventorylotserial",
+    "inventorypackage",
+    "inventorypackageallocation",
+    "inventorypackagemovementhistory",
+    "inventorypackagetype",
     "inventorypicking",
     "inventorypickingline",
+    "inventoryproofofdelivery",
     "inventorystockbalance",
     "inventorybalanceevent",
     "inventoryreorderrule",

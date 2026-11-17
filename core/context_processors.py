@@ -5,6 +5,7 @@ from django.urls import reverse
 
 from modules.apphub.access import can_access_app
 from modules.apphub.models import ERPApp
+from modules.apphub.navigation import application_launch_url
 from modules.apphub.workspaces import (
     ENTITY_APP_MAP,
     app_menu_groups,
@@ -48,8 +49,11 @@ def navigation(request):
             app
             # scale-guard: allow SG002 — manifest-backed application catalogue is deployment-bounded
             for app in ERPApp.objects.filter(enabled=True).order_by("category", "sequence", "name")
-            if can_access_app(request.user, app.slug)
+            if (request.user.is_superuser or app.slug != "app-manager")
+            and can_access_app(request.user, app.slug)
         ]
+        for app in installed_apps:
+            app.launch_url = application_launch_url(request.user, app.slug)
         apps_by_slug = {app.slug: app for app in installed_apps}
     except (OperationalError, ProgrammingError):
         pass
@@ -131,13 +135,13 @@ def navigation(request):
                 }
             )
     else:
+        workspace_items = [{"label": "Dashboard", "name": "dashboard", "icon": "D"}]
+        if request.user.is_superuser:
+            workspace_items.append({"label": "Apps", "name": "app_manager", "icon": "A"})
         sections.append(
             {
                 "label": "Workspace",
-                "items": [
-                    {"label": "Dashboard", "name": "dashboard", "icon": "D"},
-                    {"label": "Apps", "name": "app_manager", "icon": "A"},
-                ],
+                "items": workspace_items,
             }
         )
 
@@ -155,11 +159,7 @@ def navigation(request):
 
         seen_targets = set()
         for app in installed_apps:
-            app_url = (
-                reverse("app_manager")
-                if app.slug == "app-manager"
-                else reverse("app_workspace", args=[app.slug])
-            )
+            app_url = app.launch_url
             app_search_aliases = (
                 "apps applications modules install uninstall upgrade update manage manager"
                 if app.slug == "app-manager"
@@ -341,4 +341,5 @@ def navigation(request):
         "global_menu_items": global_menu_items,
         "installed_app_slugs": tuple(apps_by_slug),
         "breadcrumbs": breadcrumbs,
+        "can_manage_apps": request.user.is_superuser,
     }

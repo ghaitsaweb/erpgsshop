@@ -712,6 +712,51 @@ input[type="checkbox"].form-control { width: 20px; min-height: 20px; }
 .line-table .form-control { min-width: 115px; min-height: 36px; padding: 7px 8px; border-color: transparent; border-radius: 6px; background: #f7f9f8; font-size: 11px; }
 .line-table .form-control:focus { border-color: var(--green); background: white; }
 .line-table .master-record-search { min-width: 230px; }
+
+.relation-selector { position: relative; }
+.relation-selector-dropdown {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  overflow: hidden;
+  border: 1px solid var(--line, #d8dee9);
+  border-radius: 10px;
+  background: var(--surface, #fff);
+  box-shadow: 0 14px 34px rgb(15 23 42 / 14%);
+}
+.relation-selector-result,
+.relation-selector-more {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--line, #e5e7eb);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.relation-selector-result:hover,
+.relation-selector-result:focus,
+.relation-selector-more:hover,
+.relation-selector-more:focus { background: var(--surface-soft, #f6f8fb); }
+.relation-selector-more { border-bottom: 0; color: var(--primary, #2457d6); font-weight: 700; }
+.relation-selector-empty { margin: 0; padding: 12px; color: var(--muted, #667085); }
+.relation-search-dialog {
+  width: min(720px, calc(100vw - 32px));
+  max-height: min(720px, calc(100vh - 48px));
+  padding: 0;
+  border: 0;
+  border-radius: 16px;
+  box-shadow: 0 28px 70px rgb(15 23 42 / 28%);
+}
+.relation-search-dialog::backdrop { background: rgb(15 23 42 / 45%); }
+.relation-search-dialog-panel { display: grid; gap: 14px; padding: 20px; }
+.relation-search-dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.relation-search-dialog-close { border: 0; background: transparent; font-size: 28px; line-height: 1; cursor: pointer; }
+.relation-search-dialog-results { display: grid; max-height: 440px; overflow: auto; border: 1px solid var(--line, #e5e7eb); border-radius: 10px; }
 .line-table input[type="checkbox"].form-control { min-width: 18px; }
 .delete-field { display: none; }
 .line-action-column { width: 56px; min-width: 56px !important; text-align: center; }

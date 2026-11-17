@@ -27,6 +27,7 @@ from .developer_mode import (
     restore_actor_organization_context,
 )
 from .models import ERPApp
+from .navigation import application_launch_url
 from .upgrade import django_labels_for, execute_upgrade, pending_migration_plan, upgrade_target_apps
 from .workspaces import (
     APP_WORKSPACES,
@@ -45,8 +46,8 @@ from modules.pos.dashboard import build_fnb_analytics, build_pos_analytics
 from modules.purchase.dashboard import build_purchase_analytics
 
 
-def _workspace_url(app):
-    return reverse("app_workspace", args=[app.slug])
+def _workspace_url(app, user):
+    return application_launch_url(user, app.slug)
 
 
 def _return_url(request, fallback="app_manager"):
@@ -124,6 +125,9 @@ def switch_developer_profile(request):
 
 @login_required
 def app_manager(request):
+    if not request.user.is_superuser:
+        messages.error(request, "Only a Super Admin can manage applications.")
+        return redirect("dashboard")
     query = request.GET.get("q", "").strip()
     queryset = ERPApp.objects.all()
     if query:
@@ -140,7 +144,7 @@ def app_manager(request):
     ]
     groups = OrderedDict()
     for app in apps:
-        app.launch_url = _workspace_url(app)
+        app.launch_url = _workspace_url(app, request.user)
         groups.setdefault(app.category, []).append(app)
     summary = {
         "total": len(apps),
@@ -249,6 +253,11 @@ def app_workspace(request, slug):
     request.session["active_erp_app"] = slug
     recent_apps = [item for item in request.session.get("recent_erp_apps", []) if item != slug]
     request.session["recent_erp_apps"] = [slug, *recent_apps][:6]
+    if app.enabled:
+        launch_url = application_launch_url(request.user, slug)
+        workspace_url = reverse("app_workspace", args=[slug])
+        if launch_url != workspace_url:
+            return redirect(launch_url)
     workspace = APP_WORKSPACES.get(slug, {"tagline": app.summary, "entities": [], "workflow": []})
     entity_cards = []
     recent_items = []

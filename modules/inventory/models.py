@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.validators import FileExtensionValidator
 from django.db import models
 from django.utils import timezone
 
@@ -13,6 +14,14 @@ from modules.organization.models import Branch
 
 ZERO = Decimal("0")
 MAX_LOCATION_DEPTH = 32
+MAX_POD_FILE_SIZE = 10 * 1024 * 1024
+POD_DOCUMENT_EXTENSIONS = ["pdf", "doc", "docx", "xls", "xlsx", "csv", "png", "jpg", "jpeg"]
+POD_IMAGE_EXTENSIONS = ["png", "jpg", "jpeg"]
+
+
+def validate_pod_file_size(value):
+    if value and value.size > MAX_POD_FILE_SIZE:
+        raise ValidationError("POD evidence files cannot exceed 10 MB.")
 
 
 class InventoryLocation(TimeStampedModel):
@@ -1460,6 +1469,7 @@ class InventoryPicking(TimeStampedModel):
             raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
+        creating = self._state.adding
         if self.warehouse_id:
             self.company_id = self.warehouse.company_id
             self.branch_id = self.warehouse.branch_id
@@ -1487,7 +1497,10 @@ class InventoryPicking(TimeStampedModel):
             ):
                 raise ValidationError("Confirmed Picking scope is immutable.")
         self.full_clean()
-        return super().save(*args, **kwargs)
+        result = super().save(*args, **kwargs)
+        if creating:
+            InventoryProofOfDelivery.objects.get_or_create(picking=self)
+        return result
 
     def delete(self, *args, **kwargs):
         if self.status != self.Status.DRAFT:
@@ -1650,3 +1663,616 @@ class InventoryPickingLine(TimeStampedModel):
 
     def __str__(self):
         return f"{self.picking} · {self.product} · {self.requested_quantity}"
+
+
+class InventoryPackageType(TimeStampedModel):
+    """Company package master adapted from HMX ``stock_package_type``."""
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.PROTECT,
+        related_name="inventory_package_types",
+    )
+    code = models.CharField(max_length=40)
+    name = models.CharField(max_length=120)
+    reusable = models.BooleanField(default=False)
+    auto_generated = models.BooleanField(default=True)
+    strict_compatibility = models.BooleanField(
+        default=False,
+        help_text="Reserved for product-category compatibility once Product categories are enabled.",
+    )
+    active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["company_id", "name", "pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "code"],
+                name="unique_inventory_package_type_code",
+            ),
+            models.UniqueConstraint(
+                fields=["company", "name"],
+                name="unique_inventory_package_type_name",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        self.code = (self.code or "").strip().upper()
+        self.name = (self.name or "").strip()
+        errors = {}
+        if not self.code:
+            errors["code"] = "Package Type code is required."
+        if not self.name:
+            errors["name"] = "Package Type name is required."
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.packages.exists():
+            raise ValidationError("Package Types already used by Packages cannot be deleted.")
+        return super().delete(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.code} - {self.name}"
+
+
+class InventoryPackage(TimeStampedModel):
+    """Physical package and its protected HMX-compatible lifecycle."""
+
+    class Status(models.TextChoices):
+        AVAILABLE = "available", "Available"
+        IN_USE = "in_use", "In Use"
+        IN_TRANSIT = "in_transit", "In Transit"
+        AWAITING_RETURN = "awaiting_return", "Awaiting Return"
+        ARCHIVED = "archived", "Archived"
+
+    class HolderType(models.TextChoices):
+        WAREHOUSE = "warehouse", "Warehouse"
+        CUSTOMER = "customer", "Customer"
+        VENDOR = "vendor", "Vendor"
+        TRANSIT = "transit", "Transit"
+
+    class ArchiveSource(models.TextChoices):
+        MANUAL = "manual", "Manual"
+        AUTOMATIC = "automatic", "Automatic"
+
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.PROTECT,
+        related_name="inventory_packages",
+    )
+    package_type = models.ForeignKey(
+        InventoryPackageType,
+        on_delete=models.PROTECT,
+        related_name="packages",
+    )
+    code = models.CharField(max_length=80)
+    barcode = models.CharField(max_length=120, blank=True, null=True, unique=True)
+    pack_date = models.DateField(default=timezone.localdate)
+    reusable = models.BooleanField(default=False)
+    return_expected = models.BooleanField(default=False)
+    status = models.CharField(
+        max_length=24,
+        choices=Status.choices,
+        default=Status.AVAILABLE,
+        db_index=True,
+        editable=False,
+    )
+    active = models.BooleanField(default=True, db_index=True, editable=False)
+    archive_source = models.CharField(
+        max_length=16,
+        choices=ArchiveSource.choices,
+        blank=True,
+        editable=False,
+    )
+    archive_reason = models.TextField(blank=True, editable=False)
+    current_holder_type = models.CharField(
+        max_length=16,
+        choices=HolderType.choices,
+        default=HolderType.WAREHOUSE,
+        editable=False,
+    )
+    owner_warehouse = models.ForeignKey(
+        Warehouse,
+        on_delete=models.PROTECT,
+        related_name="owned_inventory_packages",
+    )
+    current_warehouse = models.ForeignKey(
+        Warehouse,
+        on_delete=models.PROTECT,
+        related_name="current_inventory_packages",
+        blank=True,
+        null=True,
+        editable=False,
+    )
+    current_location = models.ForeignKey(
+        InventoryLocation,
+        on_delete=models.PROTECT,
+        related_name="current_inventory_packages",
+        blank=True,
+        null=True,
+        editable=False,
+    )
+    current_picking = models.ForeignKey(
+        InventoryPicking,
+        on_delete=models.PROTECT,
+        related_name="assigned_packages",
+        blank=True,
+        null=True,
+        editable=False,
+    )
+
+    organization_branch_lookup = "owner_warehouse__branch"
+
+    class Meta:
+        ordering = ["company_id", "code", "pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "code"],
+                name="unique_inventory_package_code",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(return_expected=False) | models.Q(reusable=True),
+                name="inventory_package_return_requires_reusable",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["company", "owner_warehouse", "status", "active"],
+                name="inv_package_scope_idx",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        self.code = (self.code or "").strip().upper()
+        self.barcode = (self.barcode or "").strip() or None
+        errors = {}
+        if not self.code:
+            errors["code"] = "Package code is required."
+        if self.package_type_id and self.package_type.company_id != self.company_id:
+            errors["package_type"] = "Package Type must belong to the Package company."
+        if self.owner_warehouse_id and self.owner_warehouse.company_id != self.company_id:
+            errors["owner_warehouse"] = "Owner Warehouse must belong to the Package company."
+        if self.current_warehouse_id and self.current_warehouse.company_id != self.company_id:
+            errors["current_warehouse"] = "Current Warehouse must belong to the Package company."
+        if self.current_location_id and self.current_location.company_id != self.company_id:
+            errors["current_location"] = "Current Location must belong to the Package company."
+        if self.current_picking_id and self.current_picking.company_id != self.company_id:
+            errors["current_picking"] = "Current Picking must belong to the Package company."
+        if self.return_expected and not self.reusable:
+            errors["return_expected"] = "Return Expected is only valid for reusable Packages."
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        if self._state.adding:
+            if self.package_type_id:
+                self.reusable = self.package_type.reusable
+                if not self.code and self.package_type.auto_generated:
+                    self.code = f"PKG-{timezone.localdate():%Y%m%d}-{uuid4().hex[:8].upper()}"
+            if self.owner_warehouse_id and not self.current_warehouse_id:
+                self.current_warehouse_id = self.owner_warehouse_id
+        elif not getattr(self, "_allow_lifecycle_transition", False):
+            persisted = type(self).objects.filter(pk=self.pk).values(
+                "status",
+                "active",
+                "archive_source",
+                "archive_reason",
+                "current_holder_type",
+                "current_warehouse_id",
+                "current_location_id",
+                "current_picking_id",
+            ).first()
+            protected = (
+                "status",
+                "active",
+                "archive_source",
+                "archive_reason",
+                "current_holder_type",
+                "current_warehouse_id",
+                "current_location_id",
+                "current_picking_id",
+            )
+            if persisted and any(
+                persisted[field_name] != getattr(self, field_name)
+                for field_name in protected
+            ):
+                raise ValidationError("Package lifecycle fields are system managed.")
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.allocations.exists() or self.movement_history.exists():
+            raise ValidationError("A Package with transaction history must be archived, not deleted.")
+        return super().delete(*args, **kwargs)
+
+    def __str__(self):
+        return self.code
+
+
+class InventoryPackageAllocation(TimeStampedModel):
+    """A bounded split of one ready Picking line into a physical Package."""
+
+    picking = models.ForeignKey(
+        InventoryPicking,
+        on_delete=models.PROTECT,
+        related_name="package_allocations",
+    )
+    picking_line = models.ForeignKey(
+        InventoryPickingLine,
+        on_delete=models.PROTECT,
+        related_name="package_allocations",
+    )
+    package = models.ForeignKey(
+        InventoryPackage,
+        on_delete=models.PROTECT,
+        related_name="allocations",
+    )
+    quantity = models.DecimalField(max_digits=18, decimal_places=3)
+
+    organization_branch_lookup = "picking__branch"
+
+    class Meta:
+        ordering = ["picking_id", "picking_line_id", "package_id", "pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["picking_line", "package"],
+                name="unique_inventory_package_allocation",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(quantity__gt=0),
+                name="inventory_package_allocation_positive",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["picking", "package"],
+                name="inv_pack_alloc_pick_idx",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.picking_id and self.picking.status != InventoryPicking.Status.READY:
+            errors["picking"] = "Package allocation is only available for a Ready Picking."
+        if self.picking_line_id and self.picking_line.picking_id != self.picking_id:
+            errors["picking_line"] = "Picking Line must belong to the selected Picking."
+        if self.package_id:
+            if self.package.company_id != self.picking.company_id:
+                errors["package"] = "Package company must match the Picking company."
+            if not self.package.active or self.package.status not in {
+                InventoryPackage.Status.AVAILABLE,
+                InventoryPackage.Status.IN_USE,
+            }:
+                errors["package"] = "Only active Available Packages can be packed."
+            if (
+                self.package.status == InventoryPackage.Status.IN_USE
+                and self.package.current_picking_id != self.picking_id
+            ):
+                errors["package"] = "Package is already assigned to another Picking."
+        if self.quantity is not None and self.quantity <= ZERO:
+            errors["quantity"] = "Packed quantity must be greater than zero."
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.picking.status != InventoryPicking.Status.READY:
+            raise ValidationError("Package allocations are immutable after Picking validation.")
+        return super().delete(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.picking} · {self.package} · {self.quantity}"
+
+
+class InventoryPackageMovementHistory(models.Model):
+    """Append-only package lifecycle and content movement history."""
+
+    class HistoryType(models.TextChoices):
+        PACKAGE = "package_movement", "Package Movement"
+        CONTENT = "content_movement", "Item Movement"
+
+    package = models.ForeignKey(
+        InventoryPackage,
+        on_delete=models.PROTECT,
+        related_name="movement_history",
+    )
+    history_type = models.CharField(
+        max_length=24,
+        choices=HistoryType.choices,
+        default=HistoryType.PACKAGE,
+    )
+    movement = models.CharField(max_length=40)
+    source_status = models.CharField(max_length=24, choices=InventoryPackage.Status.choices, blank=True)
+    destination_status = models.CharField(max_length=24, choices=InventoryPackage.Status.choices, blank=True)
+    source_holder_type = models.CharField(max_length=16, choices=InventoryPackage.HolderType.choices, blank=True)
+    destination_holder_type = models.CharField(max_length=16, choices=InventoryPackage.HolderType.choices, blank=True)
+    source_warehouse = models.ForeignKey(
+        Warehouse,
+        on_delete=models.PROTECT,
+        related_name="source_inventory_package_history",
+        blank=True,
+        null=True,
+    )
+    destination_warehouse = models.ForeignKey(
+        Warehouse,
+        on_delete=models.PROTECT,
+        related_name="destination_inventory_package_history",
+        blank=True,
+        null=True,
+    )
+    source_location = models.ForeignKey(
+        InventoryLocation,
+        on_delete=models.PROTECT,
+        related_name="source_inventory_package_history",
+        blank=True,
+        null=True,
+    )
+    destination_location = models.ForeignKey(
+        InventoryLocation,
+        on_delete=models.PROTECT,
+        related_name="destination_inventory_package_history",
+        blank=True,
+        null=True,
+    )
+    picking = models.ForeignKey(
+        InventoryPicking,
+        on_delete=models.PROTECT,
+        related_name="package_movement_history",
+        blank=True,
+        null=True,
+    )
+    picking_line = models.ForeignKey(
+        InventoryPickingLine,
+        on_delete=models.PROTECT,
+        related_name="package_movement_history",
+        blank=True,
+        null=True,
+    )
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.PROTECT,
+        related_name="inventory_package_movement_history",
+        blank=True,
+        null=True,
+    )
+    lot = models.ForeignKey(
+        InventoryLotSerial,
+        on_delete=models.PROTECT,
+        related_name="inventory_package_movement_history",
+        blank=True,
+        null=True,
+    )
+    quantity_in = models.DecimalField(max_digits=18, decimal_places=3, default=0)
+    quantity_out = models.DecimalField(max_digits=18, decimal_places=3, default=0)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="inventory_package_movement_history",
+    )
+    moved_at = models.DateTimeField(default=timezone.now, db_index=True)
+    notes = models.TextField(blank=True)
+
+    organization_branch_lookup = "package__owner_warehouse__branch"
+
+    class Meta:
+        ordering = ["-moved_at", "-pk"]
+        indexes = [
+            models.Index(
+                fields=["package", "moved_at"],
+                name="inv_pack_history_idx",
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValidationError("Package movement history is append-only.")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Package movement history is append-only.")
+
+    def __str__(self):
+        return f"{self.package} · {self.movement} · {self.moved_at:%Y-%m-%d %H:%M}"
+
+
+class InventoryProofOfDelivery(TimeStampedModel):
+    """Mobile-friendly sender/receiver evidence for one outbound Picking."""
+
+    class Status(models.TextChoices):
+        PENDING_BOTH = "pending_both", "Pending Both"
+        PENDING_SENDER = "pending_sender", "Pending Sender"
+        PENDING_RECEIVER = "pending_receiver", "Pending Receiver"
+        COMPLETED = "completed", "Completed"
+
+    document_validators = [
+        FileExtensionValidator(POD_DOCUMENT_EXTENSIONS),
+        validate_pod_file_size,
+    ]
+    image_validators = [
+        FileExtensionValidator(POD_IMAGE_EXTENSIONS),
+        validate_pod_file_size,
+    ]
+
+    picking = models.OneToOneField(
+        InventoryPicking,
+        on_delete=models.PROTECT,
+        related_name="proof_of_delivery",
+    )
+    status = models.CharField(
+        max_length=24,
+        choices=Status.choices,
+        default=Status.PENDING_BOTH,
+        editable=False,
+        db_index=True,
+    )
+    sender_name = models.CharField(max_length=255, blank=True)
+    sender_signature = models.ImageField(
+        upload_to="inventory/pod/signatures/",
+        validators=image_validators,
+        blank=True,
+    )
+    sender_signed_at = models.DateTimeField(blank=True, null=True, editable=False)
+    receiver_name = models.CharField(max_length=255, blank=True)
+    receiver_signature = models.ImageField(
+        upload_to="inventory/pod/signatures/",
+        validators=image_validators,
+        blank=True,
+    )
+    receiver_signed_at = models.DateTimeField(blank=True, null=True, editable=False)
+    notes = models.TextField(blank=True)
+    evidence_document = models.FileField(
+        upload_to="inventory/pod/documents/",
+        validators=document_validators,
+        blank=True,
+    )
+    evidence_photo = models.ImageField(
+        upload_to="inventory/pod/photos/",
+        validators=image_validators,
+        blank=True,
+    )
+    evidence_caption = models.CharField(max_length=255, blank=True)
+    evidence_uploaded_at = models.DateTimeField(blank=True, null=True, editable=False)
+    sender_evidence_document = models.FileField(
+        upload_to="inventory/pod/sender/documents/",
+        validators=document_validators,
+        blank=True,
+    )
+    sender_evidence_photo = models.ImageField(
+        upload_to="inventory/pod/sender/photos/",
+        validators=image_validators,
+        blank=True,
+    )
+    sender_evidence_caption = models.CharField(max_length=255, blank=True)
+    sender_evidence_uploaded_at = models.DateTimeField(blank=True, null=True, editable=False)
+    receiver_evidence_document = models.FileField(
+        upload_to="inventory/pod/receiver/documents/",
+        validators=document_validators,
+        blank=True,
+    )
+    receiver_evidence_photo = models.ImageField(
+        upload_to="inventory/pod/receiver/photos/",
+        validators=image_validators,
+        blank=True,
+    )
+    receiver_evidence_caption = models.CharField(max_length=255, blank=True)
+    receiver_evidence_uploaded_at = models.DateTimeField(blank=True, null=True, editable=False)
+
+    organization_branch_lookup = "picking__branch"
+
+    class Meta:
+        ordering = ["-picking__scheduled_date", "-pk"]
+
+    @staticmethod
+    def _file_name(value):
+        return getattr(value, "name", "") or ""
+
+    def _persisted_values(self):
+        if not self.pk:
+            return None
+        return type(self).objects.filter(pk=self.pk).values(
+            "sender_signature",
+            "receiver_signature",
+            "evidence_document",
+            "evidence_photo",
+            "sender_evidence_document",
+            "sender_evidence_photo",
+            "receiver_evidence_document",
+            "receiver_evidence_photo",
+        ).first()
+
+    def clean(self):
+        super().clean()
+        persisted = self._persisted_values()
+        sender_changed = bool(self.sender_name or self.sender_signature)
+        receiver_changed = bool(self.receiver_name or self.receiver_signature)
+        evidence_changed = any(
+            (
+                self.notes,
+                self.evidence_document,
+                self.evidence_photo,
+                self.evidence_caption,
+                self.sender_evidence_document,
+                self.sender_evidence_photo,
+                self.sender_evidence_caption,
+                self.receiver_evidence_document,
+                self.receiver_evidence_photo,
+                self.receiver_evidence_caption,
+            )
+        )
+        if persisted:
+            if persisted["sender_signature"] and persisted["sender_signature"] != self._file_name(self.sender_signature):
+                raise ValidationError({"sender_signature": "Sender signature cannot be modified after capture."})
+            if persisted["receiver_signature"] and persisted["receiver_signature"] != self._file_name(self.receiver_signature):
+                raise ValidationError({"receiver_signature": "Receiver signature cannot be modified after capture."})
+        state = self.picking.status
+        errors = {}
+        if sender_changed and state not in {
+            InventoryPicking.Status.CONFIRMED,
+            InventoryPicking.Status.READY,
+            InventoryPicking.Status.DONE,
+        }:
+            errors["sender_signature"] = "Sender signature requires a Waiting, Ready, or Done Picking."
+        if receiver_changed and state != InventoryPicking.Status.DONE:
+            errors["receiver_signature"] = "Receiver signature can only be captured after Picking validation."
+        if evidence_changed and state not in {
+            InventoryPicking.Status.READY,
+            InventoryPicking.Status.DONE,
+        }:
+            errors["notes"] = "POD notes and evidence require a Ready or Done Picking."
+        if state == InventoryPicking.Status.CANCELLED and (sender_changed or receiver_changed or evidence_changed):
+            errors["notes"] = "Cancelled Pickings cannot be updated through POD."
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        persisted = self._persisted_values()
+        now = timezone.now()
+        if self.sender_signature and not (persisted and persisted["sender_signature"]):
+            self.sender_signed_at = now
+        if self.receiver_signature and not (persisted and persisted["receiver_signature"]):
+            self.receiver_signed_at = now
+        evidence_groups = (
+            ("evidence_document", "evidence_photo", "evidence_uploaded_at"),
+            ("sender_evidence_document", "sender_evidence_photo", "sender_evidence_uploaded_at"),
+            ("receiver_evidence_document", "receiver_evidence_photo", "receiver_evidence_uploaded_at"),
+        )
+        for document_field, photo_field, timestamp_field in evidence_groups:
+            changed = not persisted or any(
+                persisted[field_name] != self._file_name(getattr(self, field_name))
+                for field_name in (document_field, photo_field)
+            )
+            if changed:
+                setattr(
+                    self,
+                    timestamp_field,
+                    now if getattr(self, document_field) or getattr(self, photo_field) else None,
+                )
+        has_sender = bool(self.sender_signature)
+        has_receiver = bool(self.receiver_signature)
+        if has_sender and has_receiver:
+            self.status = self.Status.COMPLETED
+        elif has_sender:
+            self.status = self.Status.PENDING_RECEIVER
+        elif has_receiver:
+            self.status = self.Status.PENDING_SENDER
+        else:
+            self.status = self.Status.PENDING_BOTH
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Proof of Delivery records are part of the Picking audit trail.")
+
+    def __str__(self):
+        return f"POD · {self.picking} · {self.get_status_display()}"

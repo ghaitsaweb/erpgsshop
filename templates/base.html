@@ -25,7 +25,7 @@
       {% block sidebar_application_context %}
         {% if current_nav_app %}
           <div class="active-app-card">
-            <a class="active-app-main" href="{% url 'app_workspace' current_nav_app.slug %}">
+            <a class="active-app-main" href="{{ current_nav_app.launch_url }}">
               <span class="active-app-icon app-tone-{{ current_nav_app|app_category_key }}">
                 <svg aria-hidden="true"><use href="{% static 'img/app-icons.svg' %}#icon-{{ current_nav_app|app_icon_key }}"></use></svg>
               </span>
@@ -243,7 +243,7 @@
             <div class="switcher-section-title"><span>Recently opened</span><small>{{ switcher_recent_apps|length }} applications</small></div>
             <div class="recent-application-grid">
               {% for app in switcher_recent_apps %}
-                <a class="application-tile recent app-tone-{{ app|app_category_key }}" data-application-card data-search="{{ app.name|lower }} {{ app.category|lower }} {{ app.slug }}" href="{% url 'app_workspace' app.slug %}">
+                <a class="application-tile recent app-tone-{{ app|app_category_key }}" data-application-card data-search="{{ app.name|lower }} {{ app.category|lower }} {{ app.slug }}" href="{{ app.launch_url }}">
                   <span class="application-tile-icon"><svg aria-hidden="true"><use href="{% static 'img/app-icons.svg' %}#icon-{{ app|app_icon_key }}"></use></svg></span>
                   <span><strong>{{ app.name }}</strong><small>{{ app.category }}</small></span>
                 </a>
@@ -257,7 +257,7 @@
             <div class="switcher-section-title"><span>{{ category }}</span><small>{{ apps|length }} applications</small></div>
             <div class="application-grid">
               {% for app in apps %}
-                <a class="application-tile app-tone-{{ app|app_category_key }} {% if active_app_slug == app.slug %}current{% endif %}" data-application-card data-search="{{ app.name|lower }} {{ app.category|lower }} {{ app.slug }}" href="{% url 'app_workspace' app.slug %}">
+                <a class="application-tile app-tone-{{ app|app_category_key }} {% if active_app_slug == app.slug %}current{% endif %}" data-application-card data-search="{{ app.name|lower }} {{ app.category|lower }} {{ app.slug }}" href="{{ app.launch_url }}">
                   <span class="application-tile-icon"><svg aria-hidden="true"><use href="{% static 'img/app-icons.svg' %}#icon-{{ app|app_icon_key }}"></use></svg></span>
                   <span><strong>{{ app.name }}</strong><small>{% if active_app_slug == app.slug %}Current application{% else %}Open workspace{% endif %}</small></span>
                 </a>
@@ -269,7 +269,7 @@
       </div>
       <footer class="application-switcher-foot">
         <span>Only installed applications are shown.</span>
-        <a href="{% url 'app_manager' %}">Manage applications</a>
+        {% if can_manage_apps %}<a href="{% url 'app_manager' %}">Manage applications</a>{% endif %}
       </footer>
     </section>
   </div>
@@ -427,6 +427,7 @@
   </script>
   <script src="{% static 'js/organization-context.js' %}"></script>
   <script src="{% static 'js/organization-form-scope.js' %}"></script>
+  <script src="{% static 'js/relation-selector.js' %}"></script>
   <script src="{% static 'js/responsive-shell.js' %}"></script>
   <script src="{% static 'js/smart-actions.js' %}"></script>
   {% if can_use_developer_mode %}<script src="{% static 'js/developer-mode.js' %}"></script>{% endif %}

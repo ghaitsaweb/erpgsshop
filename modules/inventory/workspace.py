@@ -9,6 +9,9 @@ def register_inventory_workspace():
         items=[
             {"entity": "inventory-pickings", "label": "Outbound Pickings"},
             {"entity": "inventory-picking-lines", "label": "Picking Lines"},
+            {"entity": "inventory-packages", "label": "Packages"},
+            {"entity": "inventory-package-allocations", "label": "Package Allocations"},
+            {"entity": "inventory-proof-of-deliveries", "label": "Proof of Delivery"},
         ],
     )
     register_workspace_contribution(
@@ -40,5 +43,7 @@ def register_inventory_workspace():
         items=[
             {"entity": "inventory-locations", "label": "Locations"},
             {"entity": "inventory-lots", "label": "Lot / Serial Numbers"},
+            {"entity": "inventory-package-types", "label": "Package Types"},
+            {"entity": "inventory-package-history", "label": "Package History"},
         ],
     )

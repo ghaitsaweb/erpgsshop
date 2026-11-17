@@ -9,7 +9,7 @@ from django.core.paginator import Paginator
 from django.db import IntegrityError, transaction
 from django.db.models import Count, F, ImageField, Max, Prefetch, Q, Sum
 from django.db.models.deletion import ProtectedError, RestrictedError
-from django.forms import inlineformset_factory, modelform_factory
+from django.forms import BaseInlineFormSet, ModelChoiceField, inlineformset_factory, modelform_factory
 from django.http import FileResponse, Http404, HttpResponse, JsonResponse, QueryDict
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -29,6 +29,7 @@ from .forms import (
     SaleOrderForm,
     SaleOrderLineForm,
     SaleOrderTypeForm,
+    SearchableRelationWidget,
     StockMoveForm,
     WarehouseForm,
     StyledModelForm,
@@ -2493,6 +2494,15 @@ DOCUMENT_CONFIG["construction-progressive-claims"]["actions"]["recompute"] = {
 DOCUMENT_CONFIG["construction-material-demands"]["actions"]["create-purchase-request"] = {
     "label": "Create Purchase Request", "from": ["approved"], "to": "approved", "primary": True, "preserve_status": True,
 }
+for entity_name, entity_definition in ENTITY_CONFIG.items():
+    module_document = entity_definition.get("document")
+    if module_document is None:
+        continue
+    if entity_name in DOCUMENT_CONFIG:
+        raise ImproperlyConfigured(
+            f"Entity '{entity_name}' declares a module document that already exists."
+        )
+    DOCUMENT_CONFIG[entity_name] = module_document
 apply_document_extensions(DOCUMENT_CONFIG)
 
 
@@ -2667,7 +2677,11 @@ def _scope_form(form, user, entity):
     scope_construction_form(form, user, entity)
     scope_pos_form(form, user, entity)
     scope_accounting_form(form, user, entity)
-    return scope_organization_form(form, include_branch=entity != "branches")
+    scoped_form = scope_organization_form(form, include_branch=entity != "branches")
+    config = ENTITY_CONFIG.get(entity)
+    if config and getattr(getattr(form, "_meta", None), "model", None) is config["model"]:
+        _prepare_relation_widgets(form, entity)
+    return scoped_form
 
 
 def _record_smart_actions(request, source_entity, source):
@@ -2878,6 +2892,136 @@ def _form_class(config):
     return modelform_factory(config["model"], form=StyledModelForm, fields=config["form_fields"])
 
 
+RELATION_DISPLAY_FIELD_NAMES = (
+    "code",
+    "number",
+    "sku",
+    "employee_id",
+    "name",
+    "title",
+    "reference",
+    "username",
+    "email",
+    "label",
+)
+
+
+def _relation_text_fields(model):
+    fields_by_name = {
+        field.name: field
+        for field in model._meta.concrete_fields
+        if field.get_internal_type() in {"CharField", "TextField", "EmailField", "SlugField"}
+    }
+    preferred = [name for name in RELATION_DISPLAY_FIELD_NAMES if name in fields_by_name]
+    if preferred:
+        return preferred[:4]
+    return list(fields_by_name)[:4]
+
+
+def _relation_display_fields(model):
+    available = set(_relation_text_fields(model))
+    selected = [name for name in RELATION_DISPLAY_FIELD_NAMES if name in available]
+    return (selected or list(available))[:2]
+
+
+def _relation_row_text(row, display_fields, identifier_name):
+    values = []
+    for field_name in display_fields:
+        value = str(row.get(field_name) or "").strip()
+        if value and value not in values:
+            values.append(value)
+    return " — ".join(values) if values else f"#{row[identifier_name]}"
+
+
+def _relation_header_form_class(entity, config):
+    document = DOCUMENT_CONFIG.get(entity)
+    if not document:
+        return _form_class(config)
+    return (
+        document.get("header_form")
+        or config.get("form")
+        or modelform_factory(config["model"], form=StyledModelForm, fields=document["header_fields"])
+    )
+
+
+def _prepare_relation_widgets(form, entity):
+    """Replace unbounded FK selects with a scoped server-search control."""
+    for field_name, field in form.fields.items():
+        if not isinstance(field, ModelChoiceField):
+            continue
+        if field.widget.attrs.get("data-master-search-url"):
+            continue
+        selected_value = form[field_name].value()
+        if hasattr(selected_value, "pk"):
+            selected_value = selected_value.pk
+        identifier_name = field.to_field_name or field.queryset.model._meta.pk.name
+        initial_label = ""
+        if selected_value not in (None, ""):
+            display_fields = _relation_display_fields(field.queryset.model)
+            value_fields = list(dict.fromkeys([identifier_name, *display_fields]))
+            row = field.queryset.filter(**{identifier_name: selected_value}).values(*value_fields).first()
+            if row:
+                initial_label = _relation_row_text(row, display_fields, identifier_name)
+        attrs = dict(field.widget.attrs)
+        attrs.update(
+            {
+                "data-relation-search-url": reverse("relation_search", args=[entity, field_name]),
+                "data-relation-search-placeholder": f"Search {field.label.lower()}...",
+                "data-initial-label": initial_label,
+            }
+        )
+        field.widget = SearchableRelationWidget(attrs=attrs)
+
+
+@login_required
+@require_GET
+def relation_search(request, entity, field_name):
+    """Search one form-scoped relation without rendering its full queryset."""
+    config = _config(entity)
+    model = config["model"]
+    if not any(_can(request.user, action, model, entity) for action in ("view", "add", "change")):
+        return JsonResponse({"detail": "You do not have access to this record."}, status=403)
+
+    form = _relation_header_form_class(entity, config)()
+    _scope_form(form, request.user, entity)
+    field = form.fields.get(field_name)
+    if not isinstance(field, ModelChoiceField):
+        raise Http404("Relation field not found.")
+
+    queryset = field.queryset
+    related_model = queryset.model
+    identifier_name = field.to_field_name or related_model._meta.pk.name
+    display_fields = _relation_display_fields(related_model)
+    search_fields = _relation_text_fields(related_model)
+    record_id = request.GET.get("id", "").strip()[:100]
+    query = request.GET.get("q", "").strip()[:100]
+    if record_id:
+        queryset = queryset.filter(**{identifier_name: record_id})
+        limit = 1
+    else:
+        if query and search_fields:
+            lookup = Q()
+            for name in search_fields:
+                lookup |= Q(**{f"{name}__icontains": query})
+            queryset = queryset.filter(lookup)
+        limit = 50 if request.GET.get("more") == "1" else 3
+
+    ordering = [*display_fields, related_model._meta.pk.name]
+    value_fields = list(dict.fromkeys([identifier_name, *display_fields]))
+    rows = queryset.order_by(*ordering).values(*value_fields)[:limit]
+    return JsonResponse(
+        {
+            "results": [
+                {
+                    "id": str(row[identifier_name]),
+                    "text": _relation_row_text(row, display_fields, identifier_name),
+                }
+                for row in rows
+            ]
+        }
+    )
+
+
 @login_required
 @require_GET
 def entity_image(request, entity, pk, field_name):
@@ -3049,6 +3193,7 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
             model,
             section["line_model"],
             form=line_form_class,
+            formset=section.get("formset", BaseInlineFormSet),
             fields=section["line_fields"],
             extra=section.get("extra", 1),
             can_delete=True,
@@ -3119,7 +3264,17 @@ def _document_context(request, entity, config, instance=None, mode="Create"):
             for section in line_sections:
                 section["formset"].instance = saved
                 line_saver = section.get("line_saver", document.get("line_saver"))
-                if line_saver is not None:
+                line_saver_with_actor = section.get(
+                    "line_saver_with_actor",
+                    document.get("line_saver_with_actor"),
+                )
+                if line_saver_with_actor is not None:
+                    if not callable(line_saver_with_actor):
+                        raise ImproperlyConfigured(
+                            f"Document '{entity}' line_saver_with_actor must be callable."
+                        )
+                    line_saver_with_actor(saved, section["formset"], request.user)
+                elif line_saver is not None:
                     if not callable(line_saver):
                         raise ImproperlyConfigured(f"Document '{entity}' line_saver must be callable.")
                     line_saver(saved, section["formset"])
